@@ -18,23 +18,27 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer & Pinggy Tunnel
+      - name: Run Streamer & Cloudflare Tunnel
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
-          # 1. Tải logo1.png từ link ibb
+          # 1. Cài đặt cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+
+          # 2. Tải logo1.png từ link ibb
           echo "⏬ Đang tải logo1.png..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # 2. Tạo app.py nhẹ
+          # 3. Tạo app.py nhẹ
           if [ ! -f "app.py" ]; then
             echo "from flask import Flask, send_from_directory; from flask_cors import CORS; import os; app = Flask(__name__); CORS(app); app.add_url_rule('/playlist.m3u', 'playlist', lambda: send_from_directory('.', 'playlist.m3u') if os.path.exists('playlist.m3u') else ('Not found', 404)); app.add_url_rule('/hls/<path:filename>', 'stream', lambda filename: send_from_directory('hls', filename)); app.run(host='0.0.0.0', port=5000)" > app.py
           fi
 
           mkdir -p hls/history
 
-          # 3. FFmpeg Stream & Đè Logo
+          # 4. FFmpeg Stream & Đè Logo
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -52,21 +56,20 @@ jobs:
 
           sleep 6
 
-          # 4. Bật Flask Server
+          # 5. Bật Flask Server
           python3 app.py &> flask.log &
 
           sleep 3
 
-          # 5. Mở Pinggy Tunnel (Thay thế Serveo)
-          ssh -p 443 -R0:localhost:5000 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io > pinggy.log 2>&1 &
+          # 6. Mở Cloudflare Quick Tunnel (SẠCH 100%, KHÔNG CẢNH BÁO)
+          cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
 
           sleep 8
 
-          # Bóc tách chính xác URL Pinggy cấp ra
-          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*pinggy[a-zA-Z0-9.-]*' pinggy.log | head -n 1)
+          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com' cloudflare.log | head -n 1)
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER (PINGGY TUNNEL) ĐÃ SẴN SÀNG!"
+          echo "🚀 CHRTV STREAM SERVER (CLOUDFLARE) ĐÃ SẴN SÀNG!"
           echo "👉 LINK TUNNEL MỚI: ${PUBLIC_URL}"
           echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
