@@ -1,5 +1,4 @@
 name: IPTV Live Stream Server
-
 on:
   workflow_dispatch:
   schedule:
