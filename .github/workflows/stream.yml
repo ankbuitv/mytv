@@ -1,93 +1,81 @@
-name: IPTV Stream Server 24/7 (Localtunnel)
+name: IPTV Live Stream Server (Ngrok)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Cho phép bấm Nút "Run workflow" bằng tay trên GitHub
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '0 */5 * * *' # Tự động gia hạn lại sau mỗi 5 tiếng để không bị rớt stream
 
 jobs:
   stream:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Install Node.js, FFmpeg & Localtunnel
+      - name: 2. Cài đặt Python & FFmpeg
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. Cài đặt các gói hỗ trợ hệ thống
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg curl -qq
-          sudo npm install -g localtunnel
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq curl
 
-      - name: Download Logo Gemini
+          # Cài đặt Ngrok Agent
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install -y ngrok
+
+      - name: 4. Cài đặt Python Dependencies
         run: |
-          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+          python -m pip install --upgrade pip
+          pip install flask flask-cors requests
 
-      - name: Create Web Server Script
+      - name: 5. Khởi chạy Flask Server & Ngrok Tunnel
+        env:
+          # 🔑 Nhập Ngrok Authtoken của bro vào đây (hoặc cài trong GitHub Secrets: Secrets -> Actions)
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          cat << 'EOF' > app.py
-          from flask import Flask, send_from_directory, Response, request
-          import os
+          # 1. Thêm Authtoken cho Ngrok
+          if [ -z "$NGROK_AUTHTOKEN" ]; then
+            echo "❌ LỖI: Chưa cấu hình NGROK_AUTHTOKEN trong GitHub Secrets!"
+            echo "Vui lòng nhập trực tiếp token vào file YML hoặc tạo Secret NGROK_AUTHTOKEN trên GitHub."
+            exit 1
+          fi
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-          app = Flask(__name__)
-          os.makedirs("hls/history", exist_ok=True)
+          # 2. Khởi chạy app Python (Flask Server) ở nền
+          python app.py &
+          echo "⏳ Đang đợi Flask Server khởi động..."
+          sleep 5
 
-          @app.route('/hls/<channel>/<filename>')
-          def serve_hls(channel, filename):
-              return send_from_directory(f"hls/{channel}", filename)
+          # 3. Khởi chạy Ngrok tunnel cổng 5000
+          ngrok http 5000 --log=stdout > ngrok.log &
+          echo "⏳ Đang đợi Ngrok thiết lập kết nối..."
+          sleep 5
 
-          @app.route('/hls/<channel>/master.m3u8')
-          def master_manifest(channel):
-              host = request.host_url.rstrip('/')
-              m3u8_content = f"""#EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=3500000,RESOLUTION=1920x1080
-          {host}/hls/{channel}/1080p.m3u8
-          """
-              return Response(m3u8_content, mimetype='application/x-mpegurl')
+          # 4. Lấy public URL từ Ngrok API
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
 
-          @app.route('/playlist.m3u')
-          def playlist():
-              host = request.host_url.rstrip('/')
-              return Response(f"#EXTM3U\n#EXTINF:-1 group-title=\"Khoa Hoc\", History HD 1080p\n{host}/hls/history/master.m3u8\n", mimetype='application/x-mpegurl')
+          if [ "$NGROK_URL" == "null" ] || [ -z "$NGROK_URL" ]; then
+            echo "❌ Lỗi: Không lấy được public URL từ Ngrok!"
+            cat ngrok.log
+            exit 1
+          fi
 
-          if __name__ == '__main__':
-              app.run(host='0.0.0.0', port=5000)
-          EOF
+          echo ""
+          echo "=========================================================="
+          echo "🚀 TẠO TUNNEL NGROK THÀNH CÔNG!"
+          echo "👉 Domain Ngrok: ${NGROK_URL}"
+          echo "👉 Link Playlist M3U: ${NGROK_URL}/playlist.m3u"
+          echo "👉 Link Stream HLS: ${NGROK_URL}/hls/history/master.m3u8"
+          echo "=========================================================="
+          echo ""
 
-      - name: Run Streamer & Localtunnel
-        run: |
-          pip install flask
-          
-          # 1. Chạy FFmpeg trước 6s để tạo file video
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
+          # 5. Lưu URL Ngrok ra file ngrok_url.txt để dùng nếu cần
+          echo "$NGROK_URL" > ngrok_url.txt
 
-          ffmpeg -hide_banner -loglevel error \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-            -user_agent "$USER_AGENT" \
-            -i "$STREAM_HISTORY" \
-            -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
-            -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
-            -c:a aac -b:a 128k \
-            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
-
-          sleep 6
-
-          # 2. Bật Flask Web Server
-          python3 app.py &
-
-          # 3. Mở Localtunnel với Subdomain cố định
-          # Bro có thể sửa 'ankbui-iptv-stream' thành tên bro thích
-          lt --port 5000 --subdomain ankbui-iptv-stream &
-          
-          sleep 4
-          echo "===================================================="
-          echo "🚀 KẾT NỐI LOCALTUNNEL THÀNH CÔNG!"
-          echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
-          echo "   https://ankbui-iptv-stream.localtunnel.me/playlist.m3u"
-          echo "===================================================="
-
-          wait
+          # 6. Giữ cho Workflow chạy liên tục 5 tiếng
+          sleep 18000
