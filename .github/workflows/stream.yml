@@ -18,27 +18,15 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer & Ngrok Tunnel
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+      - name: Run Streamer & Serveo Tunnel
         run: |
-          # 0. Cài đặt Ngrok & jq
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update && sudo apt-get install -y ngrok jq
-
-          if [ -z "$NGROK_AUTHTOKEN" ]; then
-            echo "❌ LỖI: Chưa có NGROK_AUTHTOKEN trong GitHub Secrets!"
-            exit 1
-          fi
-          ngrok config add-authtoken $NGROK_AUTHTOKEN
-
+          sudo apt-get update && sudo apt-get install -y autossh
           pip install flask
 
           # Tạo thư mục chứa HLS
           mkdir -p hls/history
 
-          # 1. Chạy FFmpeg render video (Có logo chuẩn 100%)
+          # 1. Chạy FFmpeg render video (Có logo chuẩn)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -61,16 +49,18 @@ jobs:
 
           sleep 3
 
-          # 3. Bật Ngrok Tunnel (Ép IPv4 127.0.0.1 để chống lỗi 8012)
-          ngrok http http://127.0.0.1:5000 --host-header=rewrite --log=stdout > ngrok.log &
+          # 3. Bật Serveo Tunnel với Subdomain cố định 'chrtv'
+          MY_SUBDOMAIN="chrtv"
+
+          autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
+            -o StrictHostKeyChecking=no -R ${MY_SUBDOMAIN}:80:localhost:5000 serveo.net &
 
           sleep 5
 
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-
           echo "===================================================="
-          echo "🚀 KẾT NỐI NGROK THÀNH CÔNG!"
-          echo "👉 LINK M3U IPTV MỚI CỦA BRO ĐÂY: ${NGROK_URL}/playlist.m3u"
+          echo "🚀 SERVEO TUNNEL 'CHRTV' ĐÃ SẴN SÀNG!"
+          echo "👉 LINK PLAYLIST M3U CỐ ĐỊNH: https://${MY_SUBDOMAIN}.serveo.net/playlist.m3u"
+          echo "👉 LINK STREAM HLS: https://${MY_SUBDOMAIN}.serveo.net/hls/history/1080p.m3u8"
           echo "===================================================="
 
           wait
