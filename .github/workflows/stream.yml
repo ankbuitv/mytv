@@ -20,7 +20,7 @@ jobs:
 
       - name: Run Streamer & Serveo Tunnel
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg autossh
+          sudo apt-get update && sudo apt-get install -y ffmpeg autossh curl
           pip install flask flask-cors
 
           # 1. Tạo SSH Key
@@ -29,14 +29,18 @@ jobs:
             ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
           fi
 
-          # 2. Tạo app.py nếu chưa có
+          # 2. 🔥 TẢI EXACT LOGO1 CỦA BRO TỪ LINK IBB
+          echo "⏬ Đang tải logo1.png từ link..."
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+
+          # 3. Tạo app.py nhẹ nếu chưa có
           if [ ! -f "app.py" ]; then
             echo "from flask import Flask, send_from_directory; from flask_cors import CORS; import os; app = Flask(__name__); CORS(app); app.add_url_rule('/playlist.m3u', 'playlist', lambda: send_from_directory('.', 'playlist.m3u') if os.path.exists('playlist.m3u') else ('Not found', 404)); app.add_url_rule('/hls/<path:filename>', 'stream', lambda filename: send_from_directory('hls', filename)); app.run(host='0.0.0.0', port=5000)" > app.py
           fi
 
           mkdir -p hls/history
 
-          # 3. Chạy FFmpeg render stream (Dùng logo1.png gốc trong repo)
+          # 4. Chạy FFmpeg render stream với logo1.png vừa tải
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -54,12 +58,12 @@ jobs:
 
           sleep 6
 
-          # 4. Bật Flask Server
+          # 5. Bật Flask Server
           python3 app.py &> flask.log &
 
           sleep 3
 
-          # 5. Bật Serveo Tunnel với Subdomain chrtv
+          # 6. Bật Serveo Tunnel với Subdomain chrtv
           MY_SUBDOMAIN="chrtv"
 
           autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
