@@ -17,7 +17,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+
+      - name: Setup Deno (JS Engine for yt-dlp)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v1.x
 
       - name: Run Streamer
         run: |
@@ -33,9 +38,9 @@ jobs:
 
           # ====================================================
           # 2. CẤU HÌNH LINK YOUTUBE LIVE
-          # (Thay link video Live 24/7 của YouTube vào đây)
+          # (Bro thay link YouTube Live khác tại đây nếu cần)
           # ====================================================
-          YOUTUBE_LIVE_URL="https://www.youtube.com/watch?v=HgWz05AsLxw" # Ví dụ: Lofi Girl Live 24/7
+          YOUTUBE_LIVE_URL="https://www.youtube.com/watch?v=jfKfPfyJRdk"
 
           # 3. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
@@ -43,9 +48,9 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tải logo PNG (Sử dụng link direct)
+          # Tải logo PNG
           echo "⏬ Đang tải logo..."
-          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+          curl -s -L "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Twitter_Verified_Badge.svg/512px-Twitter_Verified_Badge.svg.png" -o logo1.png
 
           # Tạo thư mục lưu HLS
           mkdir -p hls/ytlive
@@ -108,20 +113,27 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV RESTREAM YOUTUBE LIVE READY!"
+          echo "🚀 CHRTV RESTREAM YOUTUBE LIVE (FIXED BOT) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 8. BÓC TÁCH LINK STREAM THẬT TỪ YOUTUBE VÀ FFMPEG RESTREAM
+          # 8. BÓC TÁCH LINK STREAM VỚI DENO ENGINE & CLIENT BYPASS BOT
           echo "🔍 Đang bóc tách luồng Live từ YouTube..."
-          REAL_STREAM_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$YOUTUBE_LIVE_URL")
+          
+          # Cấu hình yt-dlp giả lập iOS Client để vượt qua Bot Verification của YouTube
+          REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=ios,web" -f "best[ext=mp4]/best" "$YOUTUBE_LIVE_URL")
 
           if [ -z "$REAL_STREAM_URL" ]; then
-            echo "❌ Lỗi: Không lấy được link stream từ YouTube!"
+            echo "⚠️ Thử lại phương thức bóc tách dự phòng 2..."
+            REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=mweb" -f "best" "$YOUTUBE_LIVE_URL")
+          fi
+
+          if [ -z "$REAL_STREAM_URL" ]; then
+            echo "❌ Lỗi: YouTube vẫn khoá link video này do bắt xác thực Bot! Bro đổi sang link YouTube Live khác xem thử nhé."
             exit 1
           fi
 
-          echo "✅ Đã lấy được link YouTube Live! Bắt đầu Restreaming..."
+          echo "✅ Bóc tách thành công! Bắt đầu Restream..."
 
           ffmpeg -hide_banner -loglevel error \
             -rw_timeout 20000000 \
