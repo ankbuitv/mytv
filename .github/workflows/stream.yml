@@ -1,0 +1,88 @@
+name: IPTV Stream Server 24/7
+
+on:
+  workflow_dispatch: # Cho phép bấm chạy thủ công
+  schedule:
+    - cron: '0 */5 * * *' # Tự động chạy lại mỗi 5 tiếng để không bị đứt luồng
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install FFmpeg & Ngrok
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl -qq
+          curl -s https://bin.equinox.io/c/b4p2viVpWbk/ngrok-v3-stable-linux-amd64.tgz | sudo tar -xz -C /usr/local/bin
+
+      - name: Download Logo Gemini
+        run: |
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+
+      - name: Create Web Server Script
+        run: |
+          cat << 'EOF' > app.py
+          from flask import Flask, send_from_directory, Response, request
+          import os
+
+          app = Flask(__name__)
+          os.makedirs("hls/history", exist_ok=True)
+
+          @app.route('/hls/<channel>/<filename>')
+          def serve_hls(channel, filename):
+              return send_from_directory(f"hls/{channel}", filename)
+
+          @app.route('/hls/<channel>/master.m3u8')
+          def master_manifest(channel):
+              host = request.host_url.rstrip('/')
+              m3u8_content = f"""#EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=3500000,RESOLUTION=1920x1080
+          {host}/hls/{channel}/1080p.m3u8
+          """
+              return Response(m3u8_content, mimetype='application/x-mpegurl')
+
+          @app.route('/playlist.m3u')
+          def playlist():
+              host = request.host_url.rstrip('/')
+              return Response(f"#EXTM3U\n#EXTINF:-1 group-title=\"Khoa Hoc\", History HD 1080p\n{host}/hls/history/master.m3u8\n", mimetype='application/x-mpegurl')
+
+          if __name__ == '__main__':
+              app.run(host='0.0.0.0', port=5000)
+          EOF
+
+      - name: Run Streamer & Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          pip install flask
+          python3 app.py &
+          
+          # Cấu hình Ngrok
+          ngrok config add-authtoken $NGROK_TOKEN
+          ngrok http 5000 --log=stdout > ngrok.log &
+          
+          sleep 5
+          echo "===================================================="
+          echo "👉 LINK M3U IPTV CỦA BRO NẰM Ở DƯỚI NÈ:"
+          grep -o 'https://[^"]*ngrok-free.app' ngrok.log | head -n 1 | awk '{print $1"/playlist.m3u"}'
+          echo "===================================================="
+
+          # Khởi chạy FFmpeg đè logo
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
+
+          ffmpeg -hide_banner -loglevel error \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+            -user_agent "$USER_AGENT" \
+            -i "$STREAM_HISTORY" \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
+            -c:a aac -b:a 128k \
+            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
