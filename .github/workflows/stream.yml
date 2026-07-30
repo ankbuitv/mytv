@@ -1,9 +1,9 @@
 name: IPTV Live Stream Server (Ngrok)
 
 on:
-  workflow_dispatch: # Cho phép bấm Nút "Run workflow" bằng tay trên GitHub
+  workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *' # Tự động gia hạn lại sau mỗi 5 tiếng để không bị rớt stream
+    - cron: '0 */5 * * *'
 
 jobs:
   stream:
@@ -18,12 +18,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 3. Cài đặt các gói hỗ trợ hệ thống
+      - name: 3. Cài đặt các gói hỗ trợ hệ thống & Ngrok
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq curl
 
-          # Cài đặt Ngrok Agent
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install -y ngrok
@@ -35,28 +34,24 @@ jobs:
 
       - name: 5. Khởi chạy Flask Server & Ngrok Tunnel
         env:
-          # 🔑 Nhập Ngrok Authtoken của bro vào đây (hoặc cài trong GitHub Secrets: Secrets -> Actions)
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          # 1. Thêm Authtoken cho Ngrok
           if [ -z "$NGROK_AUTHTOKEN" ]; then
             echo "❌ LỖI: Chưa cấu hình NGROK_AUTHTOKEN trong GitHub Secrets!"
-            echo "Vui lòng nhập trực tiếp token vào file YML hoặc tạo Secret NGROK_AUTHTOKEN trên GitHub."
             exit 1
           fi
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-          # 2. Khởi chạy app Python (Flask Server) ở nền
-          python app.py &
+          # 🔥 Ép Flask lắng nghe chính xác ở IPv4 (0.0.0.0:5000) từ file yml
+          python -c "import app; app.app.run(host='0.0.0.0', port=5000)" &
           echo "⏳ Đang đợi Flask Server khởi động..."
           sleep 5
 
-          # 3. Khởi chạy Ngrok tunnel cổng 5000
-          ngrok http 5000 --log=stdout > ngrok.log &
+          # 🔥 Ép Ngrok trỏ thẳng vào IPv4 127.0.0.1 (Tránh hoàn toàn lỗi ::1 IPv6)
+          ngrok http http://127.0.0.1:5000 --host-header=rewrite --log=stdout > ngrok.log &
           echo "⏳ Đang đợi Ngrok thiết lập kết nối..."
           sleep 5
 
-          # 4. Lấy public URL từ Ngrok API
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
 
           if [ "$NGROK_URL" == "null" ] || [ -z "$NGROK_URL" ]; then
@@ -67,15 +62,11 @@ jobs:
 
           echo ""
           echo "=========================================================="
-          echo "🚀 TẠO TUNNEL NGROK THÀNH CÔNG!"
+          echo "🚀 KẾT NỐI THÀNH CÔNG (NO MORE ERR_NGROK_8012)!"
           echo "👉 Domain Ngrok: ${NGROK_URL}"
           echo "👉 Link Playlist M3U: ${NGROK_URL}/playlist.m3u"
           echo "👉 Link Stream HLS: ${NGROK_URL}/hls/history/master.m3u8"
           echo "=========================================================="
           echo ""
 
-          # 5. Lưu URL Ngrok ra file ngrok_url.txt để dùng nếu cần
-          echo "$NGROK_URL" > ngrok_url.txt
-
-          # 6. Giữ cho Workflow chạy liên tục 5 tiếng
           sleep 18000
