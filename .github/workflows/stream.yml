@@ -1,4 +1,4 @@
-name: IPTV Stream Server - History 720p (Fixed Port 30205)
+name: IPTV Stream Server - History (Fixed Port 30205)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           pip install flask flask-cors
 
           # ====================================================
-          # 1. CẤU HÌNH DUCKDNS CỦA BRO
+          # 1. CẤU HÌNH DUCKDNS
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
@@ -73,7 +73,7 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 5. Tạo file playlist.m3u (Kênh History)
+          # 5. Tạo file playlist.m3u
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" group-title="US Live", History Channel' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
@@ -101,20 +101,20 @@ jobs:
           UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY ULTRA FAST) READY!"
+          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY FIX LAG) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 7. CHẠY KÊNH HISTORY - TỐI ƯU SIÊU TỐC KHÔNG OUT VLC
-          ffmpeg -hide_banner -loglevel info \
-            -rw_timeout 15000000 \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
+          # 7. FIX RIÊNG HISTORY: KHÓA 30FPS + GIẢM TẢI CPU ĐỂ LOGO LUÔN NỔI & KHÔNG LAG
+          ffmpeg -hide_banner -loglevel error \
+            -rw_timeout 30000000 \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
-            -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 25 -keyint_min 25 -b:v 1000k -maxrate 1200k -bufsize 1200k \
-            -c:a aac -b:a 96k -ar 44100 \
-            -f hls -hls_time 1 -hls_init_time 1 -hls_list_size 10 -hls_flags delete_segments+omit_endlist \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
+            -filter_complex "[0:v]fps=30,scale=1280:720[main];[1:v]scale=80:-1[logo];[main][logo]overlay=W-w-20:20[v]" \
+            -map "[v]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 -g 60 -maxrate 1500k -bufsize 3000k \
+            -c:a aac -b:a 128k -ar 44100 \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
+            -hls_segment_filename "hls/history/seg_%03d.ts" hls/history/1080p.m3u8
