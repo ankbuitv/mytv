@@ -1,0 +1,125 @@
+name: IPTV Stream Server - TV360+9 (Fixed Port 30206)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Streamer
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
+          pip install flask flask-cors
+
+          # ====================================================
+          # 1. CẤU HÌNH DUCKDNS CỦA BRO
+          # ====================================================
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          # 2. Cài đặt Bore Tunnel
+          echo "⏬ Đang tải Bore..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+
+          # Tải logo PNG
+          echo "⏬ Đang tải logo..."
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+
+          # Tạo thư mục lưu HLS
+          mkdir -p hls/tv360-9
+
+          # 3. Ép mở Bore ở Port Cố Định 30206
+          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30206..."
+          BORE_PORT=30206
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          CONNECTED=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            bore local 5000 --to bore.pub --port 30206 > bore.log 2>&1 &
+            sleep 4
+            
+            if grep -q "listening at bore.pub:30206" bore.log; then
+              echo "✅ Đã giữ thành công Port 30206!"
+              CONNECTED=true
+              break
+            else
+              echo "⚠️ Port 30206 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
+              pkill bore || true
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              sleep 3
+            fi
+          done
+
+          # 4. Cập nhật IP Bore lên DuckDNS
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            echo "🌐 Cập nhật IP Bore (${BORE_IP}) lên ${DUCKDNS_DOMAIN}.duckdns.org..."
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+            echo ""
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          # 5. Tạo file playlist.m3u (Chỉ còn kênh TV360+9)
+          echo "#EXTM3U" > playlist.m3u
+          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
+
+          # 6. Flask Server
+          echo 'from flask import Flask, send_from_directory, abort' > app.py
+          echo 'from flask_cors import CORS' >> app.py
+          echo 'import os' >> app.py
+          echo 'app = Flask(__name__)' >> app.py
+          echo 'CORS(app)' >> app.py
+          echo '@app.route("/")' >> app.py
+          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
+          echo '@app.route("/playlist.m3u")' >> app.py
+          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
+          echo '@app.route("/hls/<path:filename>")' >> app.py
+          echo 'def serve_hls(filename):' >> app.py
+          echo '    file_path = os.path.join("hls", filename)' >> app.py
+          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
+          echo '    return send_from_directory("hls", filename)' >> app.py
+          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
+
+          python3 app.py &
+          sleep 2
+
+          UA_DALVIK="Dalvik/2.1.0"
+
+          echo "===================================================="
+          echo "🚀 CHRTV SINGLE STREAM SERVER (TV360+9 1080P WITH LOGO) READY!"
+          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "===================================================="
+
+          # 7. CHẠY KÊNH TV360+9 1080P - LOGO GÓC DƯỚI BÊN TRÁI
+          STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+          if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
+
+          ffmpeg -hide_banner -loglevel info \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+            -user_agent "$UA_DALVIK" \
+            -i "$REAL_URL_9" \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=90:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -tune zerolatency -g 60 -b:v 2200k -maxrate 2500k -bufsize 3000k \
+            -c:a aac -b:a 128k \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
+            -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
