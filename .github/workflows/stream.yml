@@ -1,4 +1,4 @@
-name: IPTV Stream Server 24/7 (Localtonet Free)
+name: IPTV Stream Server 24/7 (Localtonet + Custom Domain)
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ jobs:
       - name: Install FFmpeg & Localtonet
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg curl -qq
-          # Tải Localtonet client
+          sudo apt-get install -y ffmpeg curl unzip -qq
+          # Tải Localtonet client mới nhất
           curl -s -L "https://localtonet.com/download/localtonet-linux-x64.zip" -o localtonet.zip
           unzip -o localtonet.zip
           chmod +x localtonet
@@ -58,10 +58,12 @@ jobs:
           EOF
 
       - name: Run Streamer & Localtonet Tunnel
+        env:
+          LOCALTONET_TOKEN: ${{ secrets.LOCALTONET_TOKEN }}
         run: |
           pip install flask
           
-          # 1. Chạy FFmpeg trước để tạo file video sẵn
+          # 1. Chạy FFmpeg trước để render sẵn file video (Chống lỗi 404 trên Tivi)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -79,15 +81,15 @@ jobs:
 
           sleep 6
 
-          # 2. Bật Web Server
+          # 2. Bật Web Server Flask
           python3 app.py &
 
-          # 3. Mở Tunnel Localtonet
-          ./localtonet --authtoken free --http 5000 &
+          # 3. Chạy Localtonet Tunnel với AuthToken chính chủ
+          ./localtonet --authtoken $LOCALTONET_TOKEN --http 5000 &
           
           sleep 4
           echo "===================================================="
-          echo "🚀 KẾT NỐI SERVER THÀNH CÔNG!"
+          echo "🚀 KẾT NỐI LOCALTONET THÀNH CÔNG!"
           echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
           echo "   https://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
           echo "===================================================="
