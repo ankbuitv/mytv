@@ -1,4 +1,4 @@
-name: IPTV Multi-Stream Server (History + TV360-9)
+name: IPTV Multi-Stream Server (5 Channels)
 
 on:
   workflow_dispatch:
@@ -37,8 +37,8 @@ jobs:
           echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # Tạo thư mục cho cả 2 kênh
-          mkdir -p hls/history hls/tv360-9
+          # Tạo thư mục lưu HLS cho tất cả các kênh
+          mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11 hls/tv360-12
 
           # 4. Mở Bore Tunnel
           bore local 5000 --to bore.pub > bore.log 2>&1 &
@@ -59,21 +59,24 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 6. Tạo file playlist.m3u tổng hợp cho cả 2 kênh
+          # 6. Tạo file playlist.m3u tổng hợp 5 kênh
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="US Live", History Channel 1080p' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
-          echo '#EXTINF:-1 tvg-id="TV360-9" tvg-name="TV360 Kênh 9" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="TV360", TV360 Kênh 9 1080p' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
-          # 7. Flask Server (Viết theo dạng echo an toàn tuyệt đối với YAML)
+          for ch in 9 10 11 12; do
+            echo "#EXTINF:-1 tvg-id=\"TV360-${ch}\" tvg-name=\"TV360 Kênh ${ch}\" tvg-logo=\"https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png\" group-title=\"TV360\", TV360 Kênh ${ch} 1080p" >> playlist.m3u
+            echo "${PUBLIC_URL}/hls/tv360-${ch}/1080p.m3u8" >> playlist.m3u
+          done
+
+          # 7. Flask Server
           echo 'from flask import Flask, send_from_directory, abort' > app.py
           echo 'from flask_cors import CORS' >> app.py
           echo 'import os' >> app.py
           echo 'app = Flask(__name__)' >> app.py
           echo 'CORS(app)' >> app.py
           echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Server is Running!", 200' >> app.py
+          echo 'def index(): return "IPTV Multi-Stream Server is Running!", 200' >> app.py
           echo '@app.route("/playlist.m3u")' >> app.py
           echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
           echo '@app.route("/hls/<path:filename>")' >> app.py
@@ -86,25 +89,14 @@ jobs:
           python3 app.py &
           sleep 2
 
-          # 8. BÓC TÁCH LINK TV360 TỪ REDIRECT API
-          STREAM_REDIRECT_URL="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          echo "🔍 Đang bóc tách link TV360..."
-          REAL_TV360_URL=$(curl -sI -A "$USER_AGENT" "$STREAM_REDIRECT_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
-
-          if [ -z "$REAL_TV360_URL" ]; then
-            REAL_TV360_URL="$STREAM_REDIRECT_URL"
-          fi
-
           echo "===================================================="
-          echo "🚀 CHRTV MULTI-STREAM SERVER ĐÃ SẴN SÀNG!"
+          echo "🚀 CHRTV MULTI-STREAM SERVER (5 CHANNELS) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
-          echo "📺 LINK KÊNH HISTORY:       ${PUBLIC_URL}/hls/history/1080p.m3u8"
-          echo "📺 LINK KÊNH TV360 KÊNH 9:   ${PUBLIC_URL}/hls/tv360-9/1080p.m3u8"
           echo "===================================================="
 
-          # 9. CHẠY SONG SONG 2 KÊNH FFMPEG
+          # 8. CHẠY FFmpeg KÊNH HISTORY (Background &)
           ffmpeg -hide_banner -loglevel error \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$USER_AGENT" \
@@ -112,19 +104,45 @@ jobs:
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -b:v 2000k -maxrate 2500k -bufsize 3000k \
+            -c:v libx264 -preset ultrafast -b:v 1800k -maxrate 2200k -bufsize 2500k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
 
+          # 9. BÓC TÁCH & CHẠY FFmpeg CÁC KÊNH TV360 (9, 10, 11) TRONG BACKGROUND
+          for ch in 9 10 11; do
+            STREAM_URL="https://vmttv.dpdns.org/tv360/?id=tv360-${ch}"
+            echo "🔍 Đang bóc tách link TV360-${ch}..."
+            REAL_URL=$(curl -sI -A "$USER_AGENT" "$STREAM_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+            if [ -z "$REAL_URL" ]; then REAL_URL="$STREAM_URL"; fi
+
+            ffmpeg -hide_banner -loglevel error \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+              -user_agent "$USER_AGENT" \
+              -i "$REAL_URL" \
+              -stream_loop -1 -i logo1.png \
+              -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+              -map "[v1080]" -map 0:a? \
+              -c:v libx264 -preset ultrafast -b:v 1800k -maxrate 2200k -bufsize 2500k \
+              -c:a aac -b:a 128k \
+              -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+              -hls_segment_filename "hls/tv360-${ch}/seg_1080p_%03d.ts" hls/tv360-${ch}/1080p.m3u8 &
+          done
+
+          # 10. CHẠY KÊNH TV360-12 (Foreground để giữ Workflow chạy liên tục)
+          STREAM_URL_12="https://vmttv.dpdns.org/tv360/?id=tv360-12"
+          echo "🔍 Đang bóc tách link TV360-12..."
+          REAL_URL_12=$(curl -sI -A "$USER_AGENT" "$STREAM_URL_12" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+          if [ -z "$REAL_URL_12" ]; then REAL_URL_12="$STREAM_URL_12"; fi
+
           ffmpeg -hide_banner -loglevel info \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$USER_AGENT" \
-            -i "$REAL_TV360_URL" \
+            -i "$REAL_URL_12" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -b:v 2000k -maxrate 2500k -bufsize 3000k \
+            -c:v libx264 -preset ultrafast -b:v 1800k -maxrate 2200k -bufsize 2500k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
+            -hls_segment_filename "hls/tv360-12/seg_1080p_%03d.ts" hls/tv360-12/1080p.m3u8
