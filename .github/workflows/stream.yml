@@ -1,4 +1,4 @@
-name: IPTV Multi-Stream Server (5 Channels)
+name: IPTV Multi-Stream Server (4 Channels)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
           # 1. CẤU HÌNH DUCKDNS CỦA BRO (Thay Token vào đây)
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          DUCKDNS_TOKEN="CAI_TOKEN_DUCKDNS_CUA_BRO"
 
           # 2. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
@@ -37,8 +37,8 @@ jobs:
           echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # Tạo thư mục lưu HLS
-          mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11 hls/tv360-12
+          # Tạo thư mục lưu HLS cho 4 kênh
+          mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11
 
           # 4. Mở Bore Tunnel
           bore local 5000 --to bore.pub > bore.log 2>&1 &
@@ -59,13 +59,13 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 6. Tạo file playlist.m3u tổng hợp 5 kênh
+          # 6. Tạo file playlist.m3u tổng hợp 4 kênh
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="US Live", History Channel 1080p' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
 
-          for ch in 9 10 11 12; do
-            echo "#EXTINF:-1 tvg-id=\"TV360-${ch}\" tvg-name=\"TV360+${ch}\" tvg-logo=\"https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png\" group-title=\"Sự Kiện TV360\", TV360+${ch} 1080p" >> playlist.m3u
+          for ch in 9 10 11; do
+            echo "#EXTINF:-1 tvg-id=\"tv360plus${ch}\" tvg-name=\"TV360+${ch}\" tvg-logo=\"https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png\" group-title=\"Sự Kiện TV360\", TV360+${ch} 1080p" >> playlist.m3u
             echo "${PUBLIC_URL}/hls/tv360-${ch}/1080p.m3u8" >> playlist.m3u
           done
 
@@ -89,12 +89,11 @@ jobs:
           python3 app.py &
           sleep 2
 
-          # Dùng User-Agent Dalvik theo chuẩn IPTV TV360
           UA_DALVIK="Dalvik/2.1.0"
           UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV MULTI-STREAM SERVER READY!"
+          echo "🚀 CHRTV MULTI-STREAM SERVER (4 CHANNELS) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
@@ -111,8 +110,8 @@ jobs:
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
 
-          # 9. CHẠY TV360 KÊNH 9, 10, 11 (Không DRM)
-          for ch in 9 10 11; do
+          # 9. CHẠY KÊNH TV360+9 VÀ TV360+10 (Background)
+          for ch in 9 10; do
             STREAM_URL="https://vmttv.dpdns.org/tv360/?id=tv360-${ch}"
             echo "🔍 Đang lấy link TV360+${ch}..."
             REAL_URL=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
@@ -131,24 +130,20 @@ jobs:
               -hls_segment_filename "hls/tv360-${ch}/seg_1080p_%03d.ts" hls/tv360-${ch}/1080p.m3u8 &
           done
 
-          # 10. CHẠY TV360+12 (Có mã hóa MPEG-DASH ClearKey DRM)
-          STREAM_URL_12="https://vmttv.dpdns.org/tv360/?id=tv360-12"
-          echo "🔍 Đang giải mã DRM và lấy link TV360+12..."
-          REAL_URL_12=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_12" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
-          if [ -z "$REAL_URL_12" ]; then REAL_URL_12="$STREAM_URL_12"; fi
-
-          # Key ClearKey DRM từ file M3U của bro
-          CLEARKEY_12="29b3e7c5de895bfa8850f16dad16e378:72a9e1be1d94ad66207f1ac61bcf7681"
+          # 10. CHẠY KÊNH TV360+11 (Foreground - Giữ cho Workflow chạy liên tục)
+          STREAM_URL_11="https://vmttv.dpdns.org/tv360/?id=tv360-11"
+          echo "🔍 Đang lấy link TV360+11..."
+          REAL_URL_11=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_11" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+          if [ -z "$REAL_URL_11" ]; then REAL_URL_11="$STREAM_URL_11"; fi
 
           ffmpeg -hide_banner -loglevel info \
-            -cenc_decryption_key "$CLEARKEY_12" \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$UA_DALVIK" \
-            -i "$REAL_URL_12" \
+            -i "$REAL_URL_11" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
             -c:v libx264 -preset ultrafast -b:v 1800k -maxrate 2200k -bufsize 2500k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/tv360-12/seg_1080p_%03d.ts" hls/tv360-12/1080p.m3u8
+            -hls_segment_filename "hls/tv360-11/seg_1080p_%03d.ts" hls/tv360-11/1080p.m3u8
