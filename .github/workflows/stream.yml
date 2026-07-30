@@ -1,4 +1,4 @@
-name: IPTV Multi-Stream Server (2 Logo + 2 Direct Stream)
+name: IPTV Multi-Stream Server (Fixed Port 30205)
 
 on:
   workflow_dispatch:
@@ -39,18 +39,35 @@ jobs:
           curl -sSF https://sshx.io/get | sh -s run > sshx.log 2>&1 &
           sleep 2
 
-          # Tạo thư mục
-          mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11 assets
+          # Tải logo PNG chuẩn (Trong suốt)
+          echo "⏬ Đang tải logo..."
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # Tạo Logo CHRTV
-          ffmpeg -f lavfi -i color=c=red@0.8:s=160x50 -vf "drawtext=text='CHR TV':fontcolor=white:fontsize=28:x=(w-tw)/2:y=(h-th)/2" -vframes 1 assets/logo.png -y
+          # Tạo thư mục lưu HLS
+          mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11
 
           # 3. Ép mở Bore ở Port Cố Định 30205
-          echo "🌐 Đang mở Bore Tunnel tại Port 30205..."
-          bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
-          sleep 5
-
+          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30205..."
           BORE_PORT=30205
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          CONNECTED=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
+            sleep 4
+            
+            if grep -q "listening at bore.pub:30205" bore.log; then
+              echo "✅ Đã giữ thành công Port 30205!"
+              CONNECTED=true
+              break
+            else
+              echo "⚠️ Port 30205 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
+              pkill bore || true
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              sleep 3
+            fi
+          done
 
           # 4. Cập nhật IP Bore lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
@@ -102,19 +119,20 @@ jobs:
           echo "💻 LINK SSHX WEB TERMINAL: ${SSHX_LINK}"
           echo "===================================================="
 
-          # 7. KÊNH HISTORY (CÓ LOGO - Re-encode Ultrafast)
+          # 7. KÊNH HISTORY (GẮN LOGO PNG TỰ ĐỘNG SCALE NHỎ CẠNH TRÊN BÊN PHẢI)
           ffmpeg -hide_banner -loglevel error \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
-            -i assets/logo.png \
-            -filter_complex "[0:v][1:v]overlay=main_w-overlay_w-20:20" \
-            -c:v libx264 -preset ultrafast -threads 2 -b:v 2500k -maxrate 2500k -bufsize 5000k \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=120:-1[logo]; [v_base][logo]overlay=main_w-overlay_w-20:20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -threads 2 -b:v 2200k -maxrate 2500k -bufsize 3000k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
 
-          # 8. KÊNH TV360+9 (CÓ LOGO - Re-encode Ultrafast)
+          # 8. KÊNH TV360+9 (GẮN LOGO PNG TỰ ĐỘNG SCALE NHỎ CẠNH TRÊN BÊN PHẢI)
           STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
@@ -123,14 +141,15 @@ jobs:
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_9" \
-            -i assets/logo.png \
-            -filter_complex "[0:v][1:v]overlay=main_w-overlay_w-20:20" \
-            -c:v libx264 -preset ultrafast -threads 2 -b:v 2500k -maxrate 2500k -bufsize 5000k \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=120:-1[logo]; [v_base][logo]overlay=main_w-overlay_w-20:20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -threads 2 -b:v 2200k -maxrate 2500k -bufsize 3000k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8 &
 
-          # 9. KÊNH TV360+10 (KHÔNG LOGO - Direct Copy Siêu Nhẹ)
+          # 9. KÊNH TV360+10 (DIRECT COPY - SIÊU NHẸ)
           STREAM_URL_10="https://vmttv.dpdns.org/tv360/?id=tv360-10"
           REAL_URL_10=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_10" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_10" ]; then REAL_URL_10="$STREAM_URL_10"; fi
@@ -143,7 +162,7 @@ jobs:
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/tv360-10/seg_1080p_%03d.ts" hls/tv360-10/1080p.m3u8 &
 
-          # 10. KÊNH TV360+11 (KHÔNG LOGO - Direct Copy - Foreground)
+          # 10. KÊNH TV360+11 (DIRECT COPY - FOREGROUND)
           STREAM_URL_11="https://vmttv.dpdns.org/tv360/?id=tv360-11"
           REAL_URL_11=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_11" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_11" ]; then REAL_URL_11="$STREAM_URL_11"; fi
