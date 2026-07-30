@@ -1,7 +1,7 @@
-name: IPTV Live Stream Server
+name: IPTV Multi-Stream Server (History + TV360-9)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Bật thủ công khi cần xem
 
 jobs:
   stream:
@@ -16,97 +16,129 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer (Bore + DuckDNS)
+      - name: Run Multi Streamer
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
           pip install flask flask-cors
 
           # ====================================================
-          # 1. CẤU HÌNH DUCKDNS CỦA BRO (Nhớ thay Token ở đây)
+          # 1. CẤU HÌNH DUCKDNS CỦA BRO (Thay Token vào đây)
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          # 2. Cài đặt Bore Tunnel (Phiên bản MUSL Tĩnh - Chắc chắn chạy)
+          # 2. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
           # 3. Tải logo
-          echo "⏬ Đang tải logo1.png..."
+          echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          mkdir -p hls/history
+          # Tạo thư mục cho cả 2 kênh
+          mkdir -p hls/history hls/tv360-9
 
-          # 4. Mở Bore Tunnel (Cho Bore tự xin 1 port công khai)
+          # 4. Mở Bore Tunnel
           bore local 5000 --to bore.pub > bore.log 2>&1 &
+          sleep 6
 
-          # Chờ Bore khởi tạo và ghi log
-          sleep 8
-
-          # In log ra để kiểm tra
-          cat bore.log
-
-          # Lấy port (Thêm || true để tránh crash workflow nếu rỗng)
           BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' bore.log | cut -d':' -f2 | head -n 1 || true)
-
           if [ -z "$BORE_PORT" ]; then
-            echo "❌ Không lấy được port từ Bore! Đang thử lại..."
             BORE_PORT=$(grep -oE '[0-9]{4,5}' bore.log | head -n 1 || true)
           fi
 
-          # 5. Lấy IP của bore.pub và update lên DuckDNS
+          # 5. Cập nhật IP Bore lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
-            echo "🌐 Đang cập nhật IP Bore (${BORE_IP}) lên domain ${DUCKDNS_DOMAIN}.duckdns.org..."
+            echo "🌐 Cập nhật IP Bore (${BORE_IP}) lên ${DUCKDNS_DOMAIN}.duckdns.org..."
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
             echo ""
           fi
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 6. Tạo file playlist.m3u
+          # 6. Tạo file playlist.m3u tổng hợp cho cả 2 kênh
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="US Live", History Channel 1080p' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
+          echo '#EXTINF:-1 tvg-id="TV360-9" tvg-name="TV360 Kênh 9" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="TV360", TV360 Kênh 9 1080p' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
-          # 7. Tạo app.py (Flask Server)
-          echo 'from flask import Flask, send_from_directory' > app.py
-          echo 'from flask_cors import CORS' >> app.py
-          echo 'app = Flask(__name__)' >> app.py
-          echo 'CORS(app)' >> app.py
-          echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Server is Running!", 200' >> app.py
-          echo '@app.route("/playlist.m3u")' >> app.py
-          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
-          echo '@app.route("/hls/<path:filename>")' >> app.py
-          echo 'def stream(filename): return send_from_directory("hls", filename)' >> app.py
-          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
+          # 7. Flask Server (Phục vụ file động cho cả 2 path)
+          cat << 'EOF' > app.py
+from flask import Flask, send_from_directory, abort
+from flask_cors import CORS
+import os
 
-          # 8. Bật Flask Server
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/')
+def index():
+    return "IPTV Multi-Stream Server is Running!", 200
+
+@app.route('/playlist.m3u')
+def playlist():
+    return send_from_directory('.', 'playlist.m3u')
+
+@app.route('/hls/<path:filename>')
+def serve_hls(filename):
+    file_path = os.path.join('hls', filename)
+    if not os.path.exists(file_path):
+        return abort(404)
+    return send_from_directory('hls', filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+EOF
+
           python3 app.py &
+          sleep 2
 
-          sleep 3
-
-          echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER ĐÃ SẴN SÀNG!"
-          echo "👉 LINK PLAYLIST M3U CỦA BRO: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 LINK STREAM HLS TRỰC TIẾP: ${PUBLIC_URL}/hls/history/1080p.m3u8"
-          echo "===================================================="
-
-          # 9. Chạy FFmpeg Render Stream
+          # 8. BÓC TÁCH LINK TV360 TỪ REDIRECT API
+          STREAM_REDIRECT_URL="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
-          ffmpeg -hide_banner -loglevel info \
+          echo "🔍 Đang bóc tách link TV360..."
+          REAL_TV360_URL=$(curl -sI -A "$USER_AGENT" "$STREAM_REDIRECT_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+
+          if [ -z "$REAL_TV360_URL" ]; then
+            REAL_TV360_URL="$STREAM_REDIRECT_URL"
+          fi
+
+          echo "===================================================="
+          echo "🚀 CHRTV MULTI-STREAM SERVER ĐÃ SẴN SÀNG!"
+          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "📺 LINK KÊNH HISTORY:       ${PUBLIC_URL}/hls/history/1080p.m3u8"
+          echo "📺 LINK KÊNH TV360 KÊNH 9:   ${PUBLIC_URL}/hls/tv360-9/1080p.m3u8"
+          echo "===================================================="
+
+          # 9. CHẠY SONG SONG 2 KÊNH FFMPEG
+          
+          # --- Kênh 1: History Channel (Chạy background &) ---
+          ffmpeg -hide_banner -loglevel error \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$USER_AGENT" \
-            -i "$STREAM_HISTORY" \
+            -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
+            -c:v libx264 -preset ultrafast -b:v 2000k -maxrate 2500k -bufsize 3000k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
+
+          # --- Kênh 2: TV360 Kênh 9 (Chạy foreground giữ process) ---
+          ffmpeg -hide_banner -loglevel info \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+            -user_agent "$USER_AGENT" \
+            -i "$REAL_TV360_URL" \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -b:v 2000k -maxrate 2500k -bufsize 3000k \
+            -c:a aac -b:a 128k \
+            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
