@@ -1,4 +1,4 @@
-name: IPTV Stream Server 24/7 (Pinggy + Custom Domain)
+name: IPTV Stream Server 24/7 (Localtonet Free)
 
 on:
   workflow_dispatch:
@@ -12,10 +12,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg & SSH Client
+      - name: Install FFmpeg & Localtonet
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg curl openssh-client -qq
+          sudo apt-get install -y ffmpeg curl -qq
+          # Tải Localtonet client
+          curl -s -L "https://localtonet.com/download/localtonet-linux-x64.zip" -o localtonet.zip
+          unzip -o localtonet.zip
+          chmod +x localtonet
 
       - name: Download Logo Gemini
         run: |
@@ -53,22 +57,11 @@ jobs:
               app.run(host='0.0.0.0', port=5000)
           EOF
 
-      - name: Run Streamer & Pinggy Tunnel
+      - name: Run Streamer & Localtonet Tunnel
         run: |
           pip install flask
-          python3 app.py &
           
-          # Mở cổng ngầm qua Pinggy hỗ trợ Custom CNAME
-          ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:5000 a.pinggy.io "b:a11vnedge-gstraw2626.ankb.qzz.io" &
-          
-          sleep 4
-          echo "===================================================="
-          echo "🚀 KẾT NỐI PINGGY THÀNH CÔNG!"
-          echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
-          echo "   http://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
-          echo "===================================================="
-
-          # Khởi chạy FFmpeg đè logo
+          # 1. Chạy FFmpeg trước để tạo file video sẵn
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -82,4 +75,21 @@ jobs:
             -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
+
+          sleep 6
+
+          # 2. Bật Web Server
+          python3 app.py &
+
+          # 3. Mở Tunnel Localtonet
+          ./localtonet --authtoken free --http 5000 &
+          
+          sleep 4
+          echo "===================================================="
+          echo "🚀 KẾT NỐI SERVER THÀNH CÔNG!"
+          echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
+          echo "   https://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
+          echo "===================================================="
+
+          wait
