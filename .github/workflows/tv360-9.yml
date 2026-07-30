@@ -1,6 +1,9 @@
 name: IPTV Stream Server - TV360+9 (Fixed Port 30206)
 
 on:
+  schedule:
+    # Tự động trigger lại sau mỗi 5 tiếng 59 phút (Chống giới hạn timeout 6 tiếng của GitHub)
+    - cron: '59 5,11,17,23 * * *'
   workflow_dispatch:
 
 jobs:
@@ -33,7 +36,7 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tải logo PNG
+          # Tải logo PNG (Sử dụng link direct chống anti-hotlink)
           echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
@@ -110,15 +113,15 @@ jobs:
           REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
 
-          ffmpeg -hide_banner -loglevel info \
-            -rw_timeout 15000000 \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
+          ffmpeg -hide_banner -loglevel error \
+            -rw_timeout 20000000 \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_9" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
             -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 25 -keyint_min 25 -b:v 1000k -maxrate 1200k -bufsize 1200k \
+            -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 50 -keyint_min 25 -b:v 1200k -maxrate 1500k -bufsize 3000k \
             -c:a aac -b:a 96k -ar 44100 \
-            -f hls -hls_time 1 -hls_init_time 1 -hls_list_size 10 -hls_flags delete_segments+omit_endlist \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
