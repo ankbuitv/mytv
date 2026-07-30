@@ -18,31 +18,78 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer & Cloudflare Tunnel
+      - name: Run Streamer & DuckDNS Update
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
-          # 1. Cài đặt cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared-linux-amd64.deb
+          # ====================================================
+          # 1. CẤU HÌNH DUCKDNS
+          # ====================================================
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          # 2. Tải logo1.png từ link ibb
+          # 2. Lấy IP Public của máy ảo GitHub và Update lên DuckDNS
+          echo "🌐 Đang cập nhật IP Public của GitHub Runner lên DuckDNS..."
+          UPDATE_RESPONSE=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=")
+          echo "📢 Kết quả từ DuckDNS: ${UPDATE_RESPONSE}"
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:5000"
+
+          # 3. Tải logo1.png từ link ibb
           echo "⏬ Đang tải logo1.png..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # 3. Tạo app.py nhẹ
-          if [ ! -f "app.py" ]; then
-            echo "from flask import Flask, send_from_directory; from flask_cors import CORS; import os; app = Flask(__name__); CORS(app); app.add_url_rule('/playlist.m3u', 'playlist', lambda: send_from_directory('.', 'playlist.m3u') if os.path.exists('playlist.m3u') else ('Not found', 404)); app.add_url_rule('/hls/<path:filename>', 'stream', lambda filename: send_from_directory('hls', filename)); app.run(host='0.0.0.0', port=5000)" > app.py
-          fi
-
+          # Tạo thư mục chứa HLS
           mkdir -p hls/history
 
-          # 4. FFmpeg Stream & Đè Logo
+          # 4. Tạo tự động file playlist.m3u chuẩn
+          cat << EOF > playlist.m3u
+#EXTM3U
+#EXTINF:-1 tvg-id="History" tvg-name="History Channel" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="US Live", History Channel 1080p
+${PUBLIC_URL}/hls/history/1080p.m3u8
+EOF
+
+          # 5. Tạo app.py nhẹ
+          cat << 'EOF' > app.py
+from flask import Flask, send_from_directory
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/')
+def index():
+    return "IPTV Server is Running!", 200
+
+@app.route('/playlist.m3u')
+def playlist():
+    return send_from_directory('.', 'playlist.m3u')
+
+@app.route('/hls/<path:filename>')
+def stream(filename):
+    return send_from_directory('hls', filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+EOF
+
+          # 6. Bật Flask Server ra console log
+          python3 app.py &
+
+          sleep 3
+
+          echo "===================================================="
+          echo "🚀 CHRTV STREAM SERVER (DUCKDNS) ĐÃ SẴN SÀNG!"
+          echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
+          echo "===================================================="
+
+          # 7. Chạy FFmpeg Render Stream
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
-          ffmpeg -hide_banner -loglevel error \
+          ffmpeg -hide_banner -loglevel info \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$USER_AGENT" \
             -i "$STREAM_HISTORY" \
@@ -52,27 +99,4 @@ jobs:
             -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
             -c:a aac -b:a 128k \
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
-
-          sleep 6
-
-          # 5. Bật Flask Server
-          python3 app.py &> flask.log &
-
-          sleep 3
-
-          # 6. Mở Cloudflare Quick Tunnel (SẠCH 100%, KHÔNG CẢNH BÁO)
-          cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
-
-          sleep 8
-
-          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com' cloudflare.log | head -n 1)
-
-          echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER (CLOUDFLARE) ĐÃ SẴN SÀNG!"
-          echo "👉 LINK TUNNEL MỚI: ${PUBLIC_URL}"
-          echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
-          echo "===================================================="
-
-          wait
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
