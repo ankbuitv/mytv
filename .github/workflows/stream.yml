@@ -1,9 +1,9 @@
 name: IPTV Stream Server 24/7
 
 on:
-  workflow_dispatch: # Cho phép bấm chạy thủ công
+  workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *' # Tự động chạy lại mỗi 5 tiếng để không bị đứt luồng
+    - cron: '0 */5 * * *'
 
 jobs:
   stream:
@@ -12,11 +12,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg & Ngrok
+      - name: Install FFmpeg & Ngrok (Chuẩn Official)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg curl -qq
-          curl -s https://bin.equinox.io/c/b4p2viVpWbk/ngrok-v3-stable-linux-amd64.tgz | sudo tar -xz -C /usr/local/bin
+          # Tải Ngrok qua Official Script (Không lo lỗi giải nén tar/gzip)
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update -qq && sudo apt-get install ngrok -y -qq
 
       - name: Download Logo Gemini
         run: |
