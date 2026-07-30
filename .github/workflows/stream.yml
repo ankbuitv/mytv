@@ -20,28 +20,23 @@ jobs:
 
       - name: Run Streamer & Serveo Tunnel
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg autossh curl
+          sudo apt-get update && sudo apt-get install -y ffmpeg autossh
           pip install flask flask-cors
 
-          # 1. Khởi tạo SSH Key
+          # 1. Tạo SSH Key
           if [ ! -f ~/.ssh/id_rsa ]; then
             mkdir -p ~/.ssh
             ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
           fi
 
-          # 2. 🔥 TẢI LOGO TỪ LINK URL VỀ (BRO THAY LINK LOGO CỦA BRO VÀO ĐÂY)
-          LOGO_URL="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png"
-          echo "⏬ Đang tải logo1.png từ URL..."
-          curl -s -L "$LOGO_URL" -o logo1.png
-
-          # 3. Tạo app.py nhẹ
+          # 2. Tạo app.py nếu chưa có
           if [ ! -f "app.py" ]; then
             echo "from flask import Flask, send_from_directory; from flask_cors import CORS; import os; app = Flask(__name__); CORS(app); app.add_url_rule('/playlist.m3u', 'playlist', lambda: send_from_directory('.', 'playlist.m3u') if os.path.exists('playlist.m3u') else ('Not found', 404)); app.add_url_rule('/hls/<path:filename>', 'stream', lambda filename: send_from_directory('hls', filename)); app.run(host='0.0.0.0', port=5000)" > app.py
           fi
 
           mkdir -p hls/history
 
-          # 4. Chạy FFmpeg render stream (Logo1 đã tải xong)
+          # 3. Chạy FFmpeg render stream (Dùng logo1.png gốc trong repo)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -59,25 +54,30 @@ jobs:
 
           sleep 6
 
-          # 5. Bật Flask chạy nền
+          # 4. Bật Flask Server
           python3 app.py &> flask.log &
 
           sleep 3
 
-          # 6. Bật Serveo Tunnel
+          # 5. Bật Serveo Tunnel với Subdomain chrtv
           MY_SUBDOMAIN="chrtv"
 
           autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
             -o StrictHostKeyChecking=no -R ${MY_SUBDOMAIN}:80:localhost:5000 serveo.net > serveo.log 2>&1 &
 
-          sleep 6
+          sleep 5
 
-          REAL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*serveo[a-zA-Z0-9.-]*' serveo.log | head -n 1)
+          # Bóc tách chính xác URL tunnel Serveo cấp ra (bỏ qua console.serveo.net)
+          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*serveo[a-zA-Z0-9.-]*' serveo.log | grep -v 'console' | head -n 1)
+          
+          if [ -z "$PUBLIC_URL" ]; then
+            PUBLIC_URL="https://${MY_SUBDOMAIN}.serveo.net"
+          fi
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER ĐÃ SẴN SÀNG!"
-          echo "👉 LINK PLAYLIST M3U: ${REAL_URL}/playlist.m3u"
-          echo "👉 LINK STREAM HLS: ${REAL_URL}/hls/history/1080p.m3u8"
+          echo "🚀 CHRTV STREAM SERVER ĐÃ CHẠY NICK NICK!"
+          echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
           echo "===================================================="
 
           wait
