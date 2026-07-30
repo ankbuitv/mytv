@@ -18,34 +18,36 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer & DuckDNS Update
+      - name: Run Streamer & Bore Tunnel
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
-          # 1. CẤU HÌNH DUCKDNS (Thay TOKEN của bro vào đây)
-          DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          # 1. Cài đặt bore
+          wget -q https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          tar -xf bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          sudo mv bore /usr/local/bin/
 
-          # 2. Update IP lên DuckDNS
-          echo "🌐 Đang cập nhật IP Public lên DuckDNS..."
-          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip="
-          echo ""
-
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:5000"
-
-          # 3. Tải logo
+          # 2. Tải logo
           echo "⏬ Đang tải logo1.png..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
           mkdir -p hls/history
+
+          # 3. Mở Bore Tunnel (Bore tự chọn 1 Port công khai sạch)
+          bore local 5000 --to bore.pub > bore.log 2>&1 &
+
+          sleep 5
+
+          BORE_PORT=$(grep -oP 'listening at bore.pub:\K[0-9]+' bore.log | head -n 1)
+          PUBLIC_URL="http://bore.pub:${BORE_PORT}"
 
           # 4. Tạo file playlist.m3u
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" tvg-logo="https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" group-title="US Live", History Channel 1080p' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
 
-          # 5. Tạo app.py (Cách viết an toàn tuyệt đối cho YAML)
+          # 5. Tạo app.py
           echo 'from flask import Flask, send_from_directory' > app.py
           echo 'from flask_cors import CORS' >> app.py
           echo 'app = Flask(__name__)' >> app.py
@@ -58,18 +60,18 @@ jobs:
           echo 'def stream(filename): return send_from_directory("hls", filename)' >> app.py
           echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
 
-          # 6. Bật Flask
+          # 6. Bật Flask Server
           python3 app.py &
 
           sleep 3
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER (DUCKDNS) ĐÃ SẴN SÀNG!"
+          echo "🚀 CHRTV STREAM SERVER (BORE) ĐÃ SẴN SÀNG!"
           echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
           echo "===================================================="
 
-          # 7. Chạy FFmpeg
+          # 7. Chạy FFmpeg Render Stream
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
