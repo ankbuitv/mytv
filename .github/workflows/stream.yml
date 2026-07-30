@@ -1,4 +1,4 @@
-name: IPTV Stream Server 24/7 (Serveo + Custom Domain)
+name: IPTV Stream Server 24/7 (Pinggy + Custom Domain)
 
 on:
   workflow_dispatch:
@@ -53,20 +53,19 @@ jobs:
               app.run(host='0.0.0.0', port=5000)
           EOF
 
-      - name: Run Streamer & Serveo Tunnel
+      - name: Run Streamer & Pinggy Tunnel
         run: |
           pip install flask
           python3 app.py &
           
-          # Mở cổng ngầm bằng Serveo với Domain riêng của bro
-          # THAY 'tv.domaincuabro.com' BẰNG DOMAIN CỦA BRO Ở DÒNG DƯỚI NÈ:
-          ssh -o StrictHostKeyChecking=no -R a11vnedge-gstraw2626.ankb.qzz.io:80:localhost:5000 serveo.net &
+          # Mở cổng ngầm qua Pinggy hỗ trợ Custom CNAME
+          ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:5000 a.pinggy.io "b:a11vnedge-gstraw2626.ankb.qzz.io" &
           
           sleep 4
           echo "===================================================="
-          echo "🚀 KẾT NỐI SERVER THÀNH CÔNG!"
-          echo "👉 LINK M3U IPTV CỐ ĐỊNH TRÊN TIVI CỦA BRO NÈ:"
-          echo "   https://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
+          echo "🚀 KẾT NỐI PINGGY THÀNH CÔNG!"
+          echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
+          echo "   http://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
           echo "===================================================="
 
           # Khởi chạy FFmpeg đè logo
