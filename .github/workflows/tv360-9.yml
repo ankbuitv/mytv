@@ -101,24 +101,24 @@ jobs:
           UA_DALVIK="Dalvik/2.1.0"
 
           echo "===================================================="
-          echo "🚀 CHRTV SINGLE STREAM SERVER (TV360+9 720P FAST) READY!"
+          echo "🚀 CHRTV SINGLE STREAM SERVER (TV360+9 ULTRA FAST) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 7. CHẠY KÊNH TV360+9
+          # 7. CHẠY KÊNH TV360+9 - TỐI ƯU SIÊU TỐC KHÔNG OUT VLC
           STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
 
           ffmpeg -hide_banner -loglevel info \
             -rw_timeout 15000000 \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_9" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
             -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -crf 28 -tune zerolatency -g 30 -b:v 1200k -maxrate 1500k -bufsize 1500k \
-            -c:a aac -b:a 96k \
-            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
+            -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 25 -keyint_min 25 -b:v 1000k -maxrate 1200k -bufsize 1200k \
+            -c:a aac -b:a 96k -ar 44100 \
+            -f hls -hls_time 1 -hls_init_time 1 -hls_list_size 10 -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
