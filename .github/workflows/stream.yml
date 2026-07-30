@@ -1,4 +1,4 @@
-name: IPTV Multi-Stream Server (Fixed Port 30205)
+name: IPTV Stream Server - History 1080p (Fixed Port 30205)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Multi Streamer
+      - name: Run Streamer
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
           pip install flask flask-cors
@@ -40,7 +40,7 @@ jobs:
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
           # Tạo thư mục lưu HLS
-          mkdir -p hls/history hls/tv360-9
+          mkdir -p hls/history
 
           # 3. Ép mở Bore ở Port Cố Định 30205
           echo "🌐 Đang mở Bore Tunnel tại Port cố định 30205..."
@@ -75,13 +75,10 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 5. Tạo file playlist.m3u
+          # 5. Tạo file playlist.m3u (Chỉ còn kênh History)
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="History" tvg-name="History Channel" group-title="US Live", History Channel' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
-
-          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
           # 6. Flask Server
           echo 'from flask import Flask, send_from_directory, abort' > app.py
@@ -90,7 +87,7 @@ jobs:
           echo 'app = Flask(__name__)' >> app.py
           echo 'CORS(app)' >> app.py
           echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Multi-Stream Server is Running!", 200' >> app.py
+          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
           echo '@app.route("/playlist.m3u")' >> app.py
           echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
           echo '@app.route("/hls/<path:filename>")' >> app.py
@@ -103,40 +100,22 @@ jobs:
           python3 app.py &
           sleep 2
 
-          UA_DALVIK="Dalvik/2.1.0"
           UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER READY (WITH LOGO)!"
+          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY 1080P) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 7. KÊNH HISTORY (GẮN LOGO GÓC DƯỚI TRÁI - 720P SIÊU NHẸ)
-          ffmpeg -hide_banner -loglevel error \
+          # 7. CHẠY KÊNH HISTORY 1080P - LOGO GÓC DƯỚI BÊN TRÁI - FULL CPU RUNNER
+          ffmpeg -hide_banner -loglevel info \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
-            -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -tune zerolatency -g 50 -b:v 1500k -maxrate 1800k -bufsize 2000k \
-            -c:a aac -b:a 96k \
-            -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
-            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
-
-          # 8. KÊNH TV360+9 (GẮN LOGO GÓC DƯỚI TRÁI - 720P SIÊU NHẸ)
-          STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
-          REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
-          if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
-
-          ffmpeg -hide_banner -loglevel info \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-            -user_agent "$UA_DALVIK" \
-            -i "$REAL_URL_9" \
-            -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
-            -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -tune zerolatency -g 50 -b:v 1500k -maxrate 1800k -bufsize 2000k \
-            -c:a aac -b:a 96k \
-            -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
-            -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=90:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -tune zerolatency -g 60 -b:v 2200k -maxrate 2500k -bufsize 3000k \
+            -c:a aac -b:a 128k \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
