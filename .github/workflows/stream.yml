@@ -1,7 +1,10 @@
 name: IPTV Stream Server - Kenscom 180 (Fixed Port 30205)
 
 on:
-  workflow_dispatch:
+  schedule:
+    # 🔄 Tự động chạy lại mỗi 5 tiếng 55 phút (phút 55 của các mốc 0, 5, 11, 17, 23 UTC)
+    - cron: '55 0,5,11,17,23 * * *'
+  workflow_dispatch: # Vẫn giữ nút bấm chạy bằng tay nếu thích
 
 jobs:
   stream:
@@ -100,12 +103,15 @@ jobs:
           echo "👉 LINK STREAM TRỰC TIẾP: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          # 7. STREAM RE-ENCODE TRỰC TIẾP TỪ KENSCOM 180 (KHÔNG CÓ LOGO, SIÊU MƯỢT, XEM ĐƯỢC CẢ WEB LẪN APP)
+          # 7. STREAM RE-ENCODE TRỰC TIẾP TỪ KENSCOM 180 (SIÊU MƯỢT, KHÔNG LỖI CỰC BẰNG CPU)
           ffmpeg -hide_banner -loglevel error \
             -headers "User-Agent: VLC/3.0.20 LibVLC/3.0.20"$'\r\n'"Accept-Language: vi-VN,vi;q=0.9"$'\r\n'"Host: 103.152.216.26:8443"$'\r\n' \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
-            -vf "fps=25,scale=1280:720" \
+            -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 50 -crf 26 -maxrate 2500k -bufsize 5000k \
+            -c:a aac -b:a 128k -ar 44100 \
+            -f hls -hls_time 4 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
+            -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8
             -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 -g 50 -b:v 1000k -maxrate 1200k -bufsize 2400k \
             -c:a aac -b:a 96k -ar 44100 \
             -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
