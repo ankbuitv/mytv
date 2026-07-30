@@ -37,7 +37,7 @@ jobs:
           echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # Tạo thư mục lưu HLS cho tất cả các kênh
+          # Tạo thư mục lưu HLS
           mkdir -p hls/history hls/tv360-9 hls/tv360-10 hls/tv360-11 hls/tv360-12
 
           # 4. Mở Bore Tunnel
@@ -65,7 +65,7 @@ jobs:
           echo "${PUBLIC_URL}/hls/history/1080p.m3u8" >> playlist.m3u
 
           for ch in 9 10 11 12; do
-            echo "#EXTINF:-1 tvg-id=\"TV360-${ch}\" tvg-name=\"TV360 Kênh ${ch}\" tvg-logo=\"https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png\" group-title=\"TV360\", TV360 Kênh ${ch} 1080p" >> playlist.m3u
+            echo "#EXTINF:-1 tvg-id=\"TV360-${ch}\" tvg-name=\"TV360+${ch}\" tvg-logo=\"https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png\" group-title=\"Sự Kiện TV360\", TV360+${ch} 1080p" >> playlist.m3u
             echo "${PUBLIC_URL}/hls/tv360-${ch}/1080p.m3u8" >> playlist.m3u
           done
 
@@ -89,17 +89,19 @@ jobs:
           python3 app.py &
           sleep 2
 
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          # Dùng User-Agent Dalvik theo chuẩn IPTV TV360
+          UA_DALVIK="Dalvik/2.1.0"
+          UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV MULTI-STREAM SERVER (5 CHANNELS) READY!"
+          echo "🚀 CHRTV MULTI-STREAM SERVER READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 8. CHẠY FFmpeg KÊNH HISTORY (Background &)
+          # 8. CHẠY KÊNH HISTORY (Background)
           ffmpeg -hide_banner -loglevel error \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-            -user_agent "$USER_AGENT" \
+            -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
@@ -109,16 +111,16 @@ jobs:
             -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
 
-          # 9. BÓC TÁCH & CHẠY FFmpeg CÁC KÊNH TV360 (9, 10, 11) TRONG BACKGROUND
+          # 9. CHẠY TV360 KÊNH 9, 10, 11 (Không DRM)
           for ch in 9 10 11; do
             STREAM_URL="https://vmttv.dpdns.org/tv360/?id=tv360-${ch}"
-            echo "🔍 Đang bóc tách link TV360-${ch}..."
-            REAL_URL=$(curl -sI -A "$USER_AGENT" "$STREAM_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+            echo "🔍 Đang lấy link TV360+${ch}..."
+            REAL_URL=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
             if [ -z "$REAL_URL" ]; then REAL_URL="$STREAM_URL"; fi
 
             ffmpeg -hide_banner -loglevel error \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-              -user_agent "$USER_AGENT" \
+              -user_agent "$UA_DALVIK" \
               -i "$REAL_URL" \
               -stream_loop -1 -i logo1.png \
               -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
@@ -129,15 +131,19 @@ jobs:
               -hls_segment_filename "hls/tv360-${ch}/seg_1080p_%03d.ts" hls/tv360-${ch}/1080p.m3u8 &
           done
 
-          # 10. CHẠY KÊNH TV360-12 (Foreground để giữ Workflow chạy liên tục)
+          # 10. CHẠY TV360+12 (Có mã hóa MPEG-DASH ClearKey DRM)
           STREAM_URL_12="https://vmttv.dpdns.org/tv360/?id=tv360-12"
-          echo "🔍 Đang bóc tách link TV360-12..."
-          REAL_URL_12=$(curl -sI -A "$USER_AGENT" "$STREAM_URL_12" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+          echo "🔍 Đang giải mã DRM và lấy link TV360+12..."
+          REAL_URL_12=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_12" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_12" ]; then REAL_URL_12="$STREAM_URL_12"; fi
 
+          # Key ClearKey DRM từ file M3U của bro
+          CLEARKEY_12="29b3e7c5de895bfa8850f16dad16e378:72a9e1be1d94ad66207f1ac61bcf7681"
+
           ffmpeg -hide_banner -loglevel info \
+            -cenc_decryption_key "$CLEARKEY_12" \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-            -user_agent "$USER_AGENT" \
+            -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_12" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
