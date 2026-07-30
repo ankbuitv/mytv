@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Deno (JS Engine for yt-dlp)
+      - name: Setup Deno (JS Engine cho yt-dlp)
         uses: denoland/setup-deno@v2
         with:
           deno-version: v1.x
@@ -37,10 +37,9 @@ jobs:
           BORE_PORT=30208
 
           # ====================================================
-          # 2. CẤU HÌNH LINK YOUTUBE LIVE
-          # (Bro thay link YouTube Live khác tại đây nếu cần)
+          # 2. LINK YOUTUBE LIVE
           # ====================================================
-          YOUTUBE_LIVE_URL="https://www.youtube.com/watch?v=jfKfPfyJRdk"
+          YOUTUBE_LIVE_URL="https://www.youtube.com/live/HgWz05AsLxw"
 
           # 3. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
@@ -113,27 +112,34 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV RESTREAM YOUTUBE LIVE (FIXED BOT) READY!"
+          echo "🚀 CHRTV RESTREAM YOUTUBE LIVE (BYPASS BOT MAX) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 8. BÓC TÁCH LINK STREAM VỚI DENO ENGINE & CLIENT BYPASS BOT
-          echo "🔍 Đang bóc tách luồng Live từ YouTube..."
+          # 8. CHIẾN THUẬT VƯỢT BOT 3 LỚP CHO YT-DLP
+          echo "🔍 Đang bóc tách luồng Live từ YouTube (${YOUTUBE_LIVE_URL})..."
           
-          # Cấu hình yt-dlp giả lập iOS Client để vượt qua Bot Verification của YouTube
-          REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=ios,web" -f "best[ext=mp4]/best" "$YOUTUBE_LIVE_URL")
+          # Lớp 1: Giả lập TV Embedded Player
+          REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=tv_embedded,android_vr" -f "best" "$YOUTUBE_LIVE_URL" 2>/dev/null)
 
+          # Lớp 2: Giả lập Android Client
           if [ -z "$REAL_STREAM_URL" ]; then
-            echo "⚠️ Thử lại phương thức bóc tách dự phòng 2..."
-            REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=mweb" -f "best" "$YOUTUBE_LIVE_URL")
+            echo "⚠️ Lớp 1 không qua, chuyển sang Lớp 2 (Android Client)..."
+            REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=android" -f "best" "$YOUTUBE_LIVE_URL" 2>/dev/null)
+          fi
+
+          # Lớp 3: Giả lập iOS / Mobile Web
+          if [ -z "$REAL_STREAM_URL" ]; then
+            echo "⚠️ Lớp 2 không qua, chuyển sang Lớp 3 (iOS Client)..."
+            REAL_STREAM_URL=$(yt-dlp -g --extractor-args "youtube:player_client=ios" -f "best" "$YOUTUBE_LIVE_URL" 2>/dev/null)
           fi
 
           if [ -z "$REAL_STREAM_URL" ]; then
-            echo "❌ Lỗi: YouTube vẫn khoá link video này do bắt xác thực Bot! Bro đổi sang link YouTube Live khác xem thử nhé."
+            echo "❌ Lỗi: YouTube chặn toàn bộ client đối với video này!"
             exit 1
           fi
 
-          echo "✅ Bóc tách thành công! Bắt đầu Restream..."
+          echo "✅ Bóc tách thành công! Bắt đầu Restreaming..."
 
           ffmpeg -hide_banner -loglevel error \
             -rw_timeout 20000000 \
