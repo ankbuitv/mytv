@@ -12,11 +12,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg & Ngrok (Chuẩn Official)
+      - name: Install FFmpeg & Ngrok
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg curl -qq
-          # Tải Ngrok qua Official Script (Không lo lỗi giải nén tar/gzip)
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update -qq && sudo apt-get install ngrok -y -qq
@@ -68,10 +67,12 @@ jobs:
           ngrok config add-authtoken $NGROK_TOKEN
           ngrok http 5000 --log=stdout > ngrok.log &
           
-          sleep 5
+          # Đợi Ngrok khởi tạo xong
+          sleep 8
+          
           echo "===================================================="
           echo "👉 LINK M3U IPTV CỦA BRO NẰM Ở DƯỚI NÈ:"
-          grep -o 'https://[^"]*ngrok-free.app' ngrok.log | head -n 1 | awk '{print $1"/playlist.m3u"}'
+          curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*ngrok-free.app' | head -n 1 | awk '{print $1"/playlist.m3u"}'
           echo "===================================================="
 
           # Khởi chạy FFmpeg đè logo
