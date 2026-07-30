@@ -24,14 +24,15 @@ jobs:
           pip install flask flask-cors
 
           # ====================================================
-          # 1. CẤU HÌNH DUCKDNS CỦA BRO (Thay Token vào đây)
+          # 1. CẤU HÌNH DUCKDNS CỦA BRO (Nhớ thay Token ở đây)
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          # 2. Cài đặt Bore Tunnel (Đục lỗ Firewall sạch 100%, không cần accept)
-          wget -q https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
-          tar -xf bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          # 2. Cài đặt Bore Tunnel (Phiên bản MUSL Tĩnh - Chắc chắn chạy)
+          echo "⏬ Đang tải Bore..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
           sudo mv bore /usr/local/bin/
 
           # 3. Tải logo
@@ -40,20 +41,31 @@ jobs:
 
           mkdir -p hls/history
 
-          # 4. Mở Bore Tunnel (Cho Bore tự xin 1 port ngẫu nhiên)
+          # 4. Mở Bore Tunnel (Cho Bore tự xin 1 port công khai)
           bore local 5000 --to bore.pub > bore.log 2>&1 &
 
-          sleep 5
+          # Chờ Bore khởi tạo và ghi log
+          sleep 8
 
-          BORE_PORT=$(grep -oP 'listening at bore.pub:\K[0-9]+' bore.log | head -n 1)
-          
-          # 5. Lấy IP của server bore.pub và cập nhật thẳng lên DuckDNS
+          # In log ra để kiểm tra
+          cat bore.log
+
+          # Lấy port (Thêm || true để tránh crash workflow nếu rỗng)
+          BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' bore.log | cut -d':' -f2 | head -n 1 || true)
+
+          if [ -z "$BORE_PORT" ]; then
+            echo "❌ Không lấy được port từ Bore! Đang thử lại..."
+            BORE_PORT=$(grep -oE '[0-9]{4,5}' bore.log | head -n 1 || true)
+          fi
+
+          # 5. Lấy IP của bore.pub và update lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
-          echo "🌐 Đang cập nhật IP Bore (${BORE_IP}) lên domain ${DUCKDNS_DOMAIN}.duckdns.org..."
-          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
-          echo ""
+          if [ -n "$BORE_IP" ]; then
+            echo "🌐 Đang cập nhật IP Bore (${BORE_IP}) lên domain ${DUCKDNS_DOMAIN}.duckdns.org..."
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+            echo ""
+          fi
 
-          # Tạo URL hiển thị với Domain DuckDNS của bro
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
           # 6. Tạo file playlist.m3u
