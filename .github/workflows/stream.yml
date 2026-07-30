@@ -1,4 +1,4 @@
-name: IPTV Stream Server 24/7
+name: IPTV Stream Server 24/7 (Serveo + Custom Domain)
 
 on:
   workflow_dispatch:
@@ -12,13 +12,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg & Ngrok
+      - name: Install FFmpeg & SSH Client
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg curl -qq
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update -qq && sudo apt-get install ngrok -y -qq
+          sudo apt-get install -y ffmpeg curl openssh-client -qq
 
       - name: Download Logo Gemini
         run: |
@@ -56,23 +53,20 @@ jobs:
               app.run(host='0.0.0.0', port=5000)
           EOF
 
-      - name: Run Streamer & Ngrok
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+      - name: Run Streamer & Serveo Tunnel
         run: |
           pip install flask
           python3 app.py &
           
-          # Cấu hình Ngrok
-          ngrok config add-authtoken $NGROK_TOKEN
-          ngrok http 5000 --log=stdout > ngrok.log &
+          # Mở cổng ngầm bằng Serveo với Domain riêng của bro
+          # THAY 'tv.domaincuabro.com' BẰNG DOMAIN CỦA BRO Ở DÒNG DƯỚI NÈ:
+          ssh -o StrictHostKeyChecking=no -R a11vnedge-gstraw2626.ankb.qzz.io:80:localhost:5000 serveo.net &
           
-          # Đợi Ngrok khởi tạo xong
-          sleep 8
-          
+          sleep 4
           echo "===================================================="
-          echo "👉 LINK M3U IPTV CỦA BRO NẰM Ở DƯỚI NÈ:"
-          curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*ngrok-free.app' | head -n 1 | awk '{print $1"/playlist.m3u"}'
+          echo "🚀 KẾT NỐI SERVER THÀNH CÔNG!"
+          echo "👉 LINK M3U IPTV CỐ ĐỊNH TRÊN TIVI CỦA BRO NÈ:"
+          echo "   https://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
           echo "===================================================="
 
           # Khởi chạy FFmpeg đè logo
