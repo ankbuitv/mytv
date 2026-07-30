@@ -35,7 +35,7 @@ jobs:
 
           # Tải logo PNG
           echo "⏬ Đang tải logo..."
-          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+          curl -s -L "https://i.ibb.co/HDmcxvMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
           # Tạo thư mục lưu HLS
           mkdir -p hls/history
@@ -101,20 +101,20 @@ jobs:
           UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY 720P FAST) READY!"
+          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY ULTRA FAST) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 7. CHẠY KÊNH HISTORY
+          # 7. CHẠY KÊNH HISTORY - TỐI ƯU SIÊU TỐC KHÔNG OUT VLC
           ffmpeg -hide_banner -loglevel info \
             -rw_timeout 15000000 \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
             -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
             -map "[v720]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -crf 28 -tune zerolatency -g 30 -b:v 1200k -maxrate 1500k -bufsize 1500k \
-            -c:a aac -b:a 96k \
-            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
+            -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 25 -keyint_min 25 -b:v 1000k -maxrate 1200k -bufsize 1200k \
+            -c:a aac -b:a 96k -ar 44100 \
+            -f hls -hls_time 1 -hls_init_time 1 -hls_list_size 10 -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8
