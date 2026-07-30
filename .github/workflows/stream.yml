@@ -33,9 +33,9 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tải logo PNG
+          # Tải logo PNG (Sử dụng link Wikimedia / Catbox chống chặn Hotlink)
           echo "⏬ Đang tải logo..."
-          curl -s -L "https://i.ibb.co/HDmcxvMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
           # Tạo thư mục lưu HLS
           mkdir -p hls/history
@@ -101,20 +101,20 @@ jobs:
           UA_BROWSER="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           echo "===================================================="
-          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY FIX LAG) READY!"
+          echo "🚀 CHRTV SINGLE STREAM SERVER (HISTORY NO LAG) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
-          # 7. FIX RIÊNG HISTORY: KHÓA 30FPS + GIẢM TẢI CPU ĐỂ LOGO LUÔN NỔI & KHÔNG LAG
+          # 7. FIX LAG HISTORY TRUYỀN HÌNH: ÉP BITRATE NẸT 800K + FPS 25 SUPER SMOOTH
           ffmpeg -hide_banner -loglevel error \
             -rw_timeout 30000000 \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]fps=30,scale=1280:720[main];[1:v]scale=80:-1[logo];[main][logo]overlay=W-w-20:20[v]" \
+            -filter_complex "[0:v]fps=25,scale=1280:720[main];[1:v]scale=60:-1[logo];[main][logo]overlay=W-w-15:15[v]" \
             -map "[v]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 -g 60 -maxrate 1500k -bufsize 3000k \
-            -c:a aac -b:a 128k -ar 44100 \
+            -c:v libx264 -preset ultrafast -tune zerolatency -crf 30 -g 50 -b:v 800k -maxrate 1000k -bufsize 2000k \
+            -c:a aac -b:a 96k -ar 44100 \
             -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "hls/history/seg_%03d.ts" hls/history/1080p.m3u8
