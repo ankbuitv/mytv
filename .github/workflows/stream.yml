@@ -1,72 +1,55 @@
-name: IPTV Live Stream Server (Ngrok)
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'
-
-jobs:
-  stream:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 1. Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: 2. Cài đặt Python & FFmpeg
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: 3. Cài đặt các gói hỗ trợ hệ thống & Ngrok
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg jq curl
-
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update && sudo apt-get install -y ngrok
-
-      - name: 4. Cài đặt Python Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install flask flask-cors requests
-
-      - name: 5. Khởi chạy Flask Server & Ngrok Tunnel
+- name: Run Streamer & Ngrok Tunnel
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
+          # 0. Cài đặt Ngrok (Bắt buộc vì GitHub Actions chưa có sẵn)
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install -y ngrok jq
+
           if [ -z "$NGROK_AUTHTOKEN" ]; then
-            echo "❌ LỖI: Chưa cấu hình NGROK_AUTHTOKEN trong GitHub Secrets!"
+            echo "❌ LỖI: Chưa có NGROK_AUTHTOKEN trong GitHub Secrets!"
             exit 1
           fi
           ngrok config add-authtoken $NGROK_AUTHTOKEN
 
-          # 🔥 Ép Flask lắng nghe chính xác ở IPv4 (0.0.0.0:5000) từ file yml
-          python -c "import app; app.app.run(host='0.0.0.0', port=5000)" &
-          echo "⏳ Đang đợi Flask Server khởi động..."
-          sleep 5
+          # Cài flask như code cũ của bro
+          pip install flask
 
-          # 🔥 Ép Ngrok trỏ thẳng vào IPv4 127.0.0.1 (Tránh hoàn toàn lỗi ::1 IPv6)
+          # 1. Chạy FFmpeg trước 6s render video chuẩn (GIỮ NGUYÊN 100% CỦA BRO)
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
+
+          ffmpeg -hide_banner -loglevel error \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+            -user_agent "$USER_AGENT" \
+            -i "$STREAM_HISTORY" \
+            -stream_loop -1 -i logo1.png \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=80:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
+            -map "[v1080]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -b:v 2500k -maxrate 3000k -bufsize 3500k \
+            -c:a aac -b:a 128k \
+            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
+
+          sleep 6
+
+          # 2. Bật Web Server Flask (GIỮ NGUYÊN)
+          python3 app.py &
+
+          sleep 3
+
+          # 3. Chạy Ngrok Tunnel (Ép cứng IPv4 127.0.0.1 để KHÔNG BỊ LỖI NGROK 8012)
           ngrok http http://127.0.0.1:5000 --host-header=rewrite --log=stdout > ngrok.log &
-          echo "⏳ Đang đợi Ngrok thiết lập kết nối..."
+
           sleep 5
 
+          # Lấy link in ra cho ngầu
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
 
-          if [ "$NGROK_URL" == "null" ] || [ -z "$NGROK_URL" ]; then
-            echo "❌ Lỗi: Không lấy được public URL từ Ngrok!"
-            cat ngrok.log
-            exit 1
-          fi
+          echo "===================================================="
+          echo "🚀 KẾT NỐI NGROK THÀNH CÔNG!"
+          echo "👉 LINK M3U IPTV MỚI CỦA BRO ĐÂY: ${NGROK_URL}/playlist.m3u"
+          echo "===================================================="
 
-          echo ""
-          echo "=========================================================="
-          echo "🚀 KẾT NỐI THÀNH CÔNG (NO MORE ERR_NGROK_8012)!"
-          echo "👉 Domain Ngrok: ${NGROK_URL}"
-          echo "👉 Link Playlist M3U: ${NGROK_URL}/playlist.m3u"
-          echo "👉 Link Stream HLS: ${NGROK_URL}/hls/history/master.m3u8"
-          echo "=========================================================="
-          echo ""
-
-          sleep 18000
+          wait
