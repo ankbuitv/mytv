@@ -1,4 +1,4 @@
-name: IPTV Stream Server 24/7 (Localtonet + Custom Domain)
+name: IPTV Stream Server 24/7 (Localtunnel)
 
 on:
   workflow_dispatch:
@@ -12,14 +12,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Install FFmpeg & Localtonet
+      - name: Install Node.js, FFmpeg & Localtunnel
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg curl unzip -qq
-          # Tải Localtonet client mới nhất
-          curl -s -L "https://localtonet.com/download/localtonet-linux-x64.zip" -o localtonet.zip
-          unzip -o localtonet.zip
-          chmod +x localtonet
+          sudo apt-get install -y ffmpeg curl -qq
+          sudo npm install -g localtunnel
 
       - name: Download Logo Gemini
         run: |
@@ -57,13 +54,11 @@ jobs:
               app.run(host='0.0.0.0', port=5000)
           EOF
 
-      - name: Run Streamer & Localtonet Tunnel
-        env:
-          LOCALTONET_TOKEN: ${{ secrets.LOCALTONET_TOKEN }}
+      - name: Run Streamer & Localtunnel
         run: |
           pip install flask
           
-          # 1. Chạy FFmpeg trước để render sẵn file video (Chống lỗi 404 trên Tivi)
+          # 1. Chạy FFmpeg trước 6s để tạo file video
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -81,17 +76,18 @@ jobs:
 
           sleep 6
 
-          # 2. Bật Web Server Flask
+          # 2. Bật Flask Web Server
           python3 app.py &
 
-          # 3. Chạy Localtonet Tunnel với AuthToken chính chủ
-          ./localtonet --authtoken $LOCALTONET_TOKEN --http 5000 &
+          # 3. Mở Localtunnel với Subdomain cố định
+          # Bro có thể sửa 'ankbui-iptv-stream' thành tên bro thích
+          lt --port 5000 --subdomain ankbui-iptv-stream &
           
           sleep 4
           echo "===================================================="
-          echo "🚀 KẾT NỐI LOCALTONET THÀNH CÔNG!"
+          echo "🚀 KẾT NỐI LOCALTUNNEL THÀNH CÔNG!"
           echo "👉 LINK M3U IPTV CỦA BRO TRÊN TIVI NÈ:"
-          echo "   https://a11vnedge-gstraw2626.ankb.qzz.io/playlist.m3u"
+          echo "   https://ankbui-iptv-stream.localtunnel.me/playlist.m3u"
           echo "===================================================="
 
           wait
