@@ -18,29 +18,23 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer & Serveo Tunnel
+      - name: Run Streamer & Pinggy Tunnel
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg autossh curl
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
-          # 1. Tạo SSH Key
-          if [ ! -f ~/.ssh/id_rsa ]; then
-            mkdir -p ~/.ssh
-            ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
-          fi
-
-          # 2. 🔥 TẢI EXACT LOGO1 CỦA BRO TỪ LINK IBB
-          echo "⏬ Đang tải logo1.png từ link..."
+          # 1. Tải logo1.png từ link ibb
+          echo "⏬ Đang tải logo1.png..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
-          # 3. Tạo app.py nhẹ nếu chưa có
+          # 2. Tạo app.py nhẹ
           if [ ! -f "app.py" ]; then
             echo "from flask import Flask, send_from_directory; from flask_cors import CORS; import os; app = Flask(__name__); CORS(app); app.add_url_rule('/playlist.m3u', 'playlist', lambda: send_from_directory('.', 'playlist.m3u') if os.path.exists('playlist.m3u') else ('Not found', 404)); app.add_url_rule('/hls/<path:filename>', 'stream', lambda filename: send_from_directory('hls', filename)); app.run(host='0.0.0.0', port=5000)" > app.py
           fi
 
           mkdir -p hls/history
 
-          # 4. Chạy FFmpeg render stream với logo1.png vừa tải
+          # 3. FFmpeg Stream & Đè Logo
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -58,28 +52,22 @@ jobs:
 
           sleep 6
 
-          # 5. Bật Flask Server
+          # 4. Bật Flask Server
           python3 app.py &> flask.log &
 
           sleep 3
 
-          # 6. Bật Serveo Tunnel với Subdomain chrtv
-          MY_SUBDOMAIN="chrtv"
+          # 5. Mở Pinggy Tunnel (Thay thế Serveo)
+          ssh -p 443 -R0:localhost:5000 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io > pinggy.log 2>&1 &
 
-          autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
-            -o StrictHostKeyChecking=no -R ${MY_SUBDOMAIN}:80:localhost:5000 serveo.net > serveo.log 2>&1 &
+          sleep 8
 
-          sleep 5
-
-          # Bóc tách chính xác URL tunnel Serveo cấp ra (bỏ qua console.serveo.net)
-          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*serveo[a-zA-Z0-9.-]*' serveo.log | grep -v 'console' | head -n 1)
-          
-          if [ -z "$PUBLIC_URL" ]; then
-            PUBLIC_URL="https://${MY_SUBDOMAIN}.serveo.net"
-          fi
+          # Bóc tách chính xác URL Pinggy cấp ra
+          PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*pinggy[a-zA-Z0-9.-]*' pinggy.log | head -n 1)
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER ĐÃ CHẠY NICK NICK!"
+          echo "🚀 CHRTV STREAM SERVER (PINGGY TUNNEL) ĐÃ SẴN SÀNG!"
+          echo "👉 LINK TUNNEL MỚI: ${PUBLIC_URL}"
           echo "👉 LINK PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "👉 LINK STREAM HLS: ${PUBLIC_URL}/hls/history/1080p.m3u8"
           echo "===================================================="
