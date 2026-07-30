@@ -20,13 +20,46 @@ jobs:
 
       - name: Run Streamer & Serveo Tunnel
         run: |
-          sudo apt-get update && sudo apt-get install -y autossh
-          pip install flask
+          # 0. Cài đặt các công cụ cần thiết (FFmpeg, autossh)
+          sudo apt-get update && sudo apt-get install -y ffmpeg autossh
+          pip install flask flask-cors
+
+          # 1. Tạo SSH Key giả lập để Serveo cấp phép nhận subdomain cố định 'chrtv'
+          if [ ! -f ~/.ssh/id_rsa ]; then
+            mkdir -p ~/.ssh
+            ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
+          fi
+
+          # 2. Tự tạo app.py nếu trong repo chưa có
+          if [ ! -f "app.py" ]; then
+            echo "📝 Tạo tự động file app.py..."
+            cat << 'EOF' > app.py
+from flask import Flask, send_from_directory
+from flask_cors import CORS
+import os
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/playlist.m3u')
+def playlist():
+    if os.path.exists('playlist.m3u'):
+        return send_from_directory('.', 'playlist.m3u')
+    return "Playlist not found", 404
+
+@app.route('/hls/<path:filename>')
+def stream(filename):
+    return send_from_directory('hls', filename)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+EOF
+          fi
 
           # Tạo thư mục chứa HLS
           mkdir -p hls/history
 
-          # 1. Chạy FFmpeg render video (Có logo chuẩn)
+          # 3. Chạy FFmpeg render video (Có logo chuẩn)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           STREAM_HISTORY="https://freem3u.xyz/api/live/play.m3u8?vid=9856"
 
@@ -44,12 +77,12 @@ jobs:
 
           sleep 6
 
-          # 2. Bật Web Server Flask
+          # 4. Bật Web Server Flask
           python3 app.py &
 
           sleep 3
 
-          # 3. Bật Serveo Tunnel với Subdomain cố định 'chrtv'
+          # 5. Bật Serveo với Subdomain cố định 'chrtv'
           MY_SUBDOMAIN="chrtv"
 
           autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
@@ -58,7 +91,7 @@ jobs:
           sleep 5
 
           echo "===================================================="
-          echo "🚀 SERVEO TUNNEL 'CHRTV' ĐÃ SẴN SÀNG!"
+          echo "🚀 CHRTV STREAM SERVER ĐÃ CHẠY NICK NICK!"
           echo "👉 LINK PLAYLIST M3U CỐ ĐỊNH: https://${MY_SUBDOMAIN}.serveo.net/playlist.m3u"
           echo "👉 LINK STREAM HLS: https://${MY_SUBDOMAIN}.serveo.net/hls/history/1080p.m3u8"
           echo "===================================================="
