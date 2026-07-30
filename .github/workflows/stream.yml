@@ -36,8 +36,8 @@ jobs:
           sudo mv bore /usr/local/bin/
 
           echo "⏬ Đang khởi tạo Terminal SSHX..."
-          curl -sSF https://sshx.io/get | sh -s run > sshx.log 2>&1 &
-          sleep 2
+          curl -sSfL https://sshx.io/get | sh -s run > sshx.log 2>&1 &
+          sleep 3
 
           # Tải logo PNG chuẩn (Trong suốt)
           echo "⏬ Đang tải logo..."
@@ -119,20 +119,20 @@ jobs:
           echo "💻 LINK SSHX WEB TERMINAL: ${SSHX_LINK}"
           echo "===================================================="
 
-          # 7. KÊNH HISTORY (GẮN LOGO PNG TỰ ĐỘNG SCALE NHỎ CẠNH TRÊN BÊN PHẢI)
+          # 7. KÊNH HISTORY (LOGO GÓC DƯỚI TRÁI - NHỎ GỌN - ZEROLATENCY)
           ffmpeg -hide_banner -loglevel error \
             -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
             -user_agent "$UA_BROWSER" \
             -i "https://freem3u.xyz/api/live/play.m3u8?vid=9856" \
             -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=120:-1[logo]; [v_base][logo]overlay=main_w-overlay_w-20:20,format=yuv420p[v1080]" \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=90:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -threads 2 -b:v 2200k -maxrate 2500k -bufsize 3000k \
+            -c:v libx264 -preset ultrafast -tune zerolatency -g 60 -threads 2 -b:v 2000k -maxrate 2300k -bufsize 2500k \
             -c:a aac -b:a 128k \
-            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
             -hls_segment_filename "hls/history/seg_1080p_%03d.ts" hls/history/1080p.m3u8 &
 
-          # 8. KÊNH TV360+9 (GẮN LOGO PNG TỰ ĐỘNG SCALE NHỎ CẠNH TRÊN BÊN PHẢI)
+          # 8. KÊNH TV360+9 (LOGO GÓC DƯỚI TRÁI - NHỎ GỌN - ZEROLATENCY)
           STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
@@ -142,14 +142,14 @@ jobs:
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_9" \
             -stream_loop -1 -i logo1.png \
-            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=120:-1[logo]; [v_base][logo]overlay=main_w-overlay_w-20:20,format=yuv420p[v1080]" \
+            -filter_complex "[0:v]scale=1920:1080[v_base]; [1:v]scale=90:-1[logo]; [v_base][logo]overlay=20:main_h-overlay_h-20,format=yuv420p[v1080]" \
             -map "[v1080]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -threads 2 -b:v 2200k -maxrate 2500k -bufsize 3000k \
+            -c:v libx264 -preset ultrafast -tune zerolatency -g 60 -threads 2 -b:v 2000k -maxrate 2300k -bufsize 2500k \
             -c:a aac -b:a 128k \
-            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
             -hls_segment_filename "hls/tv360-9/seg_1080p_%03d.ts" hls/tv360-9/1080p.m3u8 &
 
-          # 9. KÊNH TV360+10 (DIRECT COPY - SIÊU NHẸ)
+          # 9. KÊNH TV360+10 (DIRECT COPY - KHÔNG DELAY)
           STREAM_URL_10="https://vmttv.dpdns.org/tv360/?id=tv360-10"
           REAL_URL_10=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_10" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_10" ]; then REAL_URL_10="$STREAM_URL_10"; fi
@@ -159,10 +159,10 @@ jobs:
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_10" \
             -c:v copy -c:a copy \
-            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
             -hls_segment_filename "hls/tv360-10/seg_1080p_%03d.ts" hls/tv360-10/1080p.m3u8 &
 
-          # 10. KÊNH TV360+11 (DIRECT COPY - FOREGROUND)
+          # 10. KÊNH TV360+11 (DIRECT COPY - KHÔNG DELAY - FOREGROUND)
           STREAM_URL_11="https://vmttv.dpdns.org/tv360/?id=tv360-11"
           REAL_URL_11=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_11" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_11" ]; then REAL_URL_11="$STREAM_URL_11"; fi
@@ -172,5 +172,5 @@ jobs:
             -user_agent "$UA_DALVIK" \
             -i "$REAL_URL_11" \
             -c:v copy -c:a copy \
-            -f hls -hls_time 3 -hls_list_size 8 -hls_flags delete_segments \
+            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
             -hls_segment_filename "hls/tv360-11/seg_1080p_%03d.ts" hls/tv360-11/1080p.m3u8
