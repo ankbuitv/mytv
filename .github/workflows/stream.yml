@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Web Compatible (H.264 + AAC)
+name: IPTV Stream Server - Web HLS Optimized (1080p Full Power)
 
 on:
   schedule:
@@ -26,12 +26,9 @@ jobs:
 
       - name: Setup Bore Tunnel & SSHX
         run: |
-          # Tải Bore Tunnel
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
-
-          # Tải SSHX Web Terminal
           curl -sSf https://sshx.io/get | sh
 
       - name: Create Workspace Folders
@@ -45,10 +42,10 @@ jobs:
           import os
 
           app = Flask(__name__)
-          CORS(app)
+          CORS(app, resources={r"/*": {"origins": "*"}})
 
           @app.route("/")
-          def index(): return "IPTV Stream Server Running (Public Unlimited)!", 200
+          def index(): return "IPTV Stream Server Running (1080p Web Optimized)!", 200
 
           @app.route("/playlist.m3u")
           def playlist(): 
@@ -60,6 +57,7 @@ jobs:
               if not os.path.exists(file_path): return abort(404)
               
               response = make_response(send_from_directory("hls", filename))
+              response.headers["Access-Control-Allow-Origin"] = "*"
               response.headers["Connection"] = "keep-alive"
               response.headers["Keep-Alive"] = "timeout=15, max=100"
               response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -71,7 +69,7 @@ jobs:
               f.write(code)
           '
 
-      - name: Generate Stream Script (Python Script Generator)
+      - name: Generate Stream Script
         run: |
           python3 -c '
           script = """#!/bin/bash
@@ -84,26 +82,21 @@ jobs:
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
-          echo "🌐 Starting Bore Tunnel Watchdog on Port $BORE_PORT..."
+          echo "🌐 Starting Bore Tunnel..."
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
-              echo "⚠️ Bore disconnected, reconnecting in 3s..."
               sleep 3
             done
           ) &
           sleep 5
 
-          echo "🌐 Resolving IP of bore.pub..."
           BORE_IP=$(dig +short bore.pub | tail -n1)
-
-          echo "🌐 Updating DuckDNS with IP: $BORE_IP..."
           if [ -n "$BORE_IP" ]; then
-            UPDATE_RES=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}")
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
           else
-            UPDATE_RES=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}")
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
           fi
-          echo "DuckDNS Response: $UPDATE_RES"
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
@@ -111,12 +104,11 @@ jobs:
           echo '\''#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD'\'' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-          echo "🚀 Starting Gunicorn Server..."
           gunicorn -w 4 --threads 2 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (PUBLIC UNLIMITED POWER)!"
+          echo "🚀 CHRTV STREAM READY (1080P WEB PERFECT HLS)!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DIRECT STREAM    : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
@@ -125,18 +117,21 @@ jobs:
           HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\\r\\nAccept: */*\\r\\nConnection: keep-alive"
 
           while true; do
-            echo "🎬 Starting FFmpeg Web-Transcode Stream (H.264 + AAC)..."
+            echo "🎬 Starting FFmpeg Transcode (4 CPU / Web HLS Compatible)..."
             ffmpeg -y -hide_banner -loglevel info \\
               -headers "$HEADERS" \\
               -rw_timeout 10000000 \\
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
               -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \\
-              -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 \\
-              -c:a aac -b:a 128k \\
-              -f hls -hls_time 4 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \\
+              -threads 4 \\
+              -c:v libx264 -preset superfast -profile:v main -pix_fmt yuv420p \\
+              -g 50 -keyint_min 50 -sc_threshold 0 \\
+              -crf 23 -maxrate 3500k -bufsize 7000k \\
+              -c:a aac -b:a 128k -ar 48000 -af "aresample=async=1" \\
+              -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \\
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
-            echo "⚠️ Source stream down! Retrying in 5s..."
+            echo "⚠️ Source stream down, retrying in 5s..."
             sleep 5
           done
           """
