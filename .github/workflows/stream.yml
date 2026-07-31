@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Kenscom 180 (Fixed Exit Code 127)
+name: IPTV Stream Server - Kenscom 180 (Fixed YAML Syntax)
 
 on:
   schedule:
@@ -44,17 +44,9 @@ jobs:
           bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
           sleep 5
 
-          # 3. Cập nhật IP Bore lên DuckDNS bằng Python (Tránh phụ thuộc vào dig/dnsutils)
-          python3 -c "
-import urllib.request, json
-try:
-    ip = urllib.request.urlopen('https://api.ipify.org').read().decode('utf8')
-    url = f'https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub'
-    urllib.request.urlopen(url)
-    print('✅ Đã cập nhật DuckDNS!')
-except Exception as e:
-    print('⚠️ Lỗi DuckDNS:', e)
-"
+          # 3. Cập nhật IP Bore lên DuckDNS
+          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
+          echo ""
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
@@ -100,7 +92,7 @@ EOF
           echo "👉 LINK DIRECT: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          # 6. VÒNG LẶP RE-ENCODE AUTO-RESTART (CHỐNG CRASH / CHỐNG EXIT CODE 127)
+          # 6. VÒNG LẶP RE-ENCODE AUTO-RESTART (CHỐNG CRASH)
           while true; do
             echo "🎬 Đang chạy luồng FFmpeg..."
             ffmpeg -hide_banner -loglevel error \
