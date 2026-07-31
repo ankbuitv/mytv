@@ -1,14 +1,13 @@
-name: IPTV Stream Server - Public Repo (Unlimited 4-Core)
+name: IPTV Stream Server - Public Repo (Unlimited 4-Core + SSHX)
 
 on:
   schedule:
-    # 🔄 Auto-restart mỗi 5 tiếng 50 phút để duy trì liên tục
+    # Auto-restart mỗi 5 tiếng 50 phút
     - cron: '50 0,5,11,17,23 * * *'
   workflow_dispatch:
 
 jobs:
   stream:
-    # Public Repo cấp mặc định 4 CPU / 16GB RAM hoàn toàn FREE
     runs-on: ubuntu-latest
 
     steps:
@@ -20,22 +19,26 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install System & Python Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
+          sudo apt-get install -y ffmpeg curl dnsutils
           pip install flask flask-cors gunicorn
 
-      - name: Setup Bore Tunnel
+      - name: Setup Bore Tunnel & SSHX
         run: |
+          # Tải Bore Tunnel
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
+          # Tải SSHX Web Terminal
+          curl -sSF https://sshx.io/get | sh
+
       - name: Create Workspace Folders
         run: mkdir -p hls/kenscom180
 
-      - name: Generate Server App Code
+      - name: Generate Server App Code (Python)
         run: |
           python3 -c '
           code = """from flask import Flask, send_from_directory, abort, make_response
@@ -69,7 +72,7 @@ jobs:
               f.write(code)
           '
 
-      - name: Generate Stream Script
+      - name: Generate Stream Script (Python Script Generator)
         run: |
           python3 -c '
           script = """#!/bin/bash
@@ -77,13 +80,25 @@ jobs:
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=30205
 
-          echo "🌐 Opening Bore Tunnel on Port 30205..."
+          echo "💻 Starting SSHX Web Terminal..."
+          sshx > sshx.log 2>&1 &
+          sleep 3
+          SSHX_URL=$(grep -o "https://sshx.io/s/[^ ]*" sshx.log | head -n1)
+
+          echo "🌐 Opening Bore Tunnel on Port $BORE_PORT..."
           bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
           sleep 5
 
-          echo "🌐 Updating DuckDNS..."
-          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
-          echo ""
+          echo "🌐 Resolving IP of bore.pub..."
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+
+          echo "🌐 Updating DuckDNS with IP: $BORE_IP..."
+          if [ -n "$BORE_IP" ]; then
+            UPDATE_RES=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}")
+          else
+            UPDATE_RES=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}")
+          fi
+          echo "DuckDNS Response: $UPDATE_RES"
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
@@ -91,31 +106,27 @@ jobs:
           echo '\''#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD'\'' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-          # Chạy Gunicorn với 4 Workers
           echo "🚀 Starting Gunicorn Server..."
           gunicorn -w 4 --threads 2 --keep-alive 15 -b 0.0.0.0:5000 app:app &
           sleep 2
 
           echo "===================================================="
           echo "🚀 CHRTV STREAM READY (PUBLIC UNLIMITED POWER)!"
-          echo "👉 PLAYLIST URL: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 DIRECT STREAM: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
+          echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 DIRECT STREAM    : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
           HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\\r\\nAccept: */*\\r\\nConnection: keep-alive"
 
           while true; do
-            echo "🎬 Starting FFmpeg Transcode Stream..."
-            # Sử dụng tối đa 4 Cores CPU cho chất lượng mượt và nét nhất
+            echo "🎬 Starting Fast Direct Copy Stream (Zero Delay)..."
             ffmpeg -y -hide_banner -loglevel error \\
-              -threads 4 \\
               -headers "$HEADERS" \\
               -rw_timeout 10000000 \\
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
               -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \\
-              -fflags +genpts+discardcorrupt \\
-              -c:v libx264 -preset superfast -tune zerolatency -pix_fmt yuv420p -crf 23 -b:v 2000k -maxrate 2500k -bufsize 4000k -g 100 \\
-              -c:a aac -b:a 128k -ar 44100 \\
+              -c copy \\
               -f hls -hls_time 4 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \\
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
