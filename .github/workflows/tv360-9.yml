@@ -1,4 +1,4 @@
-name: IPTV Stream Server - TV360+9 (Lag Fixed)
+name: IPTV Stream Server - TV360+9 (Direct Copy - Ultra Fast)
 
 on:
   schedule:
@@ -33,9 +33,6 @@ jobs:
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
-
-          # Tải logo PNG
-          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
           # Tạo thư mục HLS
           mkdir -p hls/tv360-9
@@ -72,7 +69,7 @@ jobs:
           echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
-          # 6. Flask Server (Tối ưu Đa luồng bằng threaded=True để chống giật)
+          # 6. Flask Server Đa Luồng
           echo 'from flask import Flask, send_from_directory, abort' > app.py
           echo 'from flask_cors import CORS' >> app.py
           echo 'import os' >> app.py
@@ -95,7 +92,7 @@ jobs:
           UA_DALVIK="Dalvik/2.1.0"
 
           # ====================================================
-          # 7. CHẠY FFmpeg TỐI ƯU SIÊU MƯỢT (ANTI-LAG ENGINE)
+          # 7. CHẠY FFMPEG CHẾ ĐỘ DIRECT COPY (KHÔNG LOGO, SIÊU MƯỢT)
           # ====================================================
           STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           CURRENT_REAL_URL=""
@@ -111,18 +108,13 @@ jobs:
 
           start_ffmpeg() {
             local target_url="$1"
-            echo "🎬 [FFmpeg Engine] Bắt đầu đẩy luồng..."
+            echo "🎬 [FFmpeg Engine] Đang stream trực tiếp (Direct Stream Copy)..."
             ffmpeg -hide_banner -loglevel error \
               -rw_timeout 15000000 \
-              -analyzeduration 10000000 -probesize 10000000 \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
               -user_agent "$UA_DALVIK" \
               -i "$target_url" \
-              -stream_loop -1 -i logo1.png \
-              -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
-              -map "[v720]" -map 0:a? \
-              -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 26 -tune zerolatency -g 50 -keyint_min 25 -b:v 1500k -maxrate 1800k -bufsize 3600k \
-              -c:a aac -b:a 96k -ar 44100 -af "aresample=async=1" \
+              -c copy \
               -f hls -hls_time 2 -hls_list_size 10 -hls_delete_threshold 4 -hls_flags delete_segments+omit_endlist \
               -hls_segment_filename "hls/tv360-9/seg_1080p_%05d.ts" hls/tv360-9/1080p.m3u8 &
             FFMPEG_PID=$!
