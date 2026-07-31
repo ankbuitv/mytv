@@ -75,14 +75,14 @@ jobs:
           script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=30211
+          BORE_PORT=30212
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
-          echo "🌐 Starting Bore Tunnel..."
+          echo "🌐 Starting Bore Tunnel on Port ${BORE_PORT}..."
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -108,7 +108,7 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (CHANNEL 191 - 1080P WEB HLS)!"
+          echo "🚀 CHRTV STREAM READY (CHANNEL 191 - PORT ${BORE_PORT})!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/kenscom191/1080p.m3u8"
