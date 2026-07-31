@@ -1,12 +1,12 @@
-name: IPTV Stream Server - TV360+9 (Direct Copy - Ultra Fast)
+name: IPTV Pure Proxy & Dynamic Route Engine (FFmpeg Stream Cache)
 
 on:
   schedule:
-    - cron: '59 5,11,17,23 * * *'
+    - cron: '50 0,5,11,17,23 * * *'
   workflow_dispatch:
 
 jobs:
-  stream:
+  proxy-server:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,118 +18,219 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer
+      - name: Install Dependencies & FFmpeg
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
-          pip install flask flask-cors
+          sudo apt-get update
+          sudo apt-get install -y curl dnsutils ffmpeg
+          pip install flask flask-cors gunicorn requests urllib3
 
-          # ====================================================
-          # 1. CẤU HÌNH DUCKDNS
-          # ====================================================
-          DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-
-          # 2. Cài đặt Bore
+      - name: Setup Bore Tunnel & SSHX
+        run: |
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
+          curl -sSf https://sshx.io/get | sh
 
-          # Tạo thư mục HLS
-          mkdir -p hls/tv360-9
+      - name: Generate App Code (FFmpeg Pass-Through & Auto Cache Token)
+        run: |
+          python3 -c '
+          code = """import os
+          import time
+          import subprocess
+          import requests
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
 
-          # 3. Mở Bore Tunnel Port 30206
-          BORE_PORT=30206
-          MAX_RETRIES=5
-          RETRY_COUNT=0
+          app = Flask(__name__)
 
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            bore local 5000 --to bore.pub --port 30206 > bore.log 2>&1 &
-            sleep 4
-            
-            if grep -q "listening at bore.pub:30206" bore.log; then
-              echo "✅ Đã giữ thành công Port 30206!"
+          DUCKDNS_DOMAIN = "chrtv"
+          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          TARGET_SERVER = "http://23.237.104.106:8080"
+          AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
+          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
+          KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
+          KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+
+          HEADERS_DEFAULT = {
+              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+              "Accept": "*/*",
+              "Connection": "keep-alive"
+          }
+          UA_DALVIK = "Dalvik/2.1.0"
+
+          # Bộ nhớ tạm lưu URL gốc của TV360 (Cache)
+          TV360_CACHE = {
+              "tv360-9": {"url": None, "fetched_at": 0},
+              "tv360-10": {"url": None, "fetched_at": 0}
+          }
+
+          def get_public_base_url():
+              return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
+
+          def add_cors_headers(response):
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              return response
+
+          def fetch_tv360_real_url(channel_id):
+              \"\"\"Chỉ gọi VMTTV đúng 1 lần duy nhất để bóc lấy URL gốc thực sự chứa token\"\"\"
+              cache_data = TV360_CACHE.get(channel_id)
+              
+              # Nếu URL còn hiệu lực (dưới 3 giờ) thì lấy luôn trong Cache
+              if cache_data and cache_data["url"] and (time.time() - cache_data["fetched_at"] < 10800):
+                  print(f"⚡ [CACHE HIT] Dùng lại URL gốc cho {channel_id}")
+                  return cache_data["url"]
+
+              print(f"🔄 [FETCH VMTTV] Đang gọi API lấy token mới cho {channel_id}...")
+              vmttv_endpoint = f"https://vmttv.dpdns.org/tv360/?id={channel_id}"
+              try:
+                  resp = requests.get(vmttv_endpoint, headers={"User-Agent": UA_DALVIK}, allow_redirects=True, timeout=10)
+                  real_url = resp.url
+                  
+                  # Nếu VMTTV trả về M3U playlist master
+                  if "#EXTM3U" in resp.text:
+                      lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
+                      if lines:
+                          real_url = urljoin(resp.url, lines[-1])
+
+                  TV360_CACHE[channel_id] = {"url": real_url, "fetched_at": time.time()}
+                  print(f"✅ [FETCH SUCCESS] Token mới {channel_id}: {real_url[:80]}...")
+                  return real_url
+              except Exception as e:
+                  print(f"❌ Error Fetching VMTTV: {e}")
+                  return None
+
+          # ============================================================================
+          # FFMPEG DIRECT STREAMING ENGINE (PASS-THROUGH NO CPU LOSS)
+          # ============================================================================
+          def ffmpeg_stream_tv360(channel_id):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+
+              real_stream_url = fetch_tv360_real_url(channel_id)
+              if not real_stream_url:
+                  return add_cors_headers(Response("Cannot resolve TV360 Stream", status=502))
+
+              def generate_stream(stream_url):
+                  # Lệnh FFmpeg copy nguyên bản codec, không re-encode, siêu mượt
+                  ffmpeg_cmd = [
+                      "ffmpeg",
+                      "-headers", f"User-Agent: {UA_DALVIK}\\r\\n",
+                      "-i", stream_url,
+                      "-c", "copy",
+                      "-f", "mpegts",
+                      "pipe:1"
+                  ]
+                  
+                  process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
+                  try:
+                      while True:
+                          chunk = process.stdout.read(65536)
+                          if not chunk:
+                              break
+                          yield chunk
+                  finally:
+                      process.kill()
+                      process.wait()
+
+              try:
+                  res = Response(stream_with_context(generate_stream(real_stream_url)), mimetype="video/mp2t")
+                  return add_cors_headers(res)
+              except Exception as e:
+                  print(f"⚠️ Stream ngắt kết nối, xóa cache token {channel_id}")
+                  TV360_CACHE[channel_id] = {"url": None, "fetched_at": 0}
+                  return add_cors_headers(Response(f"FFmpeg Stream Exception: {str(e)}", status=500))
+
+          @app.route("/")
+          def home():
+              return f"IPTV FFmpeg Engine Active! Base URL: {get_public_base_url()}", 200
+
+          @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
+          def get_playlist():
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+              public_url = get_public_base_url()
+              m3u_content = f\"\"\"#EXTM3U
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD (FFmpeg Copy)
+          {public_url}/stream/tv360-9
+          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD (FFmpeg Copy)
+          {public_url}/stream/tv360-10
+          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
+          {public_url}/stream/USA_HBO_ZONE/index.m3u8
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
+          {public_url}/stream/USA_DISCOVERY/index.m3u8\"\"\"
+              res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
+              return add_cors_headers(res)
+
+          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
+          def proxy_tv360_9(): 
+              return ffmpeg_stream_tv360("tv360-9")
+
+          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
+          def proxy_tv360_10(): 
+              return ffmpeg_stream_tv360("tv360-10")
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=5000, threaded=True)
+          """
+          with open("app.py", "w", encoding="utf-8") as f:
+              f.write(code)
+          '
+
+      - name: Start Proxy Server & Tunnel
+        run: |
+          python3 -c '
+          script = """#!/bin/bash
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          echo "💻 Starting SSHX Web Terminal..."
+          sshx > sshx.log 2>&1 &
+          sleep 4
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
+
+          echo "🌐 Requesting Random Available Port from Bore Tunnel..."
+          bore local 5000 --to bore.pub > bore.log 2>&1 &
+
+          ASSIGNED_PORT=""
+          for i in {1..15}; do
+            sleep 1
+            ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
+            if [ -n "$ASSIGNED_PORT" ]; then
               break
-            else
-              pkill bore || true
-              RETRY_COUNT=$((RETRY_COUNT+1))
-              sleep 3
             fi
           done
 
-          # 4. Update DuckDNS
+          if [ -z "$ASSIGNED_PORT" ]; then
+            echo "❌ Không thể cấp port từ Bore!"
+            cat bore.log
+            exit 1
+          fi
+
+          echo "✅ Bore Port Active: $ASSIGNED_PORT"
+
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
           fi
 
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${ASSIGNED_PORT}"
+          export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
-          # 5. File Playlist M3U
-          echo "#EXTM3U" > playlist.m3u
-          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
+          echo "===================================================="
+          echo "🚀 PROXY FFMPEG ENGINE ACTIVE ON PORT: ${ASSIGNED_PORT}"
+          echo "🔑 SSHX URL         : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
+          echo "===================================================="
 
-          # 6. Flask Server Đa Luồng
-          echo 'from flask import Flask, send_from_directory, abort' > app.py
-          echo 'from flask_cors import CORS' >> app.py
-          echo 'import os' >> app.py
-          echo 'app = Flask(__name__)' >> app.py
-          echo 'CORS(app)' >> app.py
-          echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
-          echo '@app.route("/playlist.m3u")' >> app.py
-          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
-          echo '@app.route("/hls/<path:filename>")' >> app.py
-          echo 'def serve_hls(filename):' >> app.py
-          echo '    file_path = os.path.join("hls", filename)' >> app.py
-          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
-          echo '    return send_from_directory("hls", filename)' >> app.py
-          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000, threaded=True)' >> app.py
-
-          python3 app.py &
-          sleep 2
-
-          UA_DALVIK="Dalvik/2.1.0"
-
-          # ====================================================
-          # 7. CHẠY FFMPEG CHẾ ĐỘ DIRECT COPY (KHÔNG LOGO, SIÊU MƯỢT)
-          # ====================================================
-          STREAM_URL_9="https://toiyeuvietnam.dpdns.org/TuyetDoiKhongKinhDoanh/tv360-9/KenhCoBan.m3u8"
-          CURRENT_REAL_URL=""
-          FFMPEG_PID=""
-
-          get_real_url() {
-            local fetched_url=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
-            if [ -z "$fetched_url" ]; then
-              fetched_url="$STREAM_URL_9"
-            fi
-            echo "$fetched_url"
-          }
-
-          start_ffmpeg() {
-            local target_url="$1"
-            echo "🎬 [FFmpeg Engine] Đang stream trực tiếp (Direct Stream Copy)..."
-            ffmpeg -hide_banner -loglevel error \
-              -rw_timeout 15000000 \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
-              -user_agent "$UA_DALVIK" \
-              -i "$target_url" \
-              -c copy \
-              -f hls -hls_time 2 -hls_list_size 10 -hls_delete_threshold 4 -hls_flags delete_segments+omit_endlist \
-              -hls_segment_filename "hls/tv360-9/seg_1080p_%05d.ts" hls/tv360-9/1080p.m3u8 &
-            FFMPEG_PID=$!
-          }
-
-          CURRENT_REAL_URL=$(get_real_url)
-          start_ffmpeg "$CURRENT_REAL_URL"
-
-          # Vòng lặp 30 phút check link
-          while true; do
-            sleep 1800
-            NEW_REAL_URL=$(get_real_url)
-            if ! kill -0 $FFMPEG_PID 2>/dev/null || [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ]; then
-              if kill -0 $FFMPEG_PID 2>/dev/null; then kill -9 $FFMPEG_PID || true; fi
-              CURRENT_REAL_URL="$NEW_REAL_URL"
-              start_ffmpeg "$CURRENT_REAL_URL"
-            fi
-          done
+          gunicorn -w 4 --threads 16 --access-logfile - --error-logfile - --keep-alive 30 -b 0.0.0.0:5000 app:app
+          """
+          with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
+          '
+          chmod +x start_proxy.sh
+          ./start_proxy.sh
