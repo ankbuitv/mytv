@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine (FFmpeg Stream Cache)
+name: IPTV Server (TV360-9 Pure HLS Port 30206 & Flask Proxy)
 
 on:
   schedule:
@@ -18,10 +18,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies & FFmpeg
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl dnsutils ffmpeg
+          sudo apt-get install -y curl dnsutils
           pip install flask flask-cors gunicorn requests urllib3
 
       - name: Setup Bore Tunnel & SSHX
@@ -31,20 +31,16 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code (FFmpeg Pass-Through & Auto Cache Token)
+      - name: Generate Code (Main Flask & TV360-9 Pure HLS 30206)
         run: |
           python3 -c '
-          code = """import os
-          import time
-          import subprocess
+          # 1. FLASK PROXY CHÍNH (PORT 5000)
+          flask_code = """import os
           import requests
           from urllib.parse import urljoin, quote, unquote
           from flask import Flask, Response, request, stream_with_context
 
           app = Flask(__name__)
-
-          DUCKDNS_DOMAIN = "chrtv"
-          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
           TARGET_SERVER = "http://23.237.104.106:8080"
           AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
@@ -53,134 +49,199 @@ jobs:
           KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
           KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
 
-          HEADERS_DEFAULT = {
-              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
-              "Accept": "*/*",
-              "Connection": "keep-alive"
-          }
-          UA_DALVIK = "Dalvik/2.1.0"
+          HEADERS_DEFAULT = {"User-Agent": "VLC/3.0.20 LibVLC/3.0.20", "Accept": "*/*", "Connection": "keep-alive"}
 
-          # Bộ nhớ tạm lưu URL gốc của TV360 (Cache)
-          TV360_CACHE = {
-              "tv360-9": {"url": None, "fetched_at": 0},
-              "tv360-10": {"url": None, "fetched_at": 0}
-          }
+          http_session = requests.Session()
+          adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=100)
+          http_session.mount("http://", adapter)
+          http_session.mount("https://", adapter)
 
           def get_public_base_url():
               return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
 
-          def add_cors_headers(response):
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
-              response.headers["Access-Control-Allow-Headers"] = "*"
-              return response
-
-          def fetch_tv360_real_url(channel_id):
-              \"\"\"Chỉ gọi VMTTV đúng 1 lần duy nhất để bóc lấy URL gốc thực sự chứa token\"\"\"
-              cache_data = TV360_CACHE.get(channel_id)
-              
-              # Nếu URL còn hiệu lực (dưới 3 giờ) thì lấy luôn trong Cache
-              if cache_data and cache_data["url"] and (time.time() - cache_data["fetched_at"] < 10800):
-                  print(f"⚡ [CACHE HIT] Dùng lại URL gốc cho {channel_id}")
-                  return cache_data["url"]
-
-              print(f"🔄 [FETCH VMTTV] Đang gọi API lấy token mới cho {channel_id}...")
-              vmttv_endpoint = f"https://vmttv.dpdns.org/tv360/?id={channel_id}"
-              try:
-                  resp = requests.get(vmttv_endpoint, headers={"User-Agent": UA_DALVIK}, allow_redirects=True, timeout=10)
-                  real_url = resp.url
-                  
-                  # Nếu VMTTV trả về M3U playlist master
-                  if "#EXTM3U" in resp.text:
-                      lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
-                      if lines:
-                          real_url = urljoin(resp.url, lines[-1])
-
-                  TV360_CACHE[channel_id] = {"url": real_url, "fetched_at": time.time()}
-                  print(f"✅ [FETCH SUCCESS] Token mới {channel_id}: {real_url[:80]}...")
-                  return real_url
-              except Exception as e:
-                  print(f"❌ Error Fetching VMTTV: {e}")
-                  return None
-
-          # ============================================================================
-          # FFMPEG DIRECT STREAMING ENGINE (PASS-THROUGH NO CPU LOSS)
-          # ============================================================================
-          def ffmpeg_stream_tv360(channel_id):
-              if request.method == "OPTIONS":
-                  return add_cors_headers(Response(status=204))
-
-              real_stream_url = fetch_tv360_real_url(channel_id)
-              if not real_stream_url:
-                  return add_cors_headers(Response("Cannot resolve TV360 Stream", status=502))
-
-              def generate_stream(stream_url):
-                  # Lệnh FFmpeg copy nguyên bản codec, không re-encode, siêu mượt
-                  ffmpeg_cmd = [
-                      "ffmpeg",
-                      "-headers", f"User-Agent: {UA_DALVIK}\\r\\n",
-                      "-i", stream_url,
-                      "-c", "copy",
-                      "-f", "mpegts",
-                      "pipe:1"
-                  ]
-                  
-                  process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**6)
-                  try:
-                      while True:
-                          chunk = process.stdout.read(65536)
-                          if not chunk:
-                              break
-                          yield chunk
-                  finally:
-                      process.kill()
-                      process.wait()
-
-              try:
-                  res = Response(stream_with_context(generate_stream(real_stream_url)), mimetype="video/mp2t")
-                  return add_cors_headers(res)
-              except Exception as e:
-                  print(f"⚠️ Stream ngắt kết nối, xóa cache token {channel_id}")
-                  TV360_CACHE[channel_id] = {"url": None, "fetched_at": 0}
-                  return add_cors_headers(Response(f"FFmpeg Stream Exception: {str(e)}", status=500))
+          def add_cors(res):
+              res.headers["Access-Control-Allow-Origin"] = "*"
+              res.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+              res.headers["Access-Control-Allow-Headers"] = "*"
+              return res
 
           @app.route("/")
-          def home():
-              return f"IPTV FFmpeg Engine Active! Base URL: {get_public_base_url()}", 200
+          def home(): return "IPTV Server Running", 200
 
           @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
           def get_playlist():
-              if request.method == "OPTIONS":
-                  return add_cors_headers(Response(status=204))
+              if request.method == "OPTIONS": return add_cors(Response(status=204))
+              
+              duck_base = "http://chrtv.duckdns.org"
               public_url = get_public_base_url()
+              
               m3u_content = f\"\"\"#EXTM3U
-          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD (FFmpeg Copy)
-          {public_url}/stream/tv360-9
-          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD (FFmpeg Copy)
-          {public_url}/stream/tv360-10
-          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD (Direct Port 30206 M3U8)
+          {duck_base}:30206/live.m3u8
+          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD
           {public_url}/stream/USA_HBO_ZONE/index.m3u8
-          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
-          {public_url}/stream/USA_DISCOVERY/index.m3u8\"\"\"
-              res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
-              return add_cors_headers(res)
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD
+          {public_url}/stream/USA_DISCOVERY/index.m3u8
+          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live",Warner TV HD
+          {public_url}/stream/warner
+          #EXTINF:-1 tvg-id="Paramount" group-title="US Live",Paramount Network HD
+          {public_url}/stream/paramount
+          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+          {public_url}/stream/studioc
+          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
+          {public_url}/stream/180.m3u8
+          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
+          {public_url}/stream/191.m3u8\"\"\"
+              return add_cors(Response(m3u_content.strip(), mimetype="application/x-mpegurl"))
 
-          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
-          def proxy_tv360_9(): 
-              return ffmpeg_stream_tv360("tv360-9")
+          def handle_hls_proxy(default_target_url, endpoint_path):
+              if request.method == "OPTIONS": return add_cors(Response(status=204))
+              target_url = unquote(request.args.get("url") or default_target_url)
+              req_headers = HEADERS_DEFAULT.copy()
+              if "103.152.216.26" in target_url: req_headers["Host"] = "103.152.216.26:8443"
 
-          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
-          def proxy_tv360_10(): 
-              return ffmpeg_stream_tv360("tv360-10")
+              try:
+                  resp = http_session.get(target_url, headers=req_headers, timeout=10, stream=True, allow_redirects=True)
+                  if resp.status_code != 200: return add_cors(Response(f"Upstream Error: {resp.status_code}", status=resp.status_code))
+                  final_url = resp.url
+                  
+                  if ".m3u8" in target_url or "m3u8" in resp.headers.get("Content-Type", "") or resp.text.strip().startswith("#EXTM3U"):
+                      lines = resp.text.splitlines()
+                      rewritten = []
+                      for line in lines:
+                          l = line.strip()
+                          if not l or l.startswith("#"): rewritten.append(l)
+                          else: rewritten.append(f"{endpoint_path}?url={quote(urljoin(final_url, l))}")
+                      res = Response("\\n".join(rewritten).strip(), status=200, mimetype="application/x-mpegurl")
+                      res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                      return add_cors(res)
+                  else:
+                      def generate():
+                          for chunk in resp.iter_content(chunk_size=32768):
+                              if chunk: yield chunk
+                      return add_cors(Response(stream_with_context(generate()), status=200, mimetype="video/mp2t"))
+              except Exception as e:
+                  return add_cors(Response(f"Error: {str(e)}", status=502))
+
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+          def proxy_studioc(): return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+
+          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
+          def proxy_warner(): return handle_hls_proxy(WARNER_TV, "/stream/warner")
+
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+          def proxy_paramount(): return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
+
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_180(): return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
+
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_191(): return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
+
+          @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
+          def proxy_dynamic_23_237(channel_id, subpath):
+              target_url = unquote(request.args.get("url")) if request.args.get("url") else f"{TARGET_SERVER}/{channel_id}/{subpath}"
+              return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
 
           if __name__ == "__main__":
               app.run(host="0.0.0.0", port=5000, threaded=True)
           """
-          with open("app.py", "w", encoding="utf-8") as f:
-              f.write(code)
+          with open("app.py", "w", encoding="utf-8") as f: f.write(flask_code)
+
+          # 2. SERVICE TV360-9 PURE HLS (.M3U8) TRÊN PORT 30206
+          tv360_hls_code = """import requests
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
+
+          app = Flask(__name__)
+          cached_real_m3u8_url = None
+
+          HEADERS = {"User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)"}
+          session = requests.Session()
+
+          def get_tv360_9_m3u8_url(force_refresh=False):
+              global cached_real_m3u8_url
+              if cached_real_m3u8_url and not force_refresh:
+                  return cached_real_m3u8_url
+
+              print("🔄 [TV360-9] Fetching new M3U8 token link from vmttv...")
+              try:
+                  resp = session.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=HEADERS, allow_redirects=True, timeout=10)
+                  real_url = resp.url
+                  if "#EXTM3U" in resp.text:
+                      lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
+                      if lines:
+                          real_url = urljoin(resp.url, lines[-1])
+                  cached_real_m3u8_url = real_url
+                  print(f"✅ [TV360-9] Updated M3U8 Link: {real_url[:80]}...")
+                  return cached_real_m3u8_url
+              except Exception as e:
+                  print(f"❌ Error fetching TV360-9: {e}")
+                  return None
+
+          @app.route("/", methods=["GET"])
+          @app.route("/live.m3u8", methods=["GET"])
+          def get_live_m3u8():
+              m3u8_url = get_tv360_9_m3u8_url()
+              if not m3u8_url:
+                  return "Error fetching m3u8 playlist", 502
+
+              try:
+                  resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
+                  if resp.status_code != 200:
+                      m3u8_url = get_tv360_9_m3u8_url(force_refresh=True)
+                      resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
+
+                  final_url = resp.url
+                  lines = resp.text.splitlines()
+                  rewritten = []
+                  for line in lines:
+                      l = line.strip()
+                      if not l or l.startswith("#"):
+                          rewritten.append(l)
+                      else:
+                          abs_ts_url = urljoin(final_url, l)
+                          rewritten.append(f"/ts?url={quote(abs_ts_url)}")
+
+                  res = Response("\\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
+                  res.headers["Access-Control-Allow-Origin"] = "*"
+                  res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                  return res
+              except Exception as e:
+                  return f"Error loading m3u8: {e}", 502
+
+          @app.route("/ts", methods=["GET"])
+          def get_ts_segment():
+              global cached_real_m3u8_url
+              ts_url = unquote(request.args.get("url", ""))
+              if not ts_url:
+                  return "Missing TS URL", 400
+
+              try:
+                  resp = session.get(ts_url, headers=HEADERS, timeout=10, stream=True)
+                  if resp.status_code != 200:
+                      print(f"⚠️ TS Segment Error {resp.status_code}, refreshing token...")
+                      cached_real_m3u8_url = None
+                      return Response(f"Upstream Segment Error {resp.status_code}", status=resp.status_code)
+
+                  def generate():
+                      for chunk in resp.iter_content(chunk_size=32768):
+                          if chunk:
+                              yield chunk
+
+                  res = Response(stream_with_context(generate()), mimetype="video/mp2t")
+                  res.headers["Access-Control-Allow-Origin"] = "*"
+                  return res
+              except Exception as e:
+                  return f"Segment fetch error: {e}", 502
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=30206, threaded=True)
+          """
+          with open("tv360_server.py", "w", encoding="utf-8") as f: f.write(tv360_hls_code)
           '
 
-      - name: Start Proxy Server & Tunnel
+      - name: Start Services & Tunnels
         run: |
           python3 -c '
           script = """#!/bin/bash
@@ -192,25 +253,18 @@ jobs:
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
-          echo "🌐 Requesting Random Available Port from Bore Tunnel..."
+          echo "🌐 Starting Bore Tunnel for Main Proxy Port 5000..."
           bore local 5000 --to bore.pub > bore.log 2>&1 &
 
           ASSIGNED_PORT=""
           for i in {1..15}; do
             sleep 1
             ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
-            if [ -n "$ASSIGNED_PORT" ]; then
-              break
-            fi
+            if [ -n "$ASSIGNED_PORT" ]; then break; fi
           done
 
-          if [ -z "$ASSIGNED_PORT" ]; then
-            echo "❌ Không thể cấp port từ Bore!"
-            cat bore.log
-            exit 1
-          fi
-
-          echo "✅ Bore Port Active: $ASSIGNED_PORT"
+          echo "🚀 Mở Bore Tunnel cố định Port 30206 cho TV360-9 M3U8..."
+          bore local 30206 --to bore.pub --port 30206 > bore_tv360.log 2>&1 &
 
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
@@ -223,11 +277,16 @@ jobs:
           export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
           echo "===================================================="
-          echo "🚀 PROXY FFMPEG ENGINE ACTIVE ON PORT: ${ASSIGNED_PORT}"
-          echo "🔑 SSHX URL         : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
+          echo "🚀 FLASK MAIN PROXY PORT : ${ASSIGNED_PORT}"
+          echo "📺 TV360-9 M3U8 DIRECT   : http://${DUCKDNS_DOMAIN}.duckdns.org:30206/live.m3u8"
+          echo "🔑 SSHX TERMINAL URL     : ${SSHX_URL}"
+          echo "👉 PLAYLIST FULL M3U     : ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
+          # Khởi chạy TV360-9 Pure HLS Server
+          python3 tv360_server.py > tv360.log 2>&1 &
+
+          # Khởi chạy Main Proxy Flask
           gunicorn -w 4 --threads 16 --access-logfile - --error-logfile - --keep-alive 30 -b 0.0.0.0:5000 app:app
           """
           with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
