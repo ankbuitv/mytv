@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine - Auto Random Port
+name: IPTV Pure Proxy & Dynamic Route Engine
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code (Pure Proxy & Dynamic Routes)
+      - name: Generate App Code (Exact Proxy Logic)
         run: |
           python3 -c '
           code = """import os
@@ -41,15 +41,9 @@ jobs:
 
           app = Flask(__name__)
 
-          # ============================================================================
-          # CẤU HÌNH DUCKDNS
-          # ============================================================================
           DUCKDNS_DOMAIN = "chrtv"
           DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          # ============================================================================
-          # CẤU HÌNH BIẾN & LINK LUỒNG GỐC
-          # ============================================================================
           TARGET_SERVER = "http://23.237.104.106:8080"
           AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
           WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
@@ -61,8 +55,7 @@ jobs:
               "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
               "Accept": "*/*",
               "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-              "Connection": "keep-alive",
-              "Host": "103.152.216.26:8443"
+              "Connection": "keep-alive"
           }
 
           def get_public_base_url():
@@ -76,10 +69,10 @@ jobs:
 
           @app.route("/")
           def home():
-              return f"IPTV Pure Proxy Engine Active! Base URL: {get_public_base_url()}", 200
+              return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
 
           # ============================================================================
-          # 1. PLAYLIST M3U TỔNG HỢP
+          # 1. PLAYLIST M3U TỔNG HỢP (SHORT LINKS)
           # ============================================================================
           @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
           def get_playlist():
@@ -89,8 +82,10 @@ jobs:
               m3u_content = f\"\"\"#EXTM3U
           #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
           {public_url}/stream/USA_HBO_ZONE/index.m3u8
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
+          {public_url}/stream/USA_DISCOVERY/index.m3u8
           #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
-          {public_url}/stream/warnertv
+          {public_url}/stream/warner
           #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
           {public_url}/stream/paramount
           #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
@@ -103,7 +98,7 @@ jobs:
               return add_cors_headers(res)
 
           # ============================================================================
-          # 2. CORE PROXY ENGINE
+          # CORE PROXY FUNCTION (REWRITE MANIFEST & STREAM SEGMENTS)
           # ============================================================================
           def handle_hls_proxy(default_target_url, endpoint_path):
               if request.method == "OPTIONS":
@@ -112,12 +107,8 @@ jobs:
               target_url = unquote(target_url)
               
               req_headers = HEADERS.copy()
-              if "amagi.tv" in target_url:
-                  req_headers.pop("Host", None)
-              elif "103.152.216.26" in target_url:
+              if "103.152.216.26" in target_url:
                   req_headers["Host"] = "103.152.216.26:8443"
-              else:
-                  req_headers.pop("Host", None)
 
               try:
                   resp = requests.get(target_url, headers=req_headers, timeout=10, stream=True)
@@ -147,8 +138,32 @@ jobs:
                   return add_cors_headers(Response(f"Proxy Exception: {str(e)}", status=502))
 
           # ============================================================================
-          # 3. DYNAMIC ROUTE FOR SERVER 23.237.104.106:8080
-          # Ví dụ: /stream/USA_DISCOVERY/index.m3u8 -> Map tới http://23.237.104.106:8080/USA_DISCOVERY/tracks-v1a1/mono.m3u8
+          # 2. FIXED SHORTCUT ROUTES
+          # ============================================================================
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+          def proxy_studioc(): 
+              return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+
+          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
+          def proxy_warner(): 
+              return handle_hls_proxy(WARNER_TV, "/stream/warner")
+
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+          def proxy_paramount(): 
+              return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
+
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_180(): 
+              return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
+
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_191(): 
+              return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
+
+          # ============================================================================
+          # 1. DYNAMIC ROUTE ƯU TIÊN CHO SERVER 23.237.104.106:8080
+          # Bắt mọi request dạng /stream/<channel_id>/<subpath>
+          # Ví dụ: /stream/USA_DISCOVERY/index.m3u8 -> 23.237.104.106:8080/USA_DISCOVERY/index.m3u8
           # ============================================================================
           @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
           def proxy_dynamic_23_237(channel_id, subpath):
@@ -158,31 +173,9 @@ jobs:
               if request.args.get("url"):
                   target_url = unquote(request.args.get("url"))
               else:
-                  if subpath == "index.m3u8":
-                      target_subpath = "tracks-v1a1/mono.m3u8"
-                  else:
-                      target_subpath = subpath
-                  target_url = f"{TARGET_SERVER}/{channel_id}/{target_subpath}"
+                  target_url = f"{TARGET_SERVER}/{channel_id}/{subpath}"
 
               return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
-
-          # ============================================================================
-          # 4. FIXED ROUTES
-          # ============================================================================
-          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
-          def proxy_studioc(): return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
-
-          @app.route("/stream/warnertv", methods=["GET", "OPTIONS"])
-          def proxy_warnertv(): return handle_hls_proxy(WARNER_TV, "/stream/warnertv")
-
-          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
-          def proxy_paramount(): return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
-
-          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
-          def proxy_180(): return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
-
-          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
-          def proxy_191(): return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
 
           if __name__ == "__main__":
               app.run(host="0.0.0.0", port=5000, threaded=True)
@@ -206,7 +199,6 @@ jobs:
           echo "🌐 Requesting Random Available Port from Bore Tunnel..."
           bore local 5000 --to bore.pub > bore.log 2>&1 &
 
-          # Chờ Bore cấp port rảnh
           ASSIGNED_PORT=""
           for i in {1..15}; do
             sleep 1
@@ -217,12 +209,12 @@ jobs:
           done
 
           if [ -z "$ASSIGNED_PORT" ]; then
-            echo "❌ Không thể cấp port từ Bore! Đang kiểm tra log:"
+            echo "❌ Không thể cấp port từ Bore!"
             cat bore.log
             exit 1
           fi
 
-          echo "✅ Bore đã cấp Port Trống Hoàn Toàn: $ASSIGNED_PORT"
+          echo "✅ Bore Port Active: $ASSIGNED_PORT"
 
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
@@ -235,13 +227,14 @@ jobs:
           export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
           echo "===================================================="
-          echo "🚀 IPTV PROXY ACTIVE ON ASSIGNED PORT: ${ASSIGNED_PORT}"
+          echo "🚀 PROXY ACTIVE ON PORT: ${ASSIGNED_PORT}"
           echo "🔑 SSHX URL         : ${SSHX_URL}"
           echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 DYNAMIC EXAMPLE  : ${PUBLIC_URL}/stream/USA_DISCOVERY/index.m3u8"
+          echo "👉 DISCOVERY PROXY  : ${PUBLIC_URL}/stream/USA_DISCOVERY/index.m3u8"
+          echo "👉 WARNER TV PROXY  : ${PUBLIC_URL}/stream/warner"
+          echo "👉 STUDIO C PROXY   : ${PUBLIC_URL}/stream/studioc"
           echo "===================================================="
 
-          # Khởi chạy Gunicorn server
           gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
           """
           with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
