@@ -1,0 +1,190 @@
+name: IPTV Proxy Server - Multi Channel Proxy Only
+
+on:
+  schedule:
+    - cron: '50 0,5,11,17,23 * * *'
+  workflow_dispatch:
+
+jobs:
+  proxy-server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl dnsutils
+          pip install flask flask-cors gunicorn requests
+
+      - name: Setup Bore Tunnel & SSHX
+        run: |
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          curl -sSf https://sshx.io/get | sh
+
+      - name: Generate Proxy App Code (Python)
+        run: |
+          python3 -c '
+          code = """import os, requests
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
+          from flask_cors import CORS
+
+          app = Flask(__name__)
+          CORS(app, resources={r"/*": {"origins": "*"}})
+
+          # DANH SÁCH CANH TARGET GỐC
+          AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
+          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
+          KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
+          KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+
+          HEADERS = {
+              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+              "Accept": "*/*",
+              "Connection": "keep-alive"
+          }
+
+          http_session = requests.Session()
+
+          def add_cors(res):
+              res.headers["Access-Control-Allow-Origin"] = "*"
+              res.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+              return res
+
+          @app.route("/")
+          def home(): return "IPTV Pure Proxy Engine Running!", 200
+
+          # PLAYLIST M3U TỔNG CHO CÁC KÊNH PROXY
+          @app.route("/playlist.m3u")
+          def playlist():
+              public_url = os.environ.get("PUBLIC_URL", "")
+              m3u = f\"\"\"#EXTM3U
+          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+          {public_url}/stream/studioc
+          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
+          {public_url}/stream/warnertv
+          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
+          {public_url}/stream/paramount
+          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
+          {public_url}/stream/180.m3u8
+          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
+          {public_url}/stream/191.m3u8\"\"\"
+              return add_cors(Response(m3u.strip(), mimetype="application/x-mpegurl"))
+
+          # CORE PROXY FUNCTION
+          def handle_proxy(default_target, endpoint):
+              if request.method == "OPTIONS": return add_cors(Response(status=204))
+              
+              target_url = unquote(request.args.get("url") or default_target)
+              req_headers = HEADERS.copy()
+
+              try:
+                  resp = http_session.get(target_url, headers=req_headers, timeout=10, stream=True)
+                  if resp.status_code != 200:
+                      return add_cors(Response(f"Upstream Error: {resp.status_code}", status=resp.status_code))
+                  
+                  content_type = resp.headers.get("Content-Type", "")
+                  
+                  # Nếu là file Manifest M3U8 -> Rewrite lại các đường dẫn link con
+                  if "mpegurl" in content_type or target_url.endswith(".m3u8") or resp.text.strip().startswith("#EXTM3U"):
+                      lines = resp.text.splitlines()
+                      rewritten = []
+                      for line in lines:
+                          l = line.strip()
+                          if not l or l.startswith("#"):
+                              rewritten.append(l)
+                          else:
+                              full_url = urljoin(target_url, l)
+                              rewritten.append(f"{endpoint}?url={quote(full_url)}")
+                      res = Response("\\n".join(rewritten), mimetype="application/x-mpegurl")
+                      res.headers["Cache-Control"] = "no-cache"
+                      return add_cors(res)
+                  
+                  # Nếu là file Video Segment (.ts) -> Stream từng chunk về Client
+                  else:
+                      def generate():
+                          for chunk in resp.iter_content(chunk_size=8192):
+                              yield chunk
+                      return add_cors(Response(stream_with_context(generate()), mimetype="video/mp2t"))
+              except Exception as e:
+                  return add_cors(Response(f"Proxy Exception: {e}", status=502))
+
+          # ROUTE CÁC KÊNH
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+          def proxy_studioc(): return handle_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+
+          @app.route("/stream/warnertv", methods=["GET", "OPTIONS"])
+          def proxy_warnertv(): return handle_proxy(WARNER_TV, "/stream/warnertv")
+
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+          def proxy_paramount(): return handle_proxy(PARAMOUNT, "/stream/paramount")
+
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_180(): return handle_proxy(KENSCOM_180, "/stream/180.m3u8")
+
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_191(): return handle_proxy(KENSCOM_191, "/stream/191.m3u8")
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=5000)
+          """
+          with open("app_proxy.py", "w", encoding="utf-8") as f: f.write(code)
+          '
+
+      - name: Start Proxy Server
+        run: |
+          python3 -c '
+          script = """#!/bin/bash
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT=30211
+
+          echo "💻 Starting SSHX..."
+          sshx > sshx.log 2>&1 &
+          sleep 4
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
+
+          echo "🌐 Starting Bore Tunnel..."
+          (
+            while true; do
+              bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
+              sleep 3
+            done
+          ) &
+          sleep 5
+
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+          export PUBLIC_URL
+
+          echo "===================================================="
+          echo "🚀 PROXY SERVER READY!"
+          echo "🔑 SSHX URL     : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL : ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 STUDIO C URL : ${PUBLIC_URL}/stream/studioc"
+          echo "===================================================="
+
+          # Khởi chạy Gunicorn với 8 worker đa luồng phục vụ proxy
+          gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app_proxy:app
+          """
+          with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
+          '
+          chmod +x start_proxy.sh
+          ./start_proxy.sh
