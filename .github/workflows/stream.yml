@@ -1,10 +1,10 @@
-name: IPTV Stream Server - Kenscom 180 (Fixed Port 30205)
+name: IPTV Stream Server - Kenscom 180 (Fixed Exit Code 127)
 
 on:
   schedule:
-    # 🔄 Tự động chạy lại mỗi 5 tiếng 55 phút (phút 55 của các mốc 0, 5, 11, 17, 23 UTC)
-    - cron: '55 0,5,11,17,23 * * *'
-  workflow_dispatch: # Vẫn giữ nút bấm chạy bằng tay nếu thích
+    # 🔄 Tự động chạy lại mỗi 5 tiếng 50 phút
+    - cron: '50 0,5,11,17,23 * * *'
+  workflow_dispatch:
 
 jobs:
   stream:
@@ -21,98 +21,97 @@ jobs:
 
       - name: Run Streamer
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
+          set -e
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
           # ====================================================
-          # 1. CẤU HÌNH DUCKDNS
+          # 1. CẤU HÌNH DUCKDNS & BORE
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          # 2. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tạo thư mục lưu HLS
           mkdir -p hls/kenscom180
 
-          # 3. Ép mở Bore ở Port Cố Định 30205
+          # 2. Mở Bore Tunnel ở Port cố định 30205
           echo "🌐 Đang mở Bore Tunnel tại Port cố định 30205..."
           BORE_PORT=30205
-          MAX_RETRIES=5
-          RETRY_COUNT=0
-          CONNECTED=false
+          bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
+          sleep 5
 
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
-            sleep 4
-            
-            if grep -q "listening at bore.pub:30205" bore.log; then
-              echo "✅ Đã giữ thành công Port 30205!"
-              CONNECTED=true
-              break
-            else
-              echo "⚠️ Port 30205 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
-              pkill bore || true
-              RETRY_COUNT=$((RETRY_COUNT+1))
-              sleep 3
-            fi
-          done
-
-          # 4. Cập nhật IP Bore lên DuckDNS
-          BORE_IP=$(dig +short bore.pub | tail -n1)
-          if [ -n "$BORE_IP" ]; then
-            echo "🌐 Cập nhật IP Bore (${BORE_IP}) lên ${DUCKDNS_DOMAIN}.duckdns.org..."
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
-            echo ""
-          fi
+          # 3. Cập nhật IP Bore lên DuckDNS bằng Python (Tránh phụ thuộc vào dig/dnsutils)
+          python3 -c "
+import urllib.request, json
+try:
+    ip = urllib.request.urlopen('https://api.ipify.org').read().decode('utf8')
+    url = f'https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub'
+    urllib.request.urlopen(url)
+    print('✅ Đã cập nhật DuckDNS!')
+except Exception as e:
+    print('⚠️ Lỗi DuckDNS:', e)
+"
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 5. Tạo file playlist.m3u
+          # 4. Tạo Playlist
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-          # 6. Flask Server
-          echo 'from flask import Flask, send_from_directory, abort' > app.py
-          echo 'from flask_cors import CORS' >> app.py
-          echo 'import os' >> app.py
-          echo 'app = Flask(__name__)' >> app.py
-          echo 'CORS(app)' >> app.py
-          echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
-          echo '@app.route("/playlist.m3u")' >> app.py
-          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
-          echo '@app.route("/hls/<path:filename>")' >> app.py
-          echo 'def serve_hls(filename):' >> app.py
-          echo '    file_path = os.path.join("hls", filename)' >> app.py
-          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
-          echo '    return send_from_directory("hls", filename)' >> app.py
-          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
+          # 5. Tạo Flask Server
+          cat << 'EOF' > app.py
+from flask import Flask, send_from_directory, abort
+from flask_cors import CORS
+import os
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/")
+def index(): 
+    return "IPTV Stream Server is Running!", 200
+
+@app.route("/playlist.m3u")
+def playlist(): 
+    return send_from_directory(".", "playlist.m3u")
+
+@app.route("/hls/<path:filename>")
+def serve_hls(filename):
+    file_path = os.path.join("hls", filename)
+    if not os.path.exists(file_path): 
+        return abort(404)
+    return send_from_directory("hls", filename)
+
+if __name__ == "__main__": 
+    app.run(host="0.0.0.0", port=5000)
+EOF
 
           python3 app.py &
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER (KENSCOM 180 NO LAG) READY!"
-          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 LINK STREAM TRỰC TIẾP: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
+          echo "🚀 CHRTV STREAM SERVER READY!"
+          echo "👉 LINK PLAYLIST: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK DIRECT: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          # 7. STREAM RE-ENCODE TRỰC TIẾP TỪ KENSCOM 180 (SIÊU MƯỢT, KHÔNG LỖI CỰC BẰNG CPU)
-          ffmpeg -hide_banner -loglevel error \
-            -headers "User-Agent: VLC/3.0.20 LibVLC/3.0.20"$'\r\n'"Accept-Language: vi-VN,vi;q=0.9"$'\r\n'"Host: 103.152.216.26:8443"$'\r\n' \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
-            -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 50 -crf 26 -maxrate 2500k -bufsize 5000k \
-            -c:a aac -b:a 128k -ar 44100 \
-            -f hls -hls_time 4 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
-            -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8
-            -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 -g 50 -b:v 1000k -maxrate 1200k -bufsize 2400k \
-            -c:a aac -b:a 96k -ar 44100 \
-            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
-            -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8
+          # 6. VÒNG LẶP RE-ENCODE AUTO-RESTART (CHỐNG CRASH / CHỐNG EXIT CODE 127)
+          while true; do
+            echo "🎬 Đang chạy luồng FFmpeg..."
+            ffmpeg -hide_banner -loglevel error \
+              -headers "User-Agent: VLC/3.0.20 LibVLC/3.0.20"$'\r\n'"Accept-Language: vi-VN,vi;q=0.9"$'\r\n'"Host: 103.152.216.26:8443"$'\r\n' \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
+              -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 28 -b:v 900k -maxrate 1100k -bufsize 1800k \
+              -c:a aac -b:a 96k -ar 44100 \
+              -f hls -hls_time 3 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
+              -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
+            
+            echo "⚠️ Luồng bị ngắt kết nối, đang khởi động lại sau 3 giây..."
+            sleep 3
+          done
