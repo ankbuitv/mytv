@@ -1,4 +1,4 @@
-name: TV360-9 Service
+name: TV360-9 Stream Proxy
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-run:
+  run-proxy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -17,11 +17,26 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           pip install requests flask
 
-      - name: Run TV360 Proxy Server
+      - name: Update DuckDNS IP
+        env:
+          DUCKDNS_DOMAIN: ${{ secrets.DUCKDNS_DOMAIN }}
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+        run: |
+          # Nếu có cấu hình Secret thì cập nhật IP Runner lên DuckDNS
+          if [ -n "$DUCKDNS_DOMAIN" ] && [ -n "$DUCKDNS_TOKEN" ]; then
+            echo "🔄 Dang cap nhat DuckDNS cho domain: $DUCKDNS_DOMAIN..."
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip="
+            echo ""
+            echo "✅ Da cap nhat IP DuckDNS!"
+          else
+            echo "⚠️ Bo qua DuckDNS (Chua cau hinh DUCKDNS_DOMAIN / DUCKDNS_TOKEN trong GitHub Secrets)"
+          fi
+
+      - name: Create Python App File
         run: |
           cat << 'EOF' > app.py
           import requests
@@ -34,6 +49,8 @@ jobs:
 
           HEADERS = {
               "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)",
+              "X-Forwarded-For": "116.109.123.45",
+              "Client-IP": "116.109.123.45",
               "Accept": "*/*",
               "Connection": "keep-alive"
           }
@@ -44,24 +61,25 @@ jobs:
               if cached_real_m3u8_url and not force_refresh:
                   return cached_real_m3u8_url
 
-              print("🔄 [TV360-9] Fetching new token...")
+              print("🔄 [TV360-9] Lay link tu vmttv...")
               try:
                   resp = session.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=HEADERS, allow_redirects=True, timeout=10)
                   real_url = resp.url
+                  
                   if "#EXTM3U" in resp.text:
                       lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
                       if lines:
                           real_url = urljoin(resp.url, lines[-1])
                   
-                  # Ép ID 379 chính chủ TV360+9
+                  # 🎯 ÉP ĐƯỜNG DẪN VỀ ID CHUẨN 379
                   real_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', real_url)
                   real_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', real_url)
 
                   cached_real_m3u8_url = real_url
-                  print(f"✅ Fixed M3U8 Link (ID 379): {real_url[:100]}...")
+                  print(f"✅ Link da ep ID 379: {real_url[:100]}...")
                   return cached_real_m3u8_url
               except Exception as e:
-                  print(f"❌ Error: {e}")
+                  print(f"❌ Loi: {e}")
                   return None
 
           @app.route("/", methods=["GET"])
@@ -138,7 +156,7 @@ jobs:
               try:
                   resp = session.get(ts_url, headers=HEADERS, timeout=10, stream=True)
                   if resp.status_code != 200:
-                      print(f"⚠️ TS Error {resp.status_code}, reset cache...")
+                      print(f"⚠️ Segment Error {resp.status_code}, reset cache...")
                       cached_real_m3u8_url = None
                       return Response(f"Upstream Segment Error {resp.status_code}", status=resp.status_code)
 
@@ -157,4 +175,14 @@ jobs:
               app.run(host="0.0.0.0", port=30206, threaded=True)
           EOF
 
-          python app.py
+      - name: Install Bore Client
+        run: |
+          wget https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xvf bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
+          chmod +x bore
+
+      - name: Run Server & Bore Tunnel
+        run: |
+          python app.py &
+          sleep 3
+          ./bore local 30206 --to bore.pub
