@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Kenscom 180 (Fixed YAML Syntax)
+name: IPTV Stream Server - Kenscom 180 (Fixed YAML Line 60)
 
 on:
   schedule:
@@ -92,18 +92,26 @@ EOF
           echo "👉 LINK DIRECT: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          # 6. VÒNG LẶP RE-ENCODE AUTO-RESTART (CHỐNG CRASH)
-          while true; do
-            echo "🎬 Đang chạy luồng FFmpeg..."
-            ffmpeg -hide_banner -loglevel error \
-              -headers "User-Agent: VLC/3.0.20 LibVLC/3.0.20"$'\r\n'"Accept-Language: vi-VN,vi;q=0.9"$'\r\n'"Host: 103.152.216.26:8443"$'\r\n' \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
-              -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 28 -b:v 900k -maxrate 1100k -bufsize 1800k \
-              -c:a aac -b:a 96k -ar 44100 \
-              -f hls -hls_time 3 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
-              -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
-            
-            echo "⚠️ Luồng bị ngắt kết nối, đang khởi động lại sau 3 giây..."
-            sleep 3
-          done
+          # 6. TẠO SCRIPT FFMPEG RIÊNG TRÁNH LỖI CÚ PHÁP YAML
+          cat << 'EOF' > run_ffmpeg.sh
+#!/bin/bash
+HEADERS=$'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\nAccept-Language: vi-VN,vi;q=0.9\r\nHost: 103.152.216.26:8443\r\n'
+
+while true; do
+  echo "🎬 Đang chạy luồng FFmpeg..."
+  ffmpeg -hide_banner -loglevel error \
+    -headers "$HEADERS" \
+    -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+    -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
+    -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 28 -b:v 900k -maxrate 1100k -bufsize 1800k \
+    -c:a aac -b:a 96k -ar 44100 \
+    -f hls -hls_time 3 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
+    -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
+  
+  echo "⚠️ Luồng bị ngắt kết nối, đang khởi động lại sau 3 giây..."
+  sleep 3
+done
+EOF
+
+          chmod +x run_ffmpeg.sh
+          ./run_ffmpeg.sh
