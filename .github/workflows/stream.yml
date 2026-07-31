@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Public Repo (Unlimited 4-Core + SSHX)
+name: IPTV Stream Server - Public Repo (Port 140211 + SSHX)
 
 on:
   schedule:
@@ -33,7 +33,7 @@ jobs:
           sudo mv bore /usr/local/bin/
 
           # Tải SSHX Web Terminal
-          curl -sSF https://sshx.io/get | sh
+          curl -sSf https://sshx.io/get | sh
 
       - name: Create Workspace Folders
         run: mkdir -p hls/kenscom180
@@ -78,12 +78,12 @@ jobs:
           script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=30205
+          BORE_PORT=140211
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
-          sleep 3
-          SSHX_URL=$(grep -o "https://sshx.io/s/[^ ]*" sshx.log | head -n1)
+          sleep 5
+          SSHX_URL=$(grep -o "https://sshx.io/s/[a-zA-Z0-9]*" sshx.log | head -n1)
 
           echo "🌐 Opening Bore Tunnel on Port $BORE_PORT..."
           bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
