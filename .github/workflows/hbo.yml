@@ -37,7 +37,7 @@ jobs:
           curl -sL "https://huggingface.co/spaces/ken1402/antv-live/resolve/main/logo1.png" -o logo1.png
           curl -sL "https://huggingface.co/spaces/ken1402/antv-live/resolve/main/hbo.png" -o hbo.png
 
-      - name: Generate EPG Fetcher Code (Python chuẩn của Bro)
+      - name: Generate EPG Fetcher Code
         run: |
           python3 -c '
           code = """import time
@@ -173,7 +173,7 @@ jobs:
           script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=30211
+          BORE_PORT=4000
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
