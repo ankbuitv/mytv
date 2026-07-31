@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine - Port 5000
+name: IPTV Pure Proxy & Dynamic Route Engine - Auto Random Port
 
 on:
   schedule:
@@ -42,23 +42,10 @@ jobs:
           app = Flask(__name__)
 
           # ============================================================================
-          # TỰ ĐỘNG CẬP NHẬT DUCKDNS KHI APP KHỞI CHẠY
+          # CẤU HÌNH DUCKDNS
           # ============================================================================
           DUCKDNS_DOMAIN = "chrtv"
           DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-
-          def update_duckdns():
-              try:
-                  url = f"https://www.duckdns.org/update?domains={DUCKDNS_DOMAIN}&token={DUCKDNS_TOKEN}&ip="
-                  res = requests.get(url, timeout=10)
-                  if "OK" in res.text:
-                      print(f"[DuckDNS] Cập nhật Domain {DUCKDNS_DOMAIN}.duckdns.org THÀNH CÔNG!")
-                  else:
-                      print(f"[DuckDNS] Cập nhật thất bại: {res.text}")
-              except Exception as e:
-                  print(f"[DuckDNS] Lỗi kết nối DuckDNS: {e}")
-
-          update_duckdns()
 
           # ============================================================================
           # CẤU HÌNH BIẾN & LINK LUỒNG GỐC
@@ -78,7 +65,8 @@ jobs:
               "Host": "103.152.216.26:8443"
           }
 
-          PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
+          def get_public_base_url():
+              return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
 
           def add_cors_headers(response):
               response.headers["Access-Control-Allow-Origin"] = "*"
@@ -88,7 +76,7 @@ jobs:
 
           @app.route("/")
           def home():
-              return f"IPTV Pure Proxy Engine Active! DuckDNS: {DUCKDNS_DOMAIN}.duckdns.org", 200
+              return f"IPTV Pure Proxy Engine Active! Base URL: {get_public_base_url()}", 200
 
           # ============================================================================
           # 1. PLAYLIST M3U TỔNG HỢP
@@ -97,19 +85,20 @@ jobs:
           def get_playlist():
               if request.method == "OPTIONS":
                   return add_cors_headers(Response(status=204))
+              public_url = get_public_base_url()
               m3u_content = f\"\"\"#EXTM3U
           #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
-          {PUBLIC_BASE_URL}/stream/USA_HBO_ZONE/index.m3u8
+          {public_url}/stream/USA_HBO_ZONE/index.m3u8
           #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
-          {PUBLIC_BASE_URL}/stream/warnertv
+          {public_url}/stream/warnertv
           #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
-          {PUBLIC_BASE_URL}/stream/paramount
+          {public_url}/stream/paramount
           #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
-          {PUBLIC_BASE_URL}/stream/studioc
+          {public_url}/stream/studioc
           #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
-          {PUBLIC_BASE_URL}/stream/180.m3u8
+          {public_url}/stream/180.m3u8
           #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
-          {PUBLIC_BASE_URL}/stream/191.m3u8\"\"\"
+          {public_url}/stream/191.m3u8\"\"\"
               res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
               return add_cors_headers(res)
 
@@ -202,27 +191,38 @@ jobs:
               f.write(code)
           '
 
-      - name: Start Proxy Server
+      - name: Start Proxy Server & Tunnel
         run: |
           python3 -c '
           script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=5000
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
-          echo "🌐 Starting Bore Tunnel on Port $BORE_PORT..."
-          (
-            while true; do
-              bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
-              sleep 3
-            done
-          ) &
-          sleep 5
+          echo "🌐 Requesting Random Available Port from Bore Tunnel..."
+          bore local 5000 --to bore.pub > bore.log 2>&1 &
+
+          # Chờ Bore cấp port rảnh
+          ASSIGNED_PORT=""
+          for i in {1..15}; do
+            sleep 1
+            ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
+            if [ -n "$ASSIGNED_PORT" ]; then
+              break
+            fi
+          done
+
+          if [ -z "$ASSIGNED_PORT" ]; then
+            echo "❌ Không thể cấp port từ Bore! Đang kiểm tra log:"
+            cat bore.log
+            exit 1
+          fi
+
+          echo "✅ Bore đã cấp Port Trống Hoàn Toàn: $ASSIGNED_PORT"
 
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
@@ -231,17 +231,17 @@ jobs:
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
           fi
 
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${ASSIGNED_PORT}"
           export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
           echo "===================================================="
-          echo "🚀 IPTV PURE PROXY RUNNING (PORT ${BORE_PORT})!"
+          echo "🚀 IPTV PROXY ACTIVE ON ASSIGNED PORT: ${ASSIGNED_PORT}"
           echo "🔑 SSHX URL         : ${SSHX_URL}"
           echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DYNAMIC EXAMPLE  : ${PUBLIC_URL}/stream/USA_DISCOVERY/index.m3u8"
           echo "===================================================="
 
-          # Khởi chạy Gunicorn server với 8 workers
+          # Khởi chạy Gunicorn server
           gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
           """
           with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
