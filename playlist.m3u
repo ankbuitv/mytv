@@ -524,8 +524,8 @@ http://chrtv.duckdns.org:21626/stream/studioc
 http://chrtv.duckdns.org:30206/hls/tv360-9/1080p.m3u8
 
 #EXTINF:-1 tvg-id="tv360-10" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 10
-#EXTVLCOPT:http-user-agent=Dalvik/2.1.0
-https://vmttv.dpdns.org/tv360/?id=tv360-10
+http://chrtv.duckdns.org:30207/hls/tv360-10/1080p.m3u8
+
 #EXTINF:-1 tvg-id="tv360-11" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 11
 #EXTVLCOPT:http-user-agent=Dalvik/2.1.0
 https://vmttv.dpdns.org/tv360/?id=tv360-11
