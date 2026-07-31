@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Fixed Port & Live Logs
+name: IPTV Stream Server - Web Compatible (H.264 + AAC)
 
 on:
   schedule:
@@ -80,9 +80,9 @@ jobs:
           BORE_PORT=30211
 
           echo "💻 Starting SSHX Web Terminal..."
-          NO_COLOR=1 sshx > sshx.log 2>&1 &
+          sshx > sshx.log 2>&1 &
           sleep 4
-          SSHX_URL=$(grep -o -E "https://sshx.io/s/[a-zA-Z0-9]+" sshx.log | head -n1)
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
           echo "🌐 Starting Bore Tunnel Watchdog on Port $BORE_PORT..."
           (
@@ -125,13 +125,14 @@ jobs:
           HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\\r\\nAccept: */*\\r\\nConnection: keep-alive"
 
           while true; do
-            echo "🎬 Starting FFmpeg Direct Stream (Live Status Below)..."
+            echo "🎬 Starting FFmpeg Web-Transcode Stream (H.264 + AAC)..."
             ffmpeg -y -hide_banner -loglevel info \\
               -headers "$HEADERS" \\
               -rw_timeout 10000000 \\
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
               -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \\
-              -c copy \\
+              -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 \\
+              -c:a aac -b:a 128k \\
               -f hls -hls_time 4 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \\
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
