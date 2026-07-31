@@ -1,136 +1,160 @@
-import requests
-import re
-from urllib.parse import urljoin, quote, unquote
-from flask import Flask, Response, request, stream_with_context
+name: TV360-9 Service
 
-app = Flask(__name__)
-cached_real_m3u8_url = None
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
 
-HEADERS = {
-    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)",
-    "Accept": "*/*",
-    "Connection": "keep-alive"
-}
-session = requests.Session()
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-def get_tv360_9_m3u8_url(force_refresh=False):
-    global cached_real_m3u8_url
-    if cached_real_m3u8_url and not force_refresh:
-        return cached_real_m3u8_url
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    print("🔄 [TV360-9] Đang lấy token mới từ vmttv...")
-    try:
-        resp = session.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=HEADERS, allow_redirects=True, timeout=10)
-        real_url = resp.url
-        if "#EXTM3U" in resp.text:
-            lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
-            if lines:
-                real_url = urljoin(resp.url, lines[-1])
-        
-        # 🎯 ÉP ĐƯỜNG DẪN VỀ ID CHUẨN 379
-        # 1. Nếu là dạng bpk-tv cũ (192, 210,...) -> Đổi về 379
-        real_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', real_url)
-        # 2. Nếu là dạng eds cũ -> Đổi ID về 379
-        real_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', real_url)
+      - name: Install dependencies
+        run: |
+          pip install requests flask
 
-        cached_real_m3u8_url = real_url
-        print(f"✅ [TV360-9] Link M3U8 đã ép ID 379: {real_url[:100]}...")
-        return cached_real_m3u8_url
-    except Exception as e:
-        print(f"❌ Lỗi lấy link TV360-9: {e}")
-        return None
+      - name: Run TV360 Proxy Server
+        run: |
+          cat << 'EOF' > app.py
+          import requests
+          import re
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
 
-@app.route("/", methods=["GET"])
-@app.route("/live.m3u8", methods=["GET"])
-def get_live_m3u8():
-    m3u8_url = get_tv360_9_m3u8_url()
-    if not m3u8_url:
-        return "Error fetching m3u8 playlist", 502
+          app = Flask(__name__)
+          cached_real_m3u8_url = None
 
-    try:
-        resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
-        if resp.status_code != 200:
-            # Token hết hạn -> Lấy lại token mới
-            m3u8_url = get_tv360_9_m3u8_url(force_refresh=True)
-            resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
+          HEADERS = {
+              "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)",
+              "Accept": "*/*",
+              "Connection": "keep-alive"
+          }
+          session = requests.Session()
 
-        final_url = resp.url
-        lines = resp.text.splitlines()
-        rewritten = []
-        
-        for line in lines:
-            l = line.strip()
-            if not l or l.startswith("#"):
-                rewritten.append(l)
-            else:
-                # Ép ID 379 cho toàn bộ sub-playlist/segment
-                abs_url = urljoin(final_url, l)
-                abs_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', abs_url)
-                abs_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', abs_url)
-                
-                # Nếu chuỗi trả về m3u8 con -> Trỏ tiếp về proxy m3u8
-                if ".m3u8" in abs_url:
-                    rewritten.append(f"/sub.m3u8?url={quote(abs_url)}")
-                else:
-                    rewritten.append(f"/ts?url={quote(abs_url)}")
+          def get_tv360_9_m3u8_url(force_refresh=False):
+              global cached_real_m3u8_url
+              if cached_real_m3u8_url and not force_refresh:
+                  return cached_real_m3u8_url
 
-        res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
-        res.headers["Access-Control-Allow-Origin"] = "*"
-        res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return res
-    except Exception as e:
-        return f"Error loading m3u8: {e}", 502
+              print("🔄 [TV360-9] Fetching new token...")
+              try:
+                  resp = session.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=HEADERS, allow_redirects=True, timeout=10)
+                  real_url = resp.url
+                  if "#EXTM3U" in resp.text:
+                      lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
+                      if lines:
+                          real_url = urljoin(resp.url, lines[-1])
+                  
+                  # Ép ID 379 chính chủ TV360+9
+                  real_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', real_url)
+                  real_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', real_url)
 
-@app.route("/sub.m3u8", methods=["GET"])
-def get_sub_m3u8():
-    sub_url = unquote(request.args.get("url", ""))
-    if not sub_url:
-        return "Missing Sub M3U8 URL", 400
+                  cached_real_m3u8_url = real_url
+                  print(f"✅ Fixed M3U8 Link (ID 379): {real_url[:100]}...")
+                  return cached_real_m3u8_url
+              except Exception as e:
+                  print(f"❌ Error: {e}")
+                  return None
 
-    try:
-        resp = session.get(sub_url, headers=HEADERS, timeout=8)
-        final_url = resp.url
-        lines = resp.text.splitlines()
-        rewritten = []
-        for line in lines:
-            l = line.strip()
-            if not l or l.startswith("#"):
-                rewritten.append(l)
-            else:
-                abs_ts_url = urljoin(final_url, l)
-                rewritten.append(f"/ts?url={quote(abs_ts_url)}")
+          @app.route("/", methods=["GET"])
+          @app.route("/live.m3u8", methods=["GET"])
+          def get_live_m3u8():
+              m3u8_url = get_tv360_9_m3u8_url()
+              if not m3u8_url:
+                  return "Error fetching m3u8 playlist", 502
 
-        res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
-        res.headers["Access-Control-Allow-Origin"] = "*"
-        res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return res
-    except Exception as e:
-        return f"Error loading sub m3u8: {e}", 502
+              try:
+                  resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
+                  if resp.status_code != 200:
+                      m3u8_url = get_tv360_9_m3u8_url(force_refresh=True)
+                      resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
 
-@app.route("/ts", methods=["GET"])
-def get_ts_segment():
-    global cached_real_m3u8_url
-    ts_url = unquote(request.args.get("url", ""))
-    if not ts_url:
-        return "Missing TS URL", 400
+                  final_url = resp.url
+                  lines = resp.text.splitlines()
+                  rewritten = []
+                  
+                  for line in lines:
+                      l = line.strip()
+                      if not l or l.startswith("#"):
+                          rewritten.append(l)
+                      else:
+                          abs_url = urljoin(final_url, l)
+                          abs_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', abs_url)
+                          abs_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', abs_url)
+                          
+                          if ".m3u8" in abs_url:
+                              rewritten.append(f"/sub.m3u8?url={quote(abs_url)}")
+                          else:
+                              rewritten.append(f"/ts?url={quote(abs_url)}")
 
-    try:
-        resp = session.get(ts_url, headers=HEADERS, timeout=10, stream=True)
-        if resp.status_code != 200:
-            print(f"⚠️ TS Error {resp.status_code}, reset cache...")
-            cached_real_m3u8_url = None
-            return Response(f"Upstream Segment Error {resp.status_code}", status=resp.status_code)
+                  res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
+                  res.headers["Access-Control-Allow-Origin"] = "*"
+                  res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                  return res
+              except Exception as e:
+                  return f"Error loading m3u8: {e}", 502
 
-        def generate():
-            for chunk in resp.iter_content(chunk_size=32768):
-                if chunk:
-                    yield chunk
+          @app.route("/sub.m3u8", methods=["GET"])
+          def get_sub_m3u8():
+              sub_url = unquote(request.args.get("url", ""))
+              if not sub_url:
+                  return "Missing Sub M3U8 URL", 400
 
-        res = Response(stream_with_context(generate()), mimetype="video/mp2t")
-        res.headers["Access-Control-Allow-Origin"] = "*"
-        return res
-    except Exception as e:
-        return f"Segment fetch error: {e}", 502
+              try:
+                  resp = session.get(sub_url, headers=HEADERS, timeout=8)
+                  final_url = resp.url
+                  lines = resp.text.splitlines()
+                  rewritten = []
+                  for line in lines:
+                      l = line.strip()
+                      if not l or l.startswith("#"):
+                          rewritten.append(l)
+                      else:
+                          abs_ts_url = urljoin(final_url, l)
+                          rewritten.append(f"/ts?url={quote(abs_ts_url)}")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=30206, threaded=True)
+                  res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
+                  res.headers["Access-Control-Allow-Origin"] = "*"
+                  res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                  return res
+              except Exception as e:
+                  return f"Error loading sub m3u8: {e}", 502
+
+          @app.route("/ts", methods=["GET"])
+          def get_ts_segment():
+              global cached_real_m3u8_url
+              ts_url = unquote(request.args.get("url", ""))
+              if not ts_url:
+                  return "Missing TS URL", 400
+
+              try:
+                  resp = session.get(ts_url, headers=HEADERS, timeout=10, stream=True)
+                  if resp.status_code != 200:
+                      print(f"⚠️ TS Error {resp.status_code}, reset cache...")
+                      cached_real_m3u8_url = None
+                      return Response(f"Upstream Segment Error {resp.status_code}", status=resp.status_code)
+
+                  def generate():
+                      for chunk in resp.iter_content(chunk_size=32768):
+                          if chunk:
+                              yield chunk
+
+                  res = Response(stream_with_context(generate()), mimetype="video/mp2t")
+                  res.headers["Access-Control-Allow-Origin"] = "*"
+                  return res
+              except Exception as e:
+                  return f"Segment fetch error: {e}", 502
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=30206, threaded=True)
+          EOF
+
+          python app.py
