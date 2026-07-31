@@ -36,7 +36,7 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tải logo PNG (Sử dụng link direct chống anti-hotlink)
+          # Tải logo PNG
           echo "⏬ Đang tải logo..."
           curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
 
@@ -81,22 +81,33 @@ jobs:
           echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
-          # 6. Flask Server
-          echo 'from flask import Flask, send_from_directory, abort' > app.py
-          echo 'from flask_cors import CORS' >> app.py
-          echo 'import os' >> app.py
-          echo 'app = Flask(__name__)' >> app.py
-          echo 'CORS(app)' >> app.py
-          echo '@app.route("/")' >> app.py
-          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
-          echo '@app.route("/playlist.m3u")' >> app.py
-          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
-          echo '@app.route("/hls/<path:filename>")' >> app.py
-          echo 'def serve_hls(filename):' >> app.py
-          echo '    file_path = os.path.join("hls", filename)' >> app.py
-          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
-          echo '    return send_from_directory("hls", filename)' >> app.py
-          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
+          # 6. Flask Server (Được ghi bằng block EOF chuẩn, chống lỗi cú pháp)
+          cat << 'EOF' > app.py
+from flask import Flask, send_from_directory, abort
+from flask_cors import CORS
+import os
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/")
+def index(): 
+    return "IPTV Stream Server is Running!", 200
+
+@app.route("/playlist.m3u")
+def playlist(): 
+    return send_from_directory(".", "playlist.m3u")
+
+@app.route("/hls/<path:filename>")
+def serve_hls(filename):
+    file_path = os.path.join("hls", filename)
+    if not os.path.exists(file_path): 
+        return abort(404)
+    return send_from_directory("hls", filename)
+
+if __name__ == "__main__": 
+    app.run(host="0.0.0.0", port=5000)
+EOF
 
           python3 app.py &
           sleep 2
@@ -106,9 +117,10 @@ jobs:
           echo "===================================================="
           echo "🚀 CHRTV SINGLE STREAM SERVER (TV360+9 ULTRA FAST) READY!"
           echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK KÊNH TRỰC TIẾP: ${PUBLIC_URL}/hls/tv360-9/1080p.m3u8"
           echo "===================================================="
 
-          # 7. CHẠY KÊNH TV360+9 - TỐI ƯU SIÊU TỐC KHÔNG OUT VLC
+          # 7. CHẠY KÊNH TV360+9 - TRANSCODE CÓ CHÈN LOGO
           STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
           REAL_URL_9=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
           if [ -z "$REAL_URL_9" ]; then REAL_URL_9="$STREAM_URL_9"; fi
