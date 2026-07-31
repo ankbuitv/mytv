@@ -521,7 +521,7 @@ https://devda.undo.it/Stream/index.php?id=world-poker-tour&ext=.m3u8
 http://chrtv.duckdns.org:21626/stream/studioc
 
 #EXTINF:-1 tvg-id="tv360-9" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 9
-http://chrtv.duckdns.org:5888/stream/tv360-9
+http://chrtv.duckdns.org:30106/hls/tv360_9/1080p.m3u8
 
 #EXTINF:-1 tvg-id="tv360-10" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 10
 http://chrtv.duckdns.org:5888/stream/tv360-10
