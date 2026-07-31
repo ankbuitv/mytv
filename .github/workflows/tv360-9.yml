@@ -1,188 +1,161 @@
-name: TV360-9 Stream Proxy
+name: IPTV Stream Server - Pure Stream Copy (TV360-9)
 
 on:
-  push:
-    branches: [ "main" ]
+  schedule:
+    - cron: '50 0,5,11,17,23 * * *'
   workflow_dispatch:
 
 jobs:
-  run-proxy:
+  stream:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install System & Python Dependencies
         run: |
-          pip install requests flask
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl dnsutils
+          pip install flask flask-cors gunicorn requests
 
-      - name: Update DuckDNS IP
-        env:
-          DUCKDNS_DOMAIN: ${{ secrets.DUCKDNS_DOMAIN }}
-          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+      - name: Setup Bore Tunnel & SSHX
         run: |
-          # Nếu có cấu hình Secret thì cập nhật IP Runner lên DuckDNS
-          if [ -n "$DUCKDNS_DOMAIN" ] && [ -n "$DUCKDNS_TOKEN" ]; then
-            echo "🔄 Dang cap nhat DuckDNS cho domain: $DUCKDNS_DOMAIN..."
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip="
-            echo ""
-            echo "✅ Da cap nhat IP DuckDNS!"
-          else
-            echo "⚠️ Bo qua DuckDNS (Chua cau hinh DUCKDNS_DOMAIN / DUCKDNS_TOKEN trong GitHub Secrets)"
-          fi
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          curl -sSf https://sshx.io/get | sh
 
-      - name: Create Python App File
+      - name: Create Workspace Folders
+        run: mkdir -p hls/tv360_9
+
+      - name: Generate Server App Code (Python)
         run: |
-          cat << 'EOF' > app.py
-          import requests
-          import re
-          from urllib.parse import urljoin, quote, unquote
-          from flask import Flask, Response, request, stream_with_context
+          python3 -c '
+          code = """from flask import Flask, send_from_directory, abort, make_response
+          from flask_cors import CORS
+          import os
 
           app = Flask(__name__)
-          cached_real_m3u8_url = None
+          CORS(app, resources={r"/*": {"origins": "*"}})
 
-          HEADERS = {
+          @app.route("/")
+          def index(): return "IPTV Stream Server Running (TV360-9 - Pure Copy)!", 200
+
+          @app.route("/playlist.m3u")
+          def playlist(): 
+              return send_from_directory(".", "playlist.m3u")
+
+          @app.route("/hls/<path:filename>")
+          def serve_hls(filename):
+              file_path = os.path.join("hls", filename)
+              if not os.path.exists(file_path): return abort(404)
+              
+              response = make_response(send_from_directory("hls", filename))
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Connection"] = "keep-alive"
+              response.headers["Keep-Alive"] = "timeout=15, max=100"
+              response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+              return response
+
+          if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)
+          """
+          with open("app.py", "w") as f:
+              f.write(code)
+          '
+
+      - name: Generate Stream Script
+        run: |
+          python3 -c '
+          script = """#!/bin/bash
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT=30106
+
+          echo "💻 Starting SSHX Web Terminal..."
+          sshx > sshx.log 2>&1 &
+          sleep 4
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
+
+          echo "🌐 Starting Bore Tunnel on Port ${BORE_PORT}..."
+          (
+            while true; do
+              bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
+              sleep 3
+            done
+          ) &
+          sleep 5
+
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          echo "#EXTM3U" > playlist.m3u
+          echo '\''#EXTINF:-1 tvg-id="TV360-9" tvg-name="TV360+ 9 HD" group-title="VN Live", TV360+ 9 HD'\'' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/tv360_9/1080p.m3u8" >> playlist.m3u
+
+          gunicorn -w 4 --threads 2 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
+          sleep 2
+
+          echo "===================================================="
+          echo "🚀 CHRTV STREAM READY (TV360-9 - PORT ${BORE_PORT})!"
+          echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/tv360_9/1080p.m3u8"
+          echo "===================================================="
+
+          # Header Dalvik giả lập IP Viettel Việt Nam
+          HEADERS="User-Agent: Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)\\r\\nX-Forwarded-For: 116.109.123.45\\r\\nClient-IP: 116.109.123.45\\r\\nAccept: */*\\r\\nConnection: keep-alive"
+
+          while true; do
+            echo "🎬 Resolving Real Stream URL for TV360-9..."
+            
+            STREAM_URL=$(python3 -c '\''
+          import requests, re
+          headers = {
               "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; M2007J20CG Build/RKQ1.200826.002)",
-              "X-Forwarded-For": "116.109.123.45",
-              "Client-IP": "116.109.123.45",
-              "Accept": "*/*",
-              "Connection": "keep-alive"
+              "X-Forwarded-For": "116.109.123.45"
           }
-          session = requests.Session()
+          try:
+              r = requests.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=headers, timeout=10)
+              url = r.url
+              url = re.sub(r"/bpk-tv/\d+/", "/bpk-tv/379/", url)
+              url = re.sub(r"/live/eds/\d+/", "/live/eds/379/", url)
+              print(url)
+          except Exception:
+              print("https://vmttv.dpdns.org/tv360/?id=tv360-9")
+          '\'')
 
-          def get_tv360_9_m3u8_url(force_refresh=False):
-              global cached_real_m3u8_url
-              if cached_real_m3u8_url and not force_refresh:
-                  return cached_real_m3u8_url
+            echo "🔗 Playing Stream URL: $STREAM_URL"
 
-              print("🔄 [TV360-9] Lay link tu vmttv...")
-              try:
-                  resp = session.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=HEADERS, allow_redirects=True, timeout=10)
-                  real_url = resp.url
-                  
-                  if "#EXTM3U" in resp.text:
-                      lines = [l.strip() for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
-                      if lines:
-                          real_url = urljoin(resp.url, lines[-1])
-                  
-                  # 🎯 ÉP ĐƯỜNG DẪN VỀ ID CHUẨN 379
-                  real_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', real_url)
-                  real_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', real_url)
+            # CHẾ ĐỘ PURE STREAM COPY (-c copy): 0% CPU, Nhanh & Mượt tuyệt đối
+            ffmpeg -y -hide_banner -loglevel info \
+              -headers "$HEADERS" \
+              -rw_timeout 10000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -i "$STREAM_URL" \
+              -c copy \
+              -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_segment_filename "hls/tv360_9/seg_%03d.ts" hls/tv360_9/1080p.m3u8 || true
+            
+            echo "⚠️ Source stream down, retrying in 5s..."
+            sleep 5
+          done
+          """
+          with open("start_stream.sh", "w") as f:
+              f.write(script)
+          '
+          chmod +x start_stream.sh
 
-                  cached_real_m3u8_url = real_url
-                  print(f"✅ Link da ep ID 379: {real_url[:100]}...")
-                  return cached_real_m3u8_url
-              except Exception as e:
-                  print(f"❌ Loi: {e}")
-                  return None
-
-          @app.route("/", methods=["GET"])
-          @app.route("/live.m3u8", methods=["GET"])
-          def get_live_m3u8():
-              m3u8_url = get_tv360_9_m3u8_url()
-              if not m3u8_url:
-                  return "Error fetching m3u8 playlist", 502
-
-              try:
-                  resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
-                  if resp.status_code != 200:
-                      m3u8_url = get_tv360_9_m3u8_url(force_refresh=True)
-                      resp = session.get(m3u8_url, headers=HEADERS, timeout=8)
-
-                  final_url = resp.url
-                  lines = resp.text.splitlines()
-                  rewritten = []
-                  
-                  for line in lines:
-                      l = line.strip()
-                      if not l or l.startswith("#"):
-                          rewritten.append(l)
-                      else:
-                          abs_url = urljoin(final_url, l)
-                          abs_url = re.sub(r'/bpk-tv/\d+/', '/bpk-tv/379/', abs_url)
-                          abs_url = re.sub(r'/live/eds/\d+/', '/live/eds/379/', abs_url)
-                          
-                          if ".m3u8" in abs_url:
-                              rewritten.append(f"/sub.m3u8?url={quote(abs_url)}")
-                          else:
-                              rewritten.append(f"/ts?url={quote(abs_url)}")
-
-                  res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
-                  res.headers["Access-Control-Allow-Origin"] = "*"
-                  res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                  return res
-              except Exception as e:
-                  return f"Error loading m3u8: {e}", 502
-
-          @app.route("/sub.m3u8", methods=["GET"])
-          def get_sub_m3u8():
-              sub_url = unquote(request.args.get("url", ""))
-              if not sub_url:
-                  return "Missing Sub M3U8 URL", 400
-
-              try:
-                  resp = session.get(sub_url, headers=HEADERS, timeout=8)
-                  final_url = resp.url
-                  lines = resp.text.splitlines()
-                  rewritten = []
-                  for line in lines:
-                      l = line.strip()
-                      if not l or l.startswith("#"):
-                          rewritten.append(l)
-                      else:
-                          abs_ts_url = urljoin(final_url, l)
-                          rewritten.append(f"/ts?url={quote(abs_ts_url)}")
-
-                  res = Response("\n".join(rewritten).strip(), mimetype="application/x-mpegurl")
-                  res.headers["Access-Control-Allow-Origin"] = "*"
-                  res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                  return res
-              except Exception as e:
-                  return f"Error loading sub m3u8: {e}", 502
-
-          @app.route("/ts", methods=["GET"])
-          def get_ts_segment():
-              global cached_real_m3u8_url
-              ts_url = unquote(request.args.get("url", ""))
-              if not ts_url:
-                  return "Missing TS URL", 400
-
-              try:
-                  resp = session.get(ts_url, headers=HEADERS, timeout=10, stream=True)
-                  if resp.status_code != 200:
-                      print(f"⚠️ Segment Error {resp.status_code}, reset cache...")
-                      cached_real_m3u8_url = None
-                      return Response(f"Upstream Segment Error {resp.status_code}", status=resp.status_code)
-
-                  def generate():
-                      for chunk in resp.iter_content(chunk_size=32768):
-                          if chunk:
-                              yield chunk
-
-                  res = Response(stream_with_context(generate()), mimetype="video/mp2t")
-                  res.headers["Access-Control-Allow-Origin"] = "*"
-                  return res
-              except Exception as e:
-                  return f"Segment fetch error: {e}", 502
-
-          if __name__ == "__main__":
-              app.run(host="0.0.0.0", port=30206, threaded=True)
-          EOF
-
-      - name: Install Bore Client
-        run: |
-          wget https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
-          tar -xvf bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
-          chmod +x bore
-
-      - name: Run Server & Bore Tunnel
-        run: |
-          python app.py &
-          sleep 3
-          ./bore local 30206 --to bore.pub
+      - name: Execute Streamer
+        run: ./start_stream.sh
