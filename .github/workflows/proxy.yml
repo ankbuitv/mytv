@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine
+name: IPTV Pure Proxy & Dynamic Route Engine (Lag Fixed)
 
 on:
   schedule:
@@ -31,13 +31,13 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code (Exact Proxy Logic)
+      - name: Generate App Code (Chunked Streaming Proxy Engine)
         run: |
           python3 -c '
           code = """import os
           import requests
           from urllib.parse import urljoin, quote, unquote
-          from flask import Flask, Response, request
+          from flask import Flask, Response, request, stream_with_context
 
           app = Flask(__name__)
 
@@ -51,7 +51,6 @@ jobs:
           KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
           KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
           
-          # TARGET LINKS TV360
           TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
           TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
 
@@ -78,7 +77,7 @@ jobs:
               return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
 
           # ============================================================================
-          # 1. PLAYLIST M3U TỔNG HỢP (SHORT LINKS)
+          # 1. PLAYLIST M3U TỔNG HỢP
           # ============================================================================
           @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
           def get_playlist():
@@ -108,7 +107,7 @@ jobs:
               return add_cors_headers(res)
 
           # ============================================================================
-          # CORE PROXY FUNCTION (REWRITE MANIFEST & STREAM SEGMENTS)
+          # CORE PROXY FUNCTION (CHUNKED STREAMING ZERO-BUFFER)
           # ============================================================================
           def handle_hls_proxy(default_target_url, endpoint_path):
               if request.method == "OPTIONS":
@@ -118,7 +117,6 @@ jobs:
               
               req_headers = HEADERS_DEFAULT.copy()
               
-              # DÙNG DALVIK USER-AGENT CHO TV360 & VMTTV
               if "tv360" in target_url or "vmttv" in target_url:
                   req_headers["User-Agent"] = UA_DALVIK
                   
@@ -126,15 +124,15 @@ jobs:
                   req_headers["Host"] = "103.152.216.26:8443"
 
               try:
-                  resp = requests.get(target_url, headers=req_headers, timeout=10, stream=True, allow_redirects=True)
+                  resp = requests.get(target_url, headers=req_headers, timeout=12, stream=True, allow_redirects=True)
                   if resp.status_code != 200:
                       return add_cors_headers(Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code))
                   
                   final_url = resp.url
-                  raw_bytes = resp.content
-                  raw_text = raw_bytes.decode("utf-8-sig", errors="ignore")
                   
-                  if raw_text.strip().startswith("#EXTM3U"):
+                  # Nếu là file M3U8 Playlist -> Rewrite URL
+                  if ".m3u8" in target_url or "m3u8" in resp.headers.get("Content-Type", "") or resp.text.strip().startswith("#EXTM3U"):
+                      raw_text = resp.text
                       lines = raw_text.splitlines()
                       rewritten_lines = []
                       for line in lines:
@@ -148,13 +146,19 @@ jobs:
                       res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                       return add_cors_headers(res)
                   else:
-                      res = Response(raw_bytes, status=200, mimetype="video/mp2t")
+                      # Nếu là file TS -> Stream trực tiếp dạng Chunked (Siêu mượt)
+                      def generate():
+                          for chunk in resp.iter_content(chunk_size=16384):
+                              if chunk:
+                                  yield chunk
+
+                      res = Response(stream_with_context(generate()), status=200, mimetype="video/mp2t")
                       return add_cors_headers(res)
               except Exception as e:
                   return add_cors_headers(Response(f"Proxy Exception: {str(e)}", status=502))
 
           # ============================================================================
-          # 2. FIXED SHORTCUT ROUTES
+          # 2. ROUTES
           # ============================================================================
           @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
           def proxy_tv360_9(): 
@@ -184,9 +188,6 @@ jobs:
           def proxy_191(): 
               return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
 
-          # ============================================================================
-          # DYNAMIC ROUTE FOR 23.237.104.106:8080
-          # ============================================================================
           @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
           def proxy_dynamic_23_237(channel_id, subpath):
               if request.method == "OPTIONS":
@@ -256,7 +257,7 @@ jobs:
           echo "👉 TV360+10 PROXY   : ${PUBLIC_URL}/stream/tv360-10"
           echo "===================================================="
 
-          gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
+          gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
           """
           with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
           '
