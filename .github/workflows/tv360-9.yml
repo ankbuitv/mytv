@@ -21,7 +21,7 @@ jobs:
       - name: Run Streamer
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
-          pip install flask flask-cors gunicorn
+          pip install flask flask-cors
 
           # ====================================================
           # 1. CẤU HÌNH DUCKDNS
@@ -72,33 +72,22 @@ jobs:
           echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/tv360-9/1080p.m3u8" >> playlist.m3u
 
-          # 6. Flask Server (Tối ưu Đa Luồng với Threaded Mode)
-          cat << 'EOF' > app.py
-from flask import Flask, send_from_directory, abort
-from flask_cors import CORS
-import os
-
-app = Flask(__name__)
-CORS(app)
-
-@app.route("/")
-def index(): 
-    return "IPTV Stream Server is Running!", 200
-
-@app.route("/playlist.m3u")
-def playlist(): 
-    return send_from_directory(".", "playlist.m3u")
-
-@app.route("/hls/<path:filename>")
-def serve_hls(filename):
-    file_path = os.path.join("hls", filename)
-    if not os.path.exists(file_path): 
-        return abort(404)
-    return send_from_directory("hls", filename)
-
-if __name__ == "__main__": 
-    app.run(host="0.0.0.0", port=5000, threaded=True)
-EOF
+          # 6. Flask Server (Tối ưu Đa luồng bằng threaded=True để chống giật)
+          echo 'from flask import Flask, send_from_directory, abort' > app.py
+          echo 'from flask_cors import CORS' >> app.py
+          echo 'import os' >> app.py
+          echo 'app = Flask(__name__)' >> app.py
+          echo 'CORS(app)' >> app.py
+          echo '@app.route("/")' >> app.py
+          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
+          echo '@app.route("/playlist.m3u")' >> app.py
+          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
+          echo '@app.route("/hls/<path:filename>")' >> app.py
+          echo 'def serve_hls(filename):' >> app.py
+          echo '    file_path = os.path.join("hls", filename)' >> app.py
+          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
+          echo '    return send_from_directory("hls", filename)' >> app.py
+          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000, threaded=True)' >> app.py
 
           python3 app.py &
           sleep 2
