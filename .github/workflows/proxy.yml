@@ -50,13 +50,19 @@ jobs:
           PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
           KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
           KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+          
+          # TARGET LINKS TV360
+          TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
 
-          HEADERS = {
+          HEADERS_DEFAULT = {
               "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
               "Accept": "*/*",
               "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
               "Connection": "keep-alive"
           }
+
+          UA_DALVIK = "Dalvik/2.1.0"
 
           def get_public_base_url():
               return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
@@ -80,6 +86,10 @@ jobs:
                   return add_cors_headers(Response(status=204))
               public_url = get_public_base_url()
               m3u_content = f\"\"\"#EXTM3U
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
+          {public_url}/stream/tv360-9
+          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
+          {public_url}/stream/tv360-10
           #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
           {public_url}/stream/USA_HBO_ZONE/index.m3u8
           #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
@@ -106,15 +116,21 @@ jobs:
               target_url = request.args.get("url") or default_target_url
               target_url = unquote(target_url)
               
-              req_headers = HEADERS.copy()
+              req_headers = HEADERS_DEFAULT.copy()
+              
+              # DÙNG DALVIK USER-AGENT CHO TV360 & VMTTV
+              if "tv360" in target_url or "vmttv" in target_url:
+                  req_headers["User-Agent"] = UA_DALVIK
+                  
               if "103.152.216.26" in target_url:
                   req_headers["Host"] = "103.152.216.26:8443"
 
               try:
-                  resp = requests.get(target_url, headers=req_headers, timeout=10, stream=True)
+                  resp = requests.get(target_url, headers=req_headers, timeout=10, stream=True, allow_redirects=True)
                   if resp.status_code != 200:
                       return add_cors_headers(Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code))
                   
+                  final_url = resp.url
                   raw_bytes = resp.content
                   raw_text = raw_bytes.decode("utf-8-sig", errors="ignore")
                   
@@ -126,7 +142,7 @@ jobs:
                           if not line_str or line_str.startswith("#"):
                               rewritten_lines.append(line_str)
                           else:
-                              full_url = urljoin(target_url, line_str)
+                              full_url = urljoin(final_url, line_str)
                               rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
                       res = Response("\\n".join(rewritten_lines).strip(), status=200, mimetype="application/x-mpegurl")
                       res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -140,6 +156,14 @@ jobs:
           # ============================================================================
           # 2. FIXED SHORTCUT ROUTES
           # ============================================================================
+          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
+          def proxy_tv360_9(): 
+              return handle_hls_proxy(TV360_9, "/stream/tv360-9")
+
+          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
+          def proxy_tv360_10(): 
+              return handle_hls_proxy(TV360_10, "/stream/tv360-10")
+
           @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
           def proxy_studioc(): 
               return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
@@ -161,9 +185,7 @@ jobs:
               return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
 
           # ============================================================================
-          # 1. DYNAMIC ROUTE ƯU TIÊN CHO SERVER 23.237.104.106:8080
-          # Bắt mọi request dạng /stream/<channel_id>/<subpath>
-          # Ví dụ: /stream/USA_DISCOVERY/index.m3u8 -> 23.237.104.106:8080/USA_DISCOVERY/index.m3u8
+          # DYNAMIC ROUTE FOR 23.237.104.106:8080
           # ============================================================================
           @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
           def proxy_dynamic_23_237(channel_id, subpath):
@@ -230,9 +252,8 @@ jobs:
           echo "🚀 PROXY ACTIVE ON PORT: ${ASSIGNED_PORT}"
           echo "🔑 SSHX URL         : ${SSHX_URL}"
           echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 DISCOVERY PROXY  : ${PUBLIC_URL}/stream/USA_DISCOVERY/index.m3u8"
-          echo "👉 WARNER TV PROXY  : ${PUBLIC_URL}/stream/warner"
-          echo "👉 STUDIO C PROXY   : ${PUBLIC_URL}/stream/studioc"
+          echo "👉 TV360+9 PROXY    : ${PUBLIC_URL}/stream/tv360-9"
+          echo "👉 TV360+10 PROXY   : ${PUBLIC_URL}/stream/tv360-10"
           echo "===================================================="
 
           gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
