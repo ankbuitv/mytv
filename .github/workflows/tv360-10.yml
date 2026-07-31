@@ -1,0 +1,173 @@
+name: IPTV Stream Server - TV360+10(Fixed Port 30207)
+
+on:
+  schedule:
+    # Tự động trigger lại sau mỗi 5 tiếng 59 phút (Chống giới hạn timeout 6 tiếng của GitHub)
+    - cron: '59 5,11,17,23 * * *'
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Streamer
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils
+          pip install flask flask-cors
+
+          # ====================================================
+          # 1. CẤU HÌNH DUCKDNS CỦA BRO
+          # ====================================================
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          # 2. Cài đặt Bore Tunnel
+          echo "⏬ Đang tải Bore..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+
+          # Tải logo PNG
+          echo "⏬ Đang tải logo..."
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+
+          # Tạo thư mục lưu HLS
+          mkdir -p hls/tv360-10
+
+          # 3. Ép mở Bore ở Port Cố Định 30207
+          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30207..."
+          BORE_PORT=30207
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          CONNECTED=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            bore local 5000 --to bore.pub --port 30207 > bore.log 2>&1 &
+            sleep 4
+            
+            if grep -q "listening at bore.pub:30207" bore.log; then
+              echo "✅ Đã giữ thành công Port 30207!"
+              CONNECTED=true
+              break
+            else
+              echo "⚠️ Port 30207 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
+              pkill bore || true
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              sleep 3
+            fi
+          done
+
+          # 4. Cập nhật IP Bore lên DuckDNS
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            echo "🌐 Cập nhật IP Bore (${BORE_IP}) lên ${DUCKDNS_DOMAIN}.duckdns.org..."
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+            echo ""
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          # 5. Tạo file playlist.m3u
+          echo "#EXTM3U" > playlist.m3u
+          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/tv360-10/1080p.m3u8" >> playlist.m3u
+
+          # 6. Flask Server
+          echo 'from flask import Flask, send_from_directory, abort' > app.py
+          echo 'from flask_cors import CORS' >> app.py
+          echo 'import os' >> app.py
+          echo 'app = Flask(__name__)' >> app.py
+          echo 'CORS(app)' >> app.py
+          echo '@app.route("/")' >> app.py
+          echo 'def index(): return "IPTV Stream Server is Running!", 200' >> app.py
+          echo '@app.route("/playlist.m3u")' >> app.py
+          echo 'def playlist(): return send_from_directory(".", "playlist.m3u")' >> app.py
+          echo '@app.route("/hls/<path:filename>")' >> app.py
+          echo 'def serve_hls(filename):' >> app.py
+          echo '    file_path = os.path.join("hls", filename)' >> app.py
+          echo '    if not os.path.exists(file_path): return abort(404)' >> app.py
+          echo '    return send_from_directory("hls", filename)' >> app.py
+          echo 'if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)' >> app.py
+
+          python3 app.py &
+          sleep 2
+
+          UA_DALVIK="Dalvik/2.1.0"
+
+          echo "===================================================="
+          echo "🚀 CHRTV SINGLE STREAM SERVER (TV360+9 ULTRA FAST) READY!"
+          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK KÊNH TRỰC TIẾP: ${PUBLIC_URL}/hls/tv360-10/1080p.m3u8"
+          echo "===================================================="
+
+          # ====================================================
+          # 7. CHẠY KÊNH TV360+9 - TỰ ĐỘNG CHECK LINK 30 PHÚT/LẦN
+          # ====================================================
+          STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-10"
+          CURRENT_REAL_URL=""
+          FFMPEG_PID=""
+
+          # Hàm lấy link thật bằng curl
+          get_real_url() {
+            local fetched_url=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+            if [ -z "$fetched_url" ]; then
+              fetched_url="$STREAM_URL_9"
+            fi
+            echo "$fetched_url"
+          }
+
+          # Hàm chạy FFmpeg
+          start_ffmpeg() {
+            local target_url="$1"
+            echo "🎬 [FFmpeg Engine] Đang khởi chạy stream với URL: $target_url"
+            ffmpeg -hide_banner -loglevel error \
+              -rw_timeout 20000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -user_agent "$UA_DALVIK" \
+              -i "$target_url" \
+              -stream_loop -1 -i logo1.png \
+              -filter_complex "[0:v]scale=1280:720[v_base]; [1:v]scale=70:-1[logo]; [v_base][logo]overlay=15:main_h-overlay_h-15,format=yuv420p[v720]" \
+              -map "[v720]" -map 0:a? \
+              -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 -tune zerolatency -g 50 -keyint_min 25 -b:v 1200k -maxrate 1500k -bufsize 3000k \
+              -c:a aac -b:a 96k -ar 44100 \
+              -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
+              -hls_segment_filename "hls/tv360-10/seg_1080p_%03d.ts" hls/tv360-10/1080p.m3u8 &
+            FFMPEG_PID=$!
+          }
+
+          # Lần đầu tiên lấy link và khởi chạy
+          CURRENT_REAL_URL=$(get_real_url)
+          echo "🔗 Link gốc khởi tạo: $CURRENT_REAL_URL"
+          start_ffmpeg "$CURRENT_REAL_URL"
+
+          # Vòng lặp kiểm tra link mỗi 30 phút (1800 giây)
+          while true; do
+            sleep 1800
+            echo "⏰ [30-Min Check] Đang kiểm tra xem link gốc TV360+9 có đổi không..."
+            NEW_REAL_URL=$(get_real_url)
+
+            # Kiểm tra xem FFmpeg có còn sống không hoặc Link gốc có bị đổi không
+            if ! kill -0 $FFMPEG_PID 2>/dev/null || [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ]; then
+              echo "🔄 Link gốc đã thay đổi hoặc FFmpeg bị đứt! Đang khởi động lại FFmpeg..."
+              echo "   Old URL: $CURRENT_REAL_URL"
+              echo "   New URL: $NEW_REAL_URL"
+              
+              if kill -0 $FFMPEG_PID 2>/dev/null; then
+                kill -9 $FFMPEG_PID || true
+              fi
+              
+              CURRENT_REAL_URL="$NEW_REAL_URL"
+              start_ffmpeg "$CURRENT_REAL_URL"
+            else
+              echo "✅ Link gốc KHÔNG đổi ($CURRENT_REAL_URL). Tiếp tục chạy FFmpeg cũ!"
+            fi
+          done
