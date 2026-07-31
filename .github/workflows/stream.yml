@@ -1,8 +1,8 @@
-name: IPTV Stream Server - Kenscom 180 (Fixed YAML Line 60)
+name: IPTV Stream Server - Kenscom 180 (Ultra Smooth & Ultra Clear)
 
 on:
   schedule:
-    # 🔄 Tự động chạy lại mỗi 5 tiếng 50 phút
+    # 🔄 Auto-restart mỗi 5 tiếng 50 phút
     - cron: '50 0,5,11,17,23 * * *'
   workflow_dispatch:
 
@@ -19,43 +19,24 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Run Streamer
+      - name: Install Dependencies
         run: |
-          set -e
-          sudo apt-get update && sudo apt-get install -y ffmpeg curl
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
           pip install flask flask-cors
 
-          # ====================================================
-          # 1. CẤU HÌNH DUCKDNS & BORE
-          # ====================================================
-          DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-
-          echo "⏬ Đang tải Bore..."
+      - name: Setup Bore Tunnel
+        run: |
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
+      - name: Create Workspace Folders
+        run: |
           mkdir -p hls/kenscom180
 
-          # 2. Mở Bore Tunnel ở Port cố định 30205
-          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30205..."
-          BORE_PORT=30205
-          bore local 5000 --to bore.pub --port 30205 > bore.log 2>&1 &
-          sleep 5
-
-          # 3. Cập nhật IP Bore lên DuckDNS
-          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
-          echo ""
-
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
-
-          # 4. Tạo Playlist
-          echo "#EXTM3U" > playlist.m3u
-          echo '#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
-
-          # 5. Tạo Flask Server
+      - name: Create Flask App
+        run: |
           cat << 'EOF' > app.py
 from flask import Flask, send_from_directory, abort
 from flask_cors import CORS
@@ -83,35 +64,57 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
 EOF
 
-          python3 app.py &
-          sleep 2
-
-          echo "===================================================="
-          echo "🚀 CHRTV STREAM SERVER READY!"
-          echo "👉 LINK PLAYLIST: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 LINK DIRECT: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
-          echo "===================================================="
-
-          # 6. TẠO SCRIPT FFMPEG RIÊNG TRÁNH LỖI CÚ PHÁP YAML
-          cat << 'EOF' > run_ffmpeg.sh
+      - name: Create FFmpeg Streamer Script
+        run: |
+          cat << 'EOF' > start_stream.sh
 #!/bin/bash
-HEADERS=$'User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\nAccept-Language: vi-VN,vi;q=0.9\r\nHost: 103.152.216.26:8443\r\n'
+DUCKDNS_DOMAIN="chrtv"
+DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+BORE_PORT=30205
+
+echo "🌐 Opening Bore Tunnel on Port 30205..."
+bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
+sleep 5
+
+echo "🌐 Updating DuckDNS..."
+curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
+echo ""
+
+PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+echo "#EXTM3U" > playlist.m3u
+echo '#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD' >> playlist.m3u
+echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
+
+python3 app.py &
+sleep 2
+
+echo "===================================================="
+echo "🚀 CHRTV ULTRA SMOOTH STREAM SERVER READY!"
+echo "👉 PLAYLIST URL: ${PUBLIC_URL}/playlist.m3u"
+echo "👉 DIRECT STREAM: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
+echo "===================================================="
+
+HEADERS="User-Agent: VLC/3.0.20 LibVLC/3.0.20
+Accept-Language: vi-VN,vi;q=0.9
+Host: 103.152.216.26:8443"
 
 while true; do
-  echo "🎬 Đang chạy luồng FFmpeg..."
+  echo "🎬 Starting FFmpeg Transcode Stream..."
   ffmpeg -hide_banner -loglevel error \
     -headers "$HEADERS" \
     -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
     -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
-    -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 28 -b:v 900k -maxrate 1100k -bufsize 1800k \
-    -c:a aac -b:a 96k -ar 44100 \
-    -f hls -hls_time 3 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
+    -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 25 -b:v 1500k -maxrate 1800k -bufsize 3000k -g 50 \
+    -c:a aac -b:a 128k -ar 44100 \
+    -f hls -hls_time 3 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
     -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
   
-  echo "⚠️ Luồng bị ngắt kết nối, đang khởi động lại sau 3 giây..."
+  echo "⚠️ Stream connection lost! Restarting in 3s..."
   sleep 3
 done
 EOF
+          chmod +x start_stream.sh
 
-          chmod +x run_ffmpeg.sh
-          ./run_ffmpeg.sh
+      - name: Execute Streamer
+        run: ./start_stream.sh
