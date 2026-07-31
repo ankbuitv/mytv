@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Kenscom 180 (Ultra Smooth & Ultra Clear)
+name: IPTV Stream Server - Kenscom 180 (Fixed Syntax Line 41)
 
 on:
   schedule:
@@ -32,88 +32,87 @@ jobs:
           sudo mv bore /usr/local/bin/
 
       - name: Create Workspace Folders
+        run: mkdir -p hls/kenscom180
+
+      - name: Generate Flask App Code
         run: |
-          mkdir -p hls/kenscom180
+          python3 -c '
+          code = """from flask import Flask, send_from_directory, abort
+          from flask_cors import CORS
+          import os
 
-      - name: Create Flask App
+          app = Flask(__name__)
+          CORS(app)
+
+          @app.route("/")
+          def index(): return "IPTV Stream Server is Running!", 200
+
+          @app.route("/playlist.m3u")
+          def playlist(): return send_from_directory(".", "playlist.m3u")
+
+          @app.route("/hls/<path:filename>")
+          def serve_hls(filename):
+              file_path = os.path.join("hls", filename)
+              if not os.path.exists(file_path): return abort(404)
+              return send_from_directory("hls", filename)
+
+          if __name__ == "__main__": app.run(host="0.0.0.0", port=5000)
+          """
+          with open("app.py", "w") as f:
+              f.write(code)
+          '
+
+      - name: Generate Stream Script
         run: |
-          cat << 'EOF' > app.py
-from flask import Flask, send_from_directory, abort
-from flask_cors import CORS
-import os
+          python3 -c '
+          script = """#!/bin/bash
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT=30205
 
-app = Flask(__name__)
-CORS(app)
+          echo "🌐 Opening Bore Tunnel on Port 30205..."
+          bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
+          sleep 5
 
-@app.route("/")
-def index(): 
-    return "IPTV Stream Server is Running!", 200
+          echo "🌐 Updating DuckDNS..."
+          curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
+          echo ""
 
-@app.route("/playlist.m3u")
-def playlist(): 
-    return send_from_directory(".", "playlist.m3u")
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-@app.route("/hls/<path:filename>")
-def serve_hls(filename):
-    file_path = os.path.join("hls", filename)
-    if not os.path.exists(file_path): 
-        return abort(404)
-    return send_from_directory("hls", filename)
+          echo "#EXTM3U" > playlist.m3u
+          echo '\''#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD'\'' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-if __name__ == "__main__": 
-    app.run(host="0.0.0.0", port=5000)
-EOF
+          python3 app.py &
+          sleep 2
 
-      - name: Create FFmpeg Streamer Script
-        run: |
-          cat << 'EOF' > start_stream.sh
-#!/bin/bash
-DUCKDNS_DOMAIN="chrtv"
-DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-BORE_PORT=30205
+          echo "===================================================="
+          echo "🚀 CHRTV ULTRA SMOOTH STREAM SERVER READY!"
+          echo "👉 PLAYLIST URL: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 DIRECT STREAM: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
+          echo "===================================================="
 
-echo "🌐 Opening Bore Tunnel on Port 30205..."
-bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
-sleep 5
+          HEADERS="User-Agent: VLC/3.0.20 LibVLC/3.0.20\\r\\nAccept-Language: vi-VN,vi;q=0.9\\r\\nHost: 103.152.216.26:8443"
 
-echo "🌐 Updating DuckDNS..."
-curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=bore.pub"
-echo ""
-
-PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
-
-echo "#EXTM3U" > playlist.m3u
-echo '#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD' >> playlist.m3u
-echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
-
-python3 app.py &
-sleep 2
-
-echo "===================================================="
-echo "🚀 CHRTV ULTRA SMOOTH STREAM SERVER READY!"
-echo "👉 PLAYLIST URL: ${PUBLIC_URL}/playlist.m3u"
-echo "👉 DIRECT STREAM: ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
-echo "===================================================="
-
-HEADERS="User-Agent: VLC/3.0.20 LibVLC/3.0.20
-Accept-Language: vi-VN,vi;q=0.9
-Host: 103.152.216.26:8443"
-
-while true; do
-  echo "🎬 Starting FFmpeg Transcode Stream..."
-  ffmpeg -hide_banner -loglevel error \
-    -headers "$HEADERS" \
-    -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-    -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \
-    -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 25 -b:v 1500k -maxrate 1800k -bufsize 3000k -g 50 \
-    -c:a aac -b:a 128k -ar 44100 \
-    -f hls -hls_time 3 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \
-    -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
-  
-  echo "⚠️ Stream connection lost! Restarting in 3s..."
-  sleep 3
-done
-EOF
+          while true; do
+            echo "🎬 Starting FFmpeg Transcode Stream..."
+            ffmpeg -hide_banner -loglevel error \\
+              -headers "$HEADERS" \\
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
+              -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8" \\
+              -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -crf 25 -b:v 1500k -maxrate 1800k -bufsize 3000k -g 50 \\
+              -c:a aac -b:a 128k -ar 44100 \\
+              -f hls -hls_time 3 -hls_list_size 6 -hls_flags delete_segments+omit_endlist \\
+              -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
+            
+            echo "⚠️ Stream connection lost! Restarting in 3s..."
+            sleep 3
+          done
+          """
+          with open("start_stream.sh", "w") as f:
+              f.write(script)
+          '
           chmod +x start_stream.sh
 
       - name: Execute Streamer
