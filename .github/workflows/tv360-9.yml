@@ -94,7 +94,7 @@ jobs:
           # ====================================================
           # 7. CHẠY FFMPEG CHẾ ĐỘ DIRECT COPY (KHÔNG LOGO, SIÊU MƯỢT)
           # ====================================================
-          STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          STREAM_URL_9="https://toiyeuvietnam.dpdns.org/TuyetDoiKhongKinhDoanh/tv360-9/KenhCoBan.m3u8"
           CURRENT_REAL_URL=""
           FFMPEG_PID=""
 
