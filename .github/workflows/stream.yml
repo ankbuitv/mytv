@@ -2,7 +2,7 @@ name: IPTV Stream Server - Web HLS Optimized (1080p Full Power)
 
 on:
   schedule:
-    - cron: '50 0,5,11,17,23 * * *'
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
