@@ -1,4 +1,4 @@
-name: IPTV Restream Server - AXN HD (Strict HLS AVC)
+name: IPTV Restream Server - AXN HD (N_m3u8DL-RE + FFmpeg Direct Pipe)
 
 on:
   schedule:
@@ -18,11 +18,31 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies
+      - name: Install System Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils
+          sudo apt-get install -y ffmpeg curl dnsutils tar
           pip install --no-cache-dir flask flask-cors gunicorn
+
+      - name: Install N_m3u8DL-RE (Best DASH/MPD Streamer)
+        run: |
+          RE_URL=$(curl -s https://api.github.com/repos/nables/N_m3u8DL-RE/releases/latest | grep "browser_download_url" | grep "linux-x64" | cut -d '"' -f 4)
+          curl -sL "$RE_URL" -o N_m3u8DL-RE.tar.gz
+          tar -xzf N_m3u8DL-RE.tar.gz
+          chmod +x N_m3u8DL-RE
+          sudo mv N_m3u8DL-RE /usr/local/bin/
+
+      - name: Setup Cloudflare WARP (Bypass MyTV Geoblock)
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ cloudflare-main main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode warp || true
+          warp-cli --accept-tos connect || true
+          sleep 3
+          echo "🌐 WARP Status:"
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|ip" || true
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -48,7 +68,7 @@ jobs:
 
           @app.route("/")
           def index():
-              return "IPTV Restream Server (AXN HD Strict HLS AVC)", 200
+              return "IPTV Restream Server (AXN HD N_m3u8DL-RE Powered)", 200
 
           @app.route("/playlist.m3u")
           def playlist():
@@ -115,7 +135,7 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # Tạo HLS Master Playlist (Khai báo mã Codec AVC chuẩn cho hls.js)
+          # Master Playlist AVC cho hls.js
           cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
@@ -123,7 +143,7 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-          # Create Playlist M3U (Trỏ vào Master Playlist AVC)
+          # Create Playlist M3U
           cat << M3U_EOF > playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS AVC)
@@ -135,7 +155,7 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🌐 CHRTV STRICT HLS AVC SERVER IS ONLINE!"
+          echo "🌐 CHRTV N_m3u8DL-RE RESTREAM SERVER IS ONLINE!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 AVC MASTER URL    : ${PUBLIC_URL}/hls/axn/master.m3u8"
@@ -145,30 +165,17 @@ jobs:
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
 
           while true; do
-            echo "🎬 Restreaming AXN HD AVC Engine Started..."
-            ffmpeg -y -hide_banner -loglevel warning \
-              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-              -headers $'Referer: https://mytvnet.vn/\r\n' \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -fflags +genpts+discardcorrupt+nobuffer \
-              -cenc_decryption_key "$CLEARKEY" \
-              -i "$STREAM_MPD" \
-              -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 -preset ultrafast -tune zerolatency \
-              -profile:v main -level:v 4.1 -pix_fmt yuv420p \
-              -b:v 2500k -maxrate 3000k -bufsize 6000k \
-              -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -force_key_frames "expr:gte(t,n_forced*2)" \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
-              -max_muxing_queue_size 2048 \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 5 \
-              -hls_flags delete_segments+omit_endlist+discont_start \
-              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
-              /dev/shm/hls/axn/index.m3u8 || true
+            echo "🎬 Starting Engine: N_m3u8DL-RE -> FFmpeg..."
+            
+            N_m3u8DL-RE "$STREAM_MPD" \
+              --key "$CLEARKEY" \
+              --header "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+              --header "Referer: https://mytvnet.vn/" \
+              --live-real-time-merge \
+              --live-pipe-options "-c copy -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments+omit_endlist+discont_start -hls_segment_filename /dev/shm/hls/axn/seg_%03d.ts /dev/shm/hls/axn/index.m3u8" \
+              --log-level OFF || true
 
-            echo "⚠️ Stream lost or finished. Restarting in 2 seconds..."
+            echo "⚠️ Stream reconnecting in 2 seconds..."
             sleep 2
           done
           EOF
