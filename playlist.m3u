@@ -325,9 +325,14 @@ http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 http://chrtv.duckdns.org:4000/hls/hbo/master.m3u8
 
+#EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="🎬 BOX - Giải trí",HBO Family
+https://thinkkast.dpdns.org/mytv/ph/cg_hbofam/index.m3u8
 
-#EXTINF:-1 tvg-id="hbo-movies" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSnClOrFurpWdTeyxv6uWZEO5-cLIa4_6q8MqWJzOMMqw&s" group-title="🎬 BOX - Giải trí",HBO Family
-http://chrtv.duckdns.org:30212/hls/kenscom191/1080p.m3u8
+#EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="🎬 BOX - Giải trí",HBO Hits
+https://thinkkast.dpdns.org/mytv/ph/cg_hbohits/index.m3u8
+
+#EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="🎬 BOX - Giải trí",HBO Signature
+https://thinkkast.dpdns.org/mytv/ph/cg_hbosign/index.m3u8
 
 #EXTINF:-1 tvg-id="warner" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",Warner TV
 http://chrtv.duckdns.org:21626/stream/warnertv
