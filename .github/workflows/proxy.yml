@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy Engine
+name: IPTV Pure Proxy & Dynamic Route Engine (Lag Fixed)
 
 on:
   schedule:
@@ -31,34 +31,235 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code & Run
+      - name: Generate App Code (Chunked Streaming Proxy Engine)
         run: |
-          echo "aW1wb3J0IG9zCmltcG9ydCByZXF1ZXN0cwpmcm9tIHVybGxpYi5wYXJzZSBpbXBvcnQgdXJsb2ppbiwgcXVvdGUsIHVucXVvdGUKZnJvbSBmbGFzayBpbXBvcnQgRmxhc2ssIFJlc3BvbnNlLCByZXF1ZXN0LCBzdHJlYW1fd2l0aF9jb250ZXh0CgphcHAgPSBGbGFzayhfX25hbWVfXykKCkFNQUdJX1NUVURJT19DID0gImh0dHBzOi8vYW1nMTIwNTgtYzE1c3R1ZGlvLWFtZzEyMDU4YzEtbGctdXMtNTc4Ny5wbGF5b3V0cy5ub3cuYW1hZ2kudHYvcGxheWxpc3QubTN1OCIKV0FSTkVSX1RWID0gImh0dHA6Ly8xOTAuNjEuOTAuMTc6NDAwMDAvcGxheS9hMGhvL2luZGV4Lm0zdTgiClBBUkFNT1VOVCA9ICJodHRwOi8vMjA2LjIxMi4yNDQuNhMvMTM3L2luZGV4Lm0zdTgiCkNHX0FYTiA9ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmcvbXl0di9waC9jZ19heG5fc2QvbWFpbi9pbmRleC5tM3U4IgpDR19IQk9GQU0gPSAiaHR0cHM6Ly90aGlua2thc3QuZHBkbnMub3JnL215dHYvcGgvY2dfaGJvZmFtL2luZGV4Lm0zdTgiCkNHX0hCT0hJVFMgPSAiaHR0cHM6Ly90aGlua2thc3QuZHBkbnMub3JnL215dHYvcGgvY2dfaGJvaGl0cy9pbmRleC5tM3U4IgpDR19IQk9TSUdOID0gImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy9teXR2L3BoL2NnX2hib3NpZ24vaW5kZXgubTN1OCIKCkhFQURFUlNfREVGQVVMVCA9IHsKICAgICJVc2VyLUFnZW50IjogIk1vemlsbGEvNS4wIChXaW5kb3dzIE5UIDEwLjA7IFdpbjY0OyB4NjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xMjAuMC4wLjAgU2FmYXJpLzUzNy4zNiIsCiAgICAiQWNjZXB0IjogIiovKiIsCiAgICAiQ29ubmVjdGlvbiI6ICJrZWVwLWFsaXZlIgp9CgpkZWYgZ2V0X3B1YmxpY19iYXNlX3VybCgpOgogICAgcmV0dXJuIG9zLmVudmlyb24uZ2V0KCJQVUJMSUNfQkFTRV9VUkwiLCAiaHR0cDovL2NocnR2LmR1Y2tkbnMub3JnOjU1ODAxIikKCmRlZiBhZGRfY29yc19oZWFkZXJzKHJlc3BvbnNlKToKICAgIHJlc3BvbnNlLmhlYWRlcnNbIkFjY2Vzcy1Db250cm9sLUFsbG93LU9yaWdpbiJdID0gIioiCiAgICByZXNwb25zZS5oZWFkZXJzWyJBY2Nlc3MtQ29udHJvbC1BbGxvdy1NZXRob2RzIl0gPSAiR0VULCBPUFRJT05TLCBIRUFEIgogICAgcmVzcG9uc2UuaGVhZGVyc1siQ2FjaGUtQ29udHJvbCJdID0gIm5vLWNhY2hlLCBuby1zdG9yZSwgbXVzdC1yZXZhbGlkYXRlIgogICAgcmV0dXJuIHJlc3BvbnNlCgpkZWYgc2VydmVfcGFycm90X2xpdmUoKToKICAgIHRyeToKICAgICAgICByZXEgPSByZXF1ZXN0cy5nZXQoImh0dHBzOi8vYXNjaWkubGl2ZS9wYXJyb3QiLCBzdHJlYW09VHJ1ZSwgdGltZW91dD01KQogICAgICAgIGRlZiBnZW5lcmF0ZSgpOgogICAgICAgICAgICBmb3IgY2h1bmsgaW4gcmVxLml0ZXJfY29udGVudChjaHVua19zaXplPTEwMjQpOgogICAgICAgICAgICAgICAgaWYgY2h1bms6CiAgICAgICAgICAgICAgICAgICAgeWllbGQgY2h1bmsKICAgICAgICByZXR1cm4gUmVzcG9uc2Uoc3RyZWFtX3dpdGhfY29udGV4dChnZW5lcmF0ZSgpKSwgbWltZXR5cGU9InRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgiKQogICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICByZXR1cm4gUmVzcG9uc2UoIvCfpqAgUGFydHkgUGFycm90IEd1YXJkIEFjdGl2ZSEiLCBzdGF0dXM9NDI5KQoKQGFwcC5iZWZvcmVfcmVxdWVzdApkZWYgY2hlY2tfYW50aV9zY2FuKCk6CiAgICBpZiByZXF1ZXN0Lm1ldGhvZCA9PSAiT1BUSU9OUyI6CiAgICAgICAgcmV0dXJuCiAgICB1c2VyX2FnZW50ID0gKHJlcXVlc3QuaGVhZGVycy5nZXQoIlVzZXItQWdlbnQiKSBvciAiIikubG93ZXIoKQogICAgaXNfYm90ID0gYW55KGIgaW4gdXNlcl9hZ2VudCBmb3IgYiBpbiBbInpncmFiIiwgIm5tYXAiLCAibmlrdG8iLCAic3FsbWFwIiwgInBvc3RtYW4iXSkKICAgIGlmIGlzX2JvdCBhbmQgcmVxdWVzdC5wYXRoID09ICIvIjoKICAgICAgICByZXR1cm4gc2VydmVfcGFycm90X2xpdmUoKQoKQGFwcC5yb3V0ZSgiLyIpCmRlZiBob21lKCk6CiAgICB1c2VyX2FnZW50ID0gKHJlcXVlc3QuaGVhZGVycy5nZXQoIlVzZXItQWdlbnQiKSBvciAiIikubG93ZXIoKQogICAgaWYgImN1cmwiIGluIHVzZXJfYWdlbnQgb3IgIndnZXQiIGluIHVzZXJfYWdlbnQ6CiAgICAgICAgcmV0dXJuIHNlcnZlX3BhcnJvdF9saXZlKCkKICAgIHJldHVybiBmIklQVFYgRW5naW5lIEFjdGl2ZSEgQmFzZSBVUkw6IHtnZXRfcHVibGljX2Jhc2VfdXJsKCl9IiwgMjAwCgpAYXBwLnJvdXRlKCIvcGxheWxpc3QubTN1IiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBnZXRfcGxheWxpc3QoKToKICAgIGlmIHJlcXVlc3QubWV0aG9kID09ICJPUFRJT05TIjoKICAgICAgICByZXR1cm4gYWRkX2NvcnNfaGVhZGVycyhoZWFkZXJzX2NvcnMoKSkKICAgIHB1YmxpY191cmwgPSBnZXRfcHVibGljX2Jhc2VfdXJsKCkKICAgIG0zdV9jb250ZW50ID0gZiIiI2V4dG13dQojRVhUSU5GOi0xIHR2Zy1pZD0iQ1dfQVhOIiBncm91cC10aXRsZT0iQ2lnbmFsIixBWE4gU0QgKFByb3h5KQp7cHVibGljX3VybH0vc3RyZWFtL2NnX2F4bi9pbmRleC5tM3U4CiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19oYm9mYW0iIHR2Zy1uYW1lPSJIQk8gRmFtaWx5IiB0dmctbG9nbz0iaHR0cHM6Ly9xcC1wbGR0LWltYWdlLXJlc2l6ZXItY2xvdWQtcHJvZC5ha2FtYWl6ZWQubmV0L2ltYWdlLzYyRjFBNEVELUVCNTYtNDlERi05MTJELTBBMjM4ODEzMTc3Mi8wLTE2eDkuanBnP3dpZHRoPTE5ODAiIHR2Zy1jaG5vPSIzMSIgZ3JvdXAtdGl0bGU9IkNpZ25hbCIsSEJPIEZhbWlseQp7cHVibGljX3VybH0vc3RyZWFtL2NnX2hib2ZhbS9pbmRleC5tM3U4CiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19oYm9oaXRzIiB0dmctbmFtZT0iSEJPIEhpdHMiIHR2Zy1sb2dvPSJodHRwczovL3FwLXBsZHQtaW1hZ2UtcmVzaXplci1jbG91ZC1wcm9kLmFrYW1haXplZC5uZXQvaW1hZ2UvQ0VFODNFRTUtRDgwLTRCM0MtOTMzOS1BQ0E3RkY0MEEyRDAvMC0xNng5LmpwZz93aWR0aD0xOTgwIiB0dmctY2hubz0iMzIiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEhCTyBIaXRzCntwdWJsaWNfdXJsfS9zdHJlYW0vY2dfaGJvaGl0cy9pbmRleC5tM3U4CiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19oYm9zaWduIiB0dmctbmFtZT0iSEJPIFNpZ25hdHVyZSIgdHZnLWxvZ289Imh0dHBzOi8vcXAtcGxkdC1pbWFnZS1yZXNpemVyLWNsb3VkLXByb2QuYWthbWFpemVkLm5ldC9pbWFnZS9ENTEyNzk1OS0zNEU0LTQxQjItQUE4MC1DRTc0RERDMkMzQzQvMC0xNng5LmpwZz93aWR0aD0xOTgwIiB0dmctY2hubz0iMzMiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEhCTyBTaWduYXR1cmUKe3B1YmxpY191cmx9L3N0cmVhbS9jZ19oYm9zaWduL2luZGV4Lm0zdTgKI0VYVElORjotMSB0dmctaWQ9Ildhcm5lclRWIiBncm91cC10aXRsZT0iVVMgTGl2ZSIgdHZnLWxvZ289Imh0dHBzOi8vaS5pbWd1ci5jb20vMlh5MzQ5cC5wbmciLFdhcm5lciBUViBIRAp7cHVibGljX3VybH0vc3RyZWFtL3dhcm5lcgojRVhUSU5GOi0xIHR2Zy1pZD0iUGFyYW1vdW50IiBncm91cC10aXRsZT0iVVMgTGl2ZSIgdHZnLWxvZ289Imh0dHBzOi8vaS5pbWd1ci5jb20vUTIza0xNbC5wbmciLFBhcmFtb3VudCBOZXR3b3JrIEhECntwdWJsaWNfdXJsfS9zdHJlYW0vcGFyYW1vdW50CiNFWFRJTkY6LTEgdHZnLWlkPSJTdHVkaW9DIiBncm91cC10aXRsZT0iVVMgTGl2ZSIsQW1hZ2kgU3R1ZGlvIEMgSEQKe3B1YmxpY191cmx9L3N0cmVhbS9zdHVkaW9jIiIiLHVwcGVyKCkKICAgIHJlcyA9IFJlc3BvbnNlKG0zdV9jb250ZW50LnN0cmlwKCksIG1pbWV0eXBlPSJhcHBsaWNhdGlvbi94LW1wZWd1cmwiKQogICAgcmV0dXJuIGFkZF9jb3JzX2hlYWRlcnMocmVzKQoKZGVmIGhhbmRsZV9obHNfcHJveHkoZGVmYXVsdF90YXJnZXRfdXJsLCBlbmRwb2ludF9wYXRoKToKICAgIGlmIHJlcXVlc3QubWV0aG9kID09ICJPUFRJT05TIjoKICAgICAgICByZXR1cm4gYWRkX2NvcnNfaGVhZGVycyhSZXNwb25zZShzdGF0dXM9MjA0KSkKICAgIHRhcmdldF91cmwgPSB1bnF1b3RlKHJlcXVlc3QuYXJncy5nZXQoInVybCIpIG9yIGRlZmF1bHRfdGFyZ2V0X3VybCkKICAgIAogICAgcmVxX2hlYWRlcnMgPSBIRUFERVJTX0RFRkFVTFQuY29weSgpCiAgICBpZiAidGhpbmtrYXN0LmRwZG5zLm9yZyIgaW4gdGFyZ2V0X3VybDoKICAgICAgICByZXFfaGVhZGVyc1siUmVmZXJlciJdID0gImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy8iCiAgICAgICAgcmVxX2hlYWRlcnNbIk9yaWdpbiJdID0gImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZyIKCiAgICB0cnk6CiAgICAgICAgcmVzcCA9IHJlcXVlc3RzLmdldCh0YXJnZXRfdXJsLCBoZWFkZXJzPXJlcV9oZWFkZXJzLCB0aW1lb3V0PTEyLCBzdHJlYW09VHJ1ZSwgYWxsb3dfcmVkaXJlY3RzPVRydWUpCiAgICAgICAgaWYgcmVzcC5zdGF0dXNfY29kZSAhPSAyMDA6CiAgICAgICAgICAgIHJldHVybiBhZGRfY29yc19oZWFkZXJzKFJlc3BvbnNlKGYiVXBzdHJlYW0gRXJyb3I6IEhUVFAge3Jlc3Auc3RhdHVzX2NvZGV9Iiwgc3RhdHVzPXJlc3Auc3RhdHVzX2NvZGUpKQogICAgICAgIAogICAgICAgIGZpbmFsX3VybCA9IHJlc3AudXJsCiAgICAgICAgaWYgIi5tM3U4IiBpbiB0YXJnZXRfdXJsIG9yICJtM3U4IiBpbiByZXNwLmhlYWRlcnMuZ2V0KCJDb250ZW50LVR5cGUiLCAiIikgb3IgcmVzcC50ZXh0LnN0YXJ0c3dpdGgoIiNFWFRNM1UiKToKICAgICAgICAgICAgbGluZXMgPSByZXNwLnRleHQuc3BsaXRsaW5lcygpCiAgICAgICAgICAgIHJld3JpdHRlbl9saW5lcyA9IFtdCiAgICAgICAgICAgIGZvciBsaW5lIGluIGxpbmVzOgogICAgICAgICAgICAgICAgbGluZV9zdHIgPSBsaW5lLnN0cmlwKCkKICAgICAgICAgICAgICAgIGlmIG5vdCBsaW5lX3N0ciBvciBsaW5lX3N0ci5zdGFydHN3aXRoKCIjIik6CiAgICAgICAgICAgICAgICAgICAgcmV3cml0dGVuX2xpbmVzLmFwcGVuZChsaW5lX3N0cikKICAgICAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICAgICAgZnVsbF91cmwgPSB1cmxqb2luKGZpbmFsX3VybCwgbGluZV9zdHIpCiAgICAgICAgICAgICAgICAgICAgcmV3cml0dGVuX2xpbmVzLmFwcGVuZChmIntlbmRwb2ludF9wYXRofT91cmw9e3F1b3RlKGZ1bGxfdXJsKX0iKQogICAgICAgICAgICByZXMgPSBSZXNwb25zZSgiXG4iLmpvaW4ocmV3cml0dGVuX2xpbmVzKS5zdHJpcCgpLCBzdGF0dXM9MjAwLCBtaW1ldHlwZT0iYXBwbGljYXRpb24veC1tcGVndXJsIikKICAgICAgICAgICAgcmV0dXJuIGFkZF9jb3JzX2hlYWRlcnMocmVzKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIGRlZiBnZW5lcmF0ZSgpOgogICAgICAgICAgICAgICAgZm9yIGNodW5rIGluIHJlc3AuaXRlcl9jb250ZW50KGNodW5rX3NpemU9MTYzODQpOgogICAgICAgICAgICAgICAgICAgIGlmIGNodW5rOgogICAgICAgICAgICAgICAgICAgICAgICB5aWVsZCBjaHVuawogICAgICAgICAgICBjb250ZW50X3R5cGUgPSByZXNwLmhlYWRlcnMuZ2V0KCJDb250ZW50LVR5cGUiLCAidmlkZW8vbXAydCIpCiAgICAgICAgICAgIHJlcyA9IFJlc3BvbnNlKHN0cmVhbV93aXRoX2NvbnRleHQoZ2VuZXJhdGUoKSksIHN0YXR1cz0yMDAsIG1pbWV0eXBlPWNvbnRlbnRfdHlwZSkKICAgICAgICAgICAgcmV0dXJuIGFkZF9jb3JzX2hlYWRlcnMocmVzKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgICAgIHJldHVybiBhZGRfY29yc19oZWFkZXJzKFJlc3BvbnNlKGYiUHJveHkgRXhjZXB0aW9uOiB7c3RyKGUpfSIsIHN0YXR1cz01MDIpKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS9jZ19heG4vaW5kZXgubTN1OCIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgcHJveHlfY2dfYXhuKCk6IHJldHVybiBoYW5kbGVfaGxzX3Byb3h5KENHX0FYUiwgIi9zdHJlYW0vY2dfYXhuL2luZGV4Lm0zdTgiKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS9jZ19oYm9mYW0vaW5kZXgubTN1OCIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgcHJveHlfY2dfaGJvZmFtKCk6IHJldHVybiBoYW5kbGVfaGxzX3Byb3h5KENHX0hCT0ZBTSwgIi9zdHJlYW0vY2dfaGJvZmFtL2luZGV4Lm0zdTgiKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS9jZ19oYm9oaXRzL2luZGV4Lm0zdTgiLCBtZXRob2RzPVsiR0VUIiwgIk9QVElPTlMiXSkKZGVmIHByb3h5X2NnX2hib2hpdHMoKTogcmV0dXJuIGhhbmRsZV9obHNfcHJveHkoQ0dfSEJPSElUUywgIi9zdHJlYW0vY2dfaGJvaGl0cy9pbmRleC5tM3U4IikKCkBhcHAucm91dGUoIi9zdHJlYW0vY2dfaGJvc2lnbi9pbmRleC5tM3U4IiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwcm94eV9jZ19oYm9zaWduKCk6IHJldHVybiBoYW5kbGVfaGxzX3Byb3h5KENHX0hCT1NJR04sICIvc3RyZWFtL2NnX2hib3NpZ24vaW5kZXgubTN1OCIpCgpAYXBwLnJvdXRlKCIvc3RyZWFtL3N0dWRpb2MiLCBtZXRob2RzPVsiR0VUIiwgIk9QVElPTlMiXSkKZGVmIHByb3h5X3N0dWRpb2MoKTogcmV0dXJuIGhhbmRsZV9obHNfcHJveHkoQU1BR0lfU1RVTElPX0MsICIvc3RyZWFtL3N0dWRpb2MiKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS93YXJuZXIiLCBtZXRob2RzPVsiR0VUIiwgIk9QVElPTlMiXSkKZGVmIHByb3h5X3dhcm5lcigpOiByZXR1cm4gaGFuZGxlX2hsc19wcm94eShXQVJORVJfVFYsICIvc3RyZWFtL3dhcm5lciIpCgpAYXBwLnJvdXRlKCIvc3RyZWFtL3BhcmFtb3VudCIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgcHJveHlfcGFyYW1vdW50KCk6IHJldHVybiBoYW5kbGVfaGxzX3Byb3h5KFBBUkFNT1VOVCwgIi9zdHJlYW0vcGFyYW1vdW50IikKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBhcHAucnVuKGhvc3Q9IjAuMC4wLjAiLCBwb3J0PTUwMDAsIHRocmVhZGVkPVRydWUpCg==" | base64 -d > app.py
+          python3 -c '
+          code = """import os
+          import requests
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
 
+          app = Flask(__name__)
+
+          DUCKDNS_DOMAIN = "chrtv"
+          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          TARGET_SERVER = "http://23.237.104.106:8080"
+          AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
+          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
+          KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
+          KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+          
+          TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
+
+          HEADERS_DEFAULT = {
+              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+              "Accept": "*/*",
+              "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+              "Connection": "keep-alive"
+          }
+
+          UA_DALVIK = "Dalvik/2.1.0"
+
+          def get_public_base_url():
+              return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
+
+          def add_cors_headers(response):
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              return response
+
+          @app.route("/")
+          def home():
+              return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
+
+          # ============================================================================
+          # 1. PLAYLIST M3U TỔNG HỢP
+          # ============================================================================
+          @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
+          def get_playlist():
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+              public_url = get_public_base_url()
+              m3u_content = f\"\"\"#EXTM3U
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
+          {public_url}/stream/tv360-9
+          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
+          {public_url}/stream/tv360-10
+          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
+          {public_url}/stream/USA_HBO_ZONE/index.m3u8
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
+          {public_url}/stream/USA_DISCOVERY/index.m3u8
+          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
+          {public_url}/stream/warner
+          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
+          {public_url}/stream/paramount
+          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+          {public_url}/stream/studioc
+          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
+          {public_url}/stream/180.m3u8
+          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
+          {public_url}/stream/191.m3u8\"\"\"
+              res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
+              return add_cors_headers(res)
+
+          # ============================================================================
+          # CORE PROXY FUNCTION (CHUNKED STREAMING ZERO-BUFFER)
+          # ============================================================================
+          def handle_hls_proxy(default_target_url, endpoint_path):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+              target_url = request.args.get("url") or default_target_url
+              target_url = unquote(target_url)
+              
+              req_headers = HEADERS_DEFAULT.copy()
+              
+              if "tv360" in target_url or "vmttv" in target_url:
+                  req_headers["User-Agent"] = UA_DALVIK
+                  
+              if "103.152.216.26" in target_url:
+                  req_headers["Host"] = "103.152.216.26:8443"
+
+              try:
+                  resp = requests.get(target_url, headers=req_headers, timeout=12, stream=True, allow_redirects=True)
+                  if resp.status_code != 200:
+                      return add_cors_headers(Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code))
+                  
+                  final_url = resp.url
+                  
+                  # Nếu là file M3U8 Playlist -> Rewrite URL
+                  if ".m3u8" in target_url or "m3u8" in resp.headers.get("Content-Type", "") or resp.text.strip().startswith("#EXTM3U"):
+                      raw_text = resp.text
+                      lines = raw_text.splitlines()
+                      rewritten_lines = []
+                      for line in lines:
+                          line_str = line.strip()
+                          if not line_str or line_str.startswith("#"):
+                              rewritten_lines.append(line_str)
+                          else:
+                              full_url = urljoin(final_url, line_str)
+                              rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
+                      res = Response("\\n".join(rewritten_lines).strip(), status=200, mimetype="application/x-mpegurl")
+                      res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                      return add_cors_headers(res)
+                  else:
+                      # Nếu là file TS -> Stream trực tiếp dạng Chunked (Siêu mượt)
+                      def generate():
+                          for chunk in resp.iter_content(chunk_size=16384):
+                              if chunk:
+                                  yield chunk
+
+                      res = Response(stream_with_context(generate()), status=200, mimetype="video/mp2t")
+                      return add_cors_headers(res)
+              except Exception as e:
+                  return add_cors_headers(Response(f"Proxy Exception: {str(e)}", status=502))
+
+          # ============================================================================
+          # 2. ROUTES
+          # ============================================================================
+          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
+          def proxy_tv360_9(): 
+              return handle_hls_proxy(TV360_9, "/stream/tv360-9")
+
+          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
+          def proxy_tv360_10(): 
+              return handle_hls_proxy(TV360_10, "/stream/tv360-10")
+
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+          def proxy_studioc(): 
+              return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+
+          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
+          def proxy_warner(): 
+              return handle_hls_proxy(WARNER_TV, "/stream/warner")
+
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+          def proxy_paramount(): 
+              return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
+
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_180(): 
+              return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
+
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_191(): 
+              return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
+
+          @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
+          def proxy_dynamic_23_237(channel_id, subpath):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+              
+              if request.args.get("url"):
+                  target_url = unquote(request.args.get("url"))
+              else:
+                  target_url = f"{TARGET_SERVER}/{channel_id}/{subpath}"
+
+              return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=5000, threaded=True)
+          """
+          with open("app.py", "w", encoding="utf-8") as f:
+              f.write(code)
+          '
+
+      - name: Start Proxy Server & Tunnel
+        run: |
+          python3 -c '
+          script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          FIXED_PORT=55801
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
-          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs)
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
 
-          echo "🌐 Requesting Port $FIXED_PORT from Bore..."
-          bore local 5000 --to bore.pub --port $FIXED_PORT > bore.log 2>&1 &
-          sleep 3
+          echo "🌐 Requesting Random Available Port from Bore Tunnel..."
+          bore local 5000 --to bore.pub > bore.log 2>&1 &
+
+          ASSIGNED_PORT=""
+          for i in {1..15}; do
+            sleep 1
+            ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
+            if [ -n "$ASSIGNED_PORT" ]; then
+              break
+            fi
+          done
+
+          if [ -z "$ASSIGNED_PORT" ]; then
+            echo "❌ Không thể cấp port từ Bore!"
+            cat bore.log
+            exit 1
+          fi
+
+          echo "✅ Bore Port Active: $ASSIGNED_PORT"
 
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
           fi
 
-          export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${FIXED_PORT}"
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${ASSIGNED_PORT}"
+          export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
           echo "===================================================="
-          echo "🚀 PROXY ACTIVE ON PORT : ${FIXED_PORT}"
-          echo "🔑 SSHX URL            : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
+          echo "🚀 PROXY ACTIVE ON PORT: ${ASSIGNED_PORT}"
+          echo "🔑 SSHX URL         : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 TV360+9 PROXY    : ${PUBLIC_URL}/stream/tv360-9"
+          echo "👉 TV360+10 PROXY   : ${PUBLIC_URL}/stream/tv360-10"
           echo "===================================================="
 
           gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
+          """
+          with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
+          '
+          chmod +x start_proxy.sh
+          ./start_proxy.sh
