@@ -110,26 +110,32 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (MPD TO HLS FAST CONVERTER)!"
+          echo "🚀 CHRTV STREAM READY (VLC USER-AGENT EMULATED)!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          # Giả lập hoàn toàn VLC Player
+          VLC_UA="VLC/3.0.20 LibVLC/3.0.20"
+          HEADERS="User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\nAccept: */*\r\nRange: bytes=0-\r\nIcy-MetaData: 1"
+
           STREAM_MPD="http://136.239.158.10:6610/001/2/ch00000090990000001065/manifest.mpd?AuthInfo=v87HD9rEhwHiAdYyrP20Tg5pgSMSITY%2FHYvvCWJRp%2BosKg8aLji3LHWqHUI%2FwQyJytokK1MIobcue1ImXa0ZEA%3D%3D&version=v1.0&BreakPoint=0&virtualDomain=001.live_hls.zte.com&programid=ch00000000000000001085&contentid=ch00000000000000001085&videoid=ch00000090990000001065&recommendtype=0&userid=1362658369654&boid=001&stbid=02%3A00%3A00%3A00%3A00%3A00&terminalflag=1&profilecode=&usersessionid=UVJL5F87UVBXXX&NeedJITP=1&JITPMediaType=DASH&JITPDRMType=NO"
 
           while true; do
-            echo "🎬 Converting MPD -> HLS AVC..."
+            echo "🎬 Converting MPD -> HLS AVC (using VLC User-Agent)..."
             ffmpeg -y -hide_banner -loglevel warning \
-              -user_agent "$USER_AGENT" \
+              -headers "$HEADERS" \
+              -user_agent "$VLC_UA" \
+              -allowed_extensions ALL \
+              -rw_timeout 10000000 \
               -i "$STREAM_MPD" \
               -threads 4 \
-              -c:v libx264 -preset ultrafast -profile:v baseline -pix_fmt yuv420p \
+              -c:v libx264 -preset superfast -profile:v main -pix_fmt yuv420p \
               -g 30 -keyint_min 30 -sc_threshold 0 \
-              -b:v 2500k -maxrate 3000k -bufsize 6000k \
-              -c:a aac -b:a 128k -ar 44100 -af "aresample=async=1" \
-              -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments+omit_endlist \
+              -b:v 3000k -maxrate 3500k -bufsize 7000k \
+              -c:a aac -b:a 128k -ar 48000 -af "aresample=async=1" \
+              -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
             echo "⚠️ Source stream down/error, retrying in 3s..."
