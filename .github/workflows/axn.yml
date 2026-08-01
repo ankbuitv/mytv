@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl dnsutils tar unzip jq
@@ -34,7 +34,7 @@ jobs:
             exit 1
           fi
 
-          echo "📥 Đang tải từ: $DOWNLOAD_URL"
+          echo "📥 Đang tải N_m3u8DL-RE từ: $DOWNLOAD_URL"
           curl -sL "$DOWNLOAD_URL" -o n_m3u8dl_archive
 
           if tar -tzf n_m3u8dl_archive >/dev/null 2>&1; then
@@ -47,6 +47,16 @@ jobs:
           chmod +x "$EXE_BIN"
           sudo mv "$EXE_BIN" /usr/local/bin/
           N_m3u8DL-RE --version
+
+      - name: Install mp4decrypt (Bento4)
+        run: |
+          echo "📥 Đang tải mp4decrypt (Bento4)..."
+          curl -sL https://www.bento4.com/downloads/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip -o bento4.zip
+          unzip -q bento4.zip
+          sudo cp Bento4-SDK-1-6-0-641.x86_64-unknown-linux/bin/mp4decrypt /usr/local/bin/
+          sudo chmod +x /usr/local/bin/mp4decrypt
+          echo "✅ Đã cài đặt mp4decrypt thành công:"
+          mp4decrypt --version || true
 
       - name: Setup Cloudflare WARP
         run: |
@@ -172,7 +182,6 @@ jobs:
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # Cấu hình biến môi trường chuẩn cho N_m3u8DL-RE pipe trực tiếp ra FFmpeg
           export RE_LIVE_PIPE_OPTIONS="-c copy -f mpegts pipe:1"
 
           while true; do
