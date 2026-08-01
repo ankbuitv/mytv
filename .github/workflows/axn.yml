@@ -1,4 +1,4 @@
-name: IPTV Restream Server - AXN HD (N_m3u8DL-RE + FFmpeg Direct Pipe)
+name: IPTV Restream Server - AXN HD (N_m3u8DL-RE Fixed)
 
 on:
   schedule:
@@ -21,16 +21,19 @@ jobs:
       - name: Install System Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils tar
+          sudo apt-get install -y ffmpeg curl dnsutils unzip
           pip install --no-cache-dir flask flask-cors gunicorn
 
-      - name: Install N_m3u8DL-RE (Best DASH/MPD Streamer)
+      - name: Install N_m3u8DL-RE (Correct Repo)
         run: |
-          RE_URL=$(curl -s https://api.github.com/repos/nables/N_m3u8DL-RE/releases/latest | grep "browser_download_url" | grep "linux-x64" | cut -d '"' -f 4)
-          curl -sL "$RE_URL" -o N_m3u8DL-RE.tar.gz
-          tar -xzf N_m3u8DL-RE.tar.gz
-          chmod +x N_m3u8DL-RE
-          sudo mv N_m3u8DL-RE /usr/local/bin/
+          RE_URL=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest | grep "browser_download_url" | grep -i "linux-x64" | cut -d '"' -f 4 | head -n 1)
+          echo "Downloading from: $RE_URL"
+          curl -sL "$RE_URL" -o N_m3u8DL-RE.zip
+          unzip -o N_m3u8DL-RE.zip
+          EXE_PATH=$(find . -name "N_m3u8DL-RE" -type f | head -n 1)
+          chmod +x "$EXE_PATH"
+          sudo mv "$EXE_PATH" /usr/local/bin/
+          N_m3u8DL-RE --version
 
       - name: Setup Cloudflare WARP (Bypass MyTV Geoblock)
         run: |
@@ -125,7 +128,6 @@ jobs:
           ) &
           sleep 4
 
-          # Update IP for DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
@@ -135,7 +137,6 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # Master Playlist AVC cho hls.js
           cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
@@ -143,7 +144,6 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-          # Create Playlist M3U
           cat << M3U_EOF > playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS AVC)
