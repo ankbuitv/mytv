@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl dnsutils
-          pip install --no-cache-dir flask flask-cors gunicorn
+          pip install --no-cache-dir flask flask-cors gunicorn streamlink
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -110,26 +110,26 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (VLC USER-AGENT EMULATED)!"
+          echo "🚀 CHRTV STREAM READY (STREAMLINK PIPE MODE)!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          # Giả lập hoàn toàn VLC Player
-          VLC_UA="VLC/3.0.20 LibVLC/3.0.20"
-          HEADERS="User-Agent: VLC/3.0.20 LibVLC/3.0.20\r\nAccept: */*\r\nRange: bytes=0-\r\nIcy-MetaData: 1"
-
+          UA="VLC/3.0.20 LibVLC/3.0.20 (QtEmbedded; U; Linux; C) MAG200 stb app"
           STREAM_MPD="http://136.239.158.10:6610/001/2/ch00000090990000001065/manifest.mpd?AuthInfo=v87HD9rEhwHiAdYyrP20Tg5pgSMSITY%2FHYvvCWJRp%2BosKg8aLji3LHWqHUI%2FwQyJytokK1MIobcue1ImXa0ZEA%3D%3D&version=v1.0&BreakPoint=0&virtualDomain=001.live_hls.zte.com&programid=ch00000000000000001085&contentid=ch00000000000000001085&videoid=ch00000090990000001065&recommendtype=0&userid=1362658369654&boid=001&stbid=02%3A00%3A00%3A00%3A00%3A00&terminalflag=1&profilecode=&usersessionid=UVJL5F87UVBXXX&NeedJITP=1&JITPMediaType=DASH&JITPDRMType=NO"
 
           while true; do
-            echo "🎬 Converting MPD -> HLS AVC (using VLC User-Agent)..."
+            echo "🎬 Fetching MPD Stream via Streamlink Pipe..."
+            streamlink --http-header "User-Agent=$UA" \
+                       --http-header "Accept=*/*" \
+                       --http-header "Icy-MetaData=1" \
+                       --stream-segment-threads 3 \
+                       --retry-streams 3 \
+                       --retry-max 5 \
+                       --stdout "$STREAM_MPD" best | \
             ffmpeg -y -hide_banner -loglevel warning \
-              -headers "$HEADERS" \
-              -user_agent "$VLC_UA" \
-              -allowed_extensions ALL \
-              -rw_timeout 10000000 \
-              -i "$STREAM_MPD" \
+              -i pipe:0 \
               -threads 4 \
               -c:v libx264 -preset superfast -profile:v main -pix_fmt yuv420p \
               -g 30 -keyint_min 30 -sc_threshold 0 \
@@ -138,7 +138,7 @@ jobs:
               -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
-            echo "⚠️ Source stream down/error, retrying in 3s..."
+            echo "⚠️ Pipe broke or source stream down, retrying in 3s..."
             sleep 3
           done
           """
