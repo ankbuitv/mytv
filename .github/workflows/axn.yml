@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl dnsutils
-          pip install --no-cache-dir flask flask-cors gunicorn eventlet
+          pip install --no-cache-dir flask flask-cors gunicorn
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -121,8 +121,9 @@ jobs:
           ${PUBLIC_URL}/hls/axn/index.m3u8
           M3U_EOF
 
-          echo "🚀 Starting High-Performance Async Web Server..."
-          gunicorn -k eventlet -w 2 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
+          echo "🚀 Starting High-Performance Web Server (gthread)..."
+          # Gỡ bỏ eventlet, sử dụng 4 worker và 8 luồng (threads) để xử lý I/O cực nhanh
+          gunicorn -w 4 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
           sleep 2
 
           echo "===================================================="
