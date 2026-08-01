@@ -1,0 +1,62 @@
+name: chrtv IPTV Proxy Engine
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+
+jobs:
+  proxy-server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl dnsutils
+          pip install flask flask-cors gunicorn requests
+
+      - name: Setup Bore Tunnel & SSHX
+        run: |
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          curl -sSf https://sshx.io/get | sh
+
+      - name: Run Server Engine
+        run: |
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          FIXED_PORT=14211
+
+          echo "Starting SSHX Web Terminal..."
+          sshx > sshx.log 2>&1 &
+          sleep 4
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs)
+
+          echo "Requesting Port $FIXED_PORT from Bore..."
+          bore local 5000 --to bore.pub --port $FIXED_PORT > bore.log 2>&1 &
+          sleep 3
+
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          fi
+
+          export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${FIXED_PORT}"
+
+          echo "===================================================="
+          echo "PROXY ACTIVE ON PORT : ${FIXED_PORT}"
+          echo "SSHX URL            : ${SSHX_URL}"
+          echo "PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
+          echo "===================================================="
+
+          gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
