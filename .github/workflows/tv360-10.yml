@@ -3,7 +3,7 @@ name: IPTV Stream Server - TV360+10(Fixed Port 30207)
 on:
   schedule:
     # Tự động trigger lại sau mỗi 5 tiếng 59 phút (Chống giới hạn timeout 6 tiếng của GitHub)
-    - cron: '59 5,11,17,23 * * *'
+        - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
