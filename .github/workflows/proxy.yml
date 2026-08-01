@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine (Lag Fixed)
+name: IPTV Pure Proxy Engine
 
 on:
   schedule:
@@ -31,235 +31,201 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code (Chunked Streaming Proxy Engine)
+      - name: Generate App Code & Run
         run: |
-          python3 -c '
-          code = """import os
-          import requests
-          from urllib.parse import urljoin, quote, unquote
-          from flask import Flask, Response, request, stream_with_context
+          cat << 'EOF' > app.py
+import os
+import requests
+from urllib.parse import urljoin, quote, unquote
+from flask import Flask, Response, request, stream_with_context
 
-          app = Flask(__name__)
+app = Flask(__name__)
 
-          DUCKDNS_DOMAIN = "chrtv"
-          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
+WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
 
-          TARGET_SERVER = "http://23.237.104.106:8080"
-          AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
-          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
-          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
-          KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
-          KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
-          
-          TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
-          TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
+CG_AXN = "https://thinkkast.dpdns.org/mytv/ph/cg_axn_sd/index.m3u8"
+CG_HBOFAM = "https://thinkkast.dpdns.org/mytv/ph/cg_hbofam/index.m3u8"
+CG_HBOHITS = "https://thinkkast.dpdns.org/mytv/ph/cg_hbohits/index.m3u8"
+CG_HBOSIGN = "https://thinkkast.dpdns.org/mytv/ph/cg_hbosign/index.m3u8"
 
-          HEADERS_DEFAULT = {
-              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
-              "Accept": "*/*",
-              "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-              "Connection": "keep-alive"
-          }
+# User-Agent giả lập trình duyệt / VLC để bypass anti-bot 429/403 từ server gốc
+HEADERS_DEFAULT = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive"
+}
 
-          UA_DALVIK = "Dalvik/2.1.0"
+def get_public_base_url():
+    return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:55801")
 
-          def get_public_base_url():
-              return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
-          def add_cors_headers(response):
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
-              response.headers["Access-Control-Allow-Headers"] = "*"
-              return response
+def serve_parrot_live():
+    """Chuyển hướng bot/curl sang xem ASCII Party Parrot Live"""
+    try:
+        req = requests.get("https://ascii.live/parrot", stream=True, timeout=5)
+        def generate():
+            for chunk in req.iter_content(chunk_size=1024):
+                if chunk:
+                    yield chunk
+        return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
+    except Exception:
+        return Response("🦜 Party Parrot Guard Active! (Access Denied for Scrapers)", status=429)
 
-          @app.route("/")
-          def home():
-              return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
+@app.before_request
+def check_anti_scan():
+    """Kiểm tra Header: Nếu dùng curl/wget/bot scan thì đẩy sang ASCII Parrot"""
+    if request.method == "OPTIONS":
+        return
+    
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    
+    # Danh sách các công cụ cào link / scan
+    blocked_agents = [
+        "curl", "wget", "python-requests", "python-urllib", 
+        "zgrab", "nmap", "nikto", "sqlmap", "postman", "go-http-client"
+    ]
+    
+    if any(bot in user_agent for bot in blocked_agents):
+        return serve_parrot_live()
 
-          # ============================================================================
-          # 1. PLAYLIST M3U TỔNG HỢP
-          # ============================================================================
-          @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
-          def get_playlist():
-              if request.method == "OPTIONS":
-                  return add_cors_headers(Response(status=204))
-              public_url = get_public_base_url()
-              m3u_content = f\"\"\"#EXTM3U
-          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
-          {public_url}/stream/tv360-9
-          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
-          {public_url}/stream/tv360-10
-          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
-          {public_url}/stream/USA_HBO_ZONE/index.m3u8
-          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
-          {public_url}/stream/USA_DISCOVERY/index.m3u8
-          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
-          {public_url}/stream/warner
-          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
-          {public_url}/stream/paramount
-          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
-          {public_url}/stream/studioc
-          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
-          {public_url}/stream/180.m3u8
-          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
-          {public_url}/stream/191.m3u8\"\"\"
-              res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
-              return add_cors_headers(res)
+@app.route("/")
+def home():
+    return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
 
-          # ============================================================================
-          # CORE PROXY FUNCTION (CHUNKED STREAMING ZERO-BUFFER)
-          # ============================================================================
-          def handle_hls_proxy(default_target_url, endpoint_path):
-              if request.method == "OPTIONS":
-                  return add_cors_headers(Response(status=204))
-              target_url = request.args.get("url") or default_target_url
-              target_url = unquote(target_url)
-              
-              req_headers = HEADERS_DEFAULT.copy()
-              
-              if "tv360" in target_url or "vmttv" in target_url:
-                  req_headers["User-Agent"] = UA_DALVIK
-                  
-              if "103.152.216.26" in target_url:
-                  req_headers["Host"] = "103.152.216.26:8443"
+# ============================================================================
+# PLAYLIST M3U TỔNG HỢP
+# ============================================================================
+@app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
+def get_playlist():
+    if request.method == "OPTIONS":
+        return add_cors_headers(Response(status=204))
+        
+    public_url = get_public_base_url()
+    
+    m3u_content = f"""#EXTM3U
+#EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="Cignal",HBO Family
+{public_url}/stream/cg_hbofam/index.m3u8
+#EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="Cignal",HBO Hits
+{public_url}/stream/cg_hbohits/index.m3u8
+#EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="Cignal",HBO Signature
+{public_url}/stream/cg_hbosign/index.m3u8
+#EXTINF:-1 tvg-id="cg_axn" tvg-name="AXN SD" group-title="Cignal",AXN SD (Proxy)
+{public_url}/stream/cg_axn/index.m3u8
+#EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
+{public_url}/stream/warner
+#EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
+{public_url}/stream/paramount
+#EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+{public_url}/stream/studioc"""
 
-              try:
-                  resp = requests.get(target_url, headers=req_headers, timeout=12, stream=True, allow_redirects=True)
-                  if resp.status_code != 200:
-                      return add_cors_headers(Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code))
-                  
-                  final_url = resp.url
-                  
-                  # Nếu là file M3U8 Playlist -> Rewrite URL
-                  if ".m3u8" in target_url or "m3u8" in resp.headers.get("Content-Type", "") or resp.text.strip().startswith("#EXTM3U"):
-                      raw_text = resp.text
-                      lines = raw_text.splitlines()
-                      rewritten_lines = []
-                      for line in lines:
-                          line_str = line.strip()
-                          if not line_str or line_str.startswith("#"):
-                              rewritten_lines.append(line_str)
-                          else:
-                              full_url = urljoin(final_url, line_str)
-                              rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
-                      res = Response("\\n".join(rewritten_lines).strip(), status=200, mimetype="application/x-mpegurl")
-                      res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                      return add_cors_headers(res)
-                  else:
-                      # Nếu là file TS -> Stream trực tiếp dạng Chunked (Siêu mượt)
-                      def generate():
-                          for chunk in resp.iter_content(chunk_size=16384):
-                              if chunk:
-                                  yield chunk
+    res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
+    return add_cors_headers(res)
 
-                      res = Response(stream_with_context(generate()), status=200, mimetype="video/mp2t")
-                      return add_cors_headers(res)
-              except Exception as e:
-                  return add_cors_headers(Response(f"Proxy Exception: {str(e)}", status=502))
+# ============================================================================
+# CORE PROXY ENGINE
+# ============================================================================
+def handle_hls_proxy(default_target_url, endpoint_path):
+    if request.method == "OPTIONS":
+        return add_cors_headers(Response(status=204))
+        
+    target_url = unquote(request.args.get("url") or default_target_url)
+    
+    req_headers = HEADERS_DEFAULT.copy()
+    if "thinkkast.dpdns.org" in target_url:
+        req_headers["Referer"] = "https://thinkkast.dpdns.org/"
+        req_headers["Origin"] = "https://thinkkast.dpdns.org"
 
-          # ============================================================================
-          # 2. ROUTES
-          # ============================================================================
-          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
-          def proxy_tv360_9(): 
-              return handle_hls_proxy(TV360_9, "/stream/tv360-9")
+    try:
+        resp = requests.get(target_url, headers=req_headers, timeout=12, stream=True, allow_redirects=True)
+        if resp.status_code != 200:
+            return add_cors_headers(Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code))
+        
+        final_url = resp.url
+        content_type = resp.headers.get("Content-Type", "")
+        
+        if ".m3u8" in target_url or "m3u8" in content_type or resp.text.startswith("#EXTM3U"):
+            lines = resp.text.splitlines()
+            rewritten_lines = []
+            for line in lines:
+                line_str = line.strip()
+                if not line_str or line_str.startswith("#"):
+                    rewritten_lines.append(line_str)
+                else:
+                    full_url = urljoin(final_url, line_str)
+                    rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
+                    
+            res = Response("\n".join(rewritten_lines).strip(), status=200, mimetype="application/x-mpegurl")
+            return add_cors_headers(res)
+        else:
+            def generate():
+                for chunk in resp.iter_content(chunk_size=16384):
+                    if chunk:
+                        yield chunk
+            mime = "video/mp2t" if not content_type else content_type
+            res = Response(stream_with_context(generate()), status=200, mimetype=mime)
+            return add_cors_headers(res)
+    except Exception as e:
+        return add_cors_headers(Response(f"Proxy Exception: {str(e)}", status=502))
 
-          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
-          def proxy_tv360_10(): 
-              return handle_hls_proxy(TV360_10, "/stream/tv360-10")
+# Route Proxies cho từng kênh
+@app.route("/stream/cg_axn/index.m3u8", methods=["GET", "OPTIONS"])
+def proxy_cg_axn(): return handle_hls_proxy(CG_AXN, "/stream/cg_axn/index.m3u8")
 
-          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
-          def proxy_studioc(): 
-              return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+@app.route("/stream/cg_hbofam/index.m3u8", methods=["GET", "OPTIONS"])
+def proxy_cg_hbofam(): return handle_hls_proxy(CG_HBOFAM, "/stream/cg_hbofam/index.m3u8")
 
-          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
-          def proxy_warner(): 
-              return handle_hls_proxy(WARNER_TV, "/stream/warner")
+@app.route("/stream/cg_hbohits/index.m3u8", methods=["GET", "OPTIONS"])
+def proxy_cg_hbohits(): return handle_hls_proxy(CG_HBOHITS, "/stream/cg_hbohits/index.m3u8")
 
-          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
-          def proxy_paramount(): 
-              return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
+@app.route("/stream/cg_hbosign/index.m3u8", methods=["GET", "OPTIONS"])
+def proxy_cg_hbosign(): return handle_hls_proxy(CG_HBOSIGN, "/stream/cg_hbosign/index.m3u8")
 
-          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
-          def proxy_180(): 
-              return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
+@app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+def proxy_studioc(): return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
 
-          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
-          def proxy_191(): 
-              return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
+@app.route("/stream/warner", methods=["GET", "OPTIONS"])
+def proxy_warner(): return handle_hls_proxy(WARNER_TV, "/stream/warner")
 
-          @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
-          def proxy_dynamic_23_237(channel_id, subpath):
-              if request.method == "OPTIONS":
-                  return add_cors_headers(Response(status=204))
-              
-              if request.args.get("url"):
-                  target_url = unquote(request.args.get("url"))
-              else:
-                  target_url = f"{TARGET_SERVER}/{channel_id}/{subpath}"
+@app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+def proxy_paramount(): return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
 
-              return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, threaded=True)
+EOF
 
-          if __name__ == "__main__":
-              app.run(host="0.0.0.0", port=5000, threaded=True)
-          """
-          with open("app.py", "w", encoding="utf-8") as f:
-              f.write(code)
-          '
-
-      - name: Start Proxy Server & Tunnel
-        run: |
-          python3 -c '
-          script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          FIXED_PORT=55801
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
-          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e '\''s/^[[:space:]]*//'\'' -e '\''s/[[:space:]]*$//'\'')
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs)
 
-          echo "🌐 Requesting Random Available Port from Bore Tunnel..."
-          bore local 5000 --to bore.pub > bore.log 2>&1 &
-
-          ASSIGNED_PORT=""
-          for i in {1..15}; do
-            sleep 1
-            ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
-            if [ -n "$ASSIGNED_PORT" ]; then
-              break
-            fi
-          done
-
-          if [ -z "$ASSIGNED_PORT" ]; then
-            echo "❌ Không thể cấp port từ Bore!"
-            cat bore.log
-            exit 1
-          fi
-
-          echo "✅ Bore Port Active: $ASSIGNED_PORT"
+          echo "🌐 Requesting Port $FIXED_PORT from Bore..."
+          bore local 5000 --to bore.pub --port $FIXED_PORT > bore.log 2>&1 &
+          sleep 3
 
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
-          else
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
           fi
 
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${ASSIGNED_PORT}"
-          export PUBLIC_BASE_URL="${PUBLIC_URL}"
+          export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${FIXED_PORT}"
 
           echo "===================================================="
-          echo "🚀 PROXY ACTIVE ON PORT: ${ASSIGNED_PORT}"
-          echo "🔑 SSHX URL         : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL     : ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 TV360+9 PROXY    : ${PUBLIC_URL}/stream/tv360-9"
-          echo "👉 TV360+10 PROXY   : ${PUBLIC_URL}/stream/tv360-10"
+          echo "🚀 PROXY ACTIVE ON PORT : ${FIXED_PORT}"
+          echo "🔑 SSHX URL            : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
           echo "===================================================="
 
           gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
-          """
-          with open("start_proxy.sh", "w", encoding="utf-8") as f: f.write(script)
-          '
-          chmod +x start_proxy.sh
-          ./start_proxy.sh
