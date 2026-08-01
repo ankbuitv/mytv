@@ -342,9 +342,7 @@ http://chrtv.duckdns.org:55801/stream/cg_hbosign/index.m3u8
 
 
 #EXTINF:-1 tvg-id="axn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/AXN_logo.svg/1024px-AXN_logo.svg.png" group-title="🎬 BOX - Giải trí",AXN HD
-#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
-#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
-http://chrtv.duckdns.org:55801/stream/cg_axn/index.m3u8
+http://trxx.in:80/a13d09a0ad/aa0d4b0e19d4/2033794
 
 
 
