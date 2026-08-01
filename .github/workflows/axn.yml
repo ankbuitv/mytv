@@ -1,125 +1,15 @@
-name: IPTV Restream Server - AXN HD (N_m3u8DL-RE Fixed)
-
-on:
-  schedule:
-    - cron: '0 */5 * * *'
-  workflow_dispatch:
-
-jobs:
-  stream:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install System Dependencies & Tools
+- name: Run Restream Service
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils tar
-          pip install --no-cache-dir flask flask-cors gunicorn
-
-      - name: Install N_m3u8DL-RE
-        run: |
-          RE_URL=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest | grep "browser_download_url" | grep -i "linux-x64" | cut -d '"' -f 4 | head -n 1)
-          echo "Downloading from: $RE_URL"
-          curl -sL "$RE_URL" -o N_m3u8DL-RE.tar.gz
-          tar -xzf N_m3u8DL-RE.tar.gz
-          EXE_PATH=$(find . -name "N_m3u8DL-RE" -type f | head -n 1)
-          chmod +x "$EXE_PATH"
-          sudo mv "$EXE_PATH" /usr/local/bin/
-          N_m3u8DL-RE --version
-
-      - name: Setup Cloudflare WARP (Bypass MyTV Geoblock)
-        run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ cloudflare-main main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update && sudo apt-get install -y cloudflare-warp
-          warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode warp || true
-          warp-cli --accept-tos connect || true
-          sleep 3
-          echo "🌐 WARP Status:"
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|ip" || true
-
-      - name: Setup Bore Tunnel & SSHX
-        run: |
-          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          chmod +x bore
-          sudo mv bore /usr/local/bin/
-          curl -sSf https://sshx.io/get | sh
-
-      - name: Create Workspace Folders in RAMDisk
-        run: |
-          mkdir -p /dev/shm/hls/axn
-          ln -s /dev/shm/hls hls
-
-      - name: Generate High-Performance Flask Web Server
-        run: |
-          cat << 'EOF' > app.py
-          import os
-          from flask import Flask, send_from_directory, abort, make_response
-          from flask_cors import CORS
-
-          app = Flask(__name__)
-          CORS(app, resources={r"/*": {"origins": "*"}})
-
-          @app.route("/")
-          def index():
-              return "IPTV Restream Server (AXN HD N_m3u8DL-RE Powered)", 200
-
-          @app.route("/playlist.m3u")
-          def playlist():
-              response = make_response(send_from_directory(".", "playlist.m3u"))
-              response.headers["Content-Type"] = "audio/x-mpegurl"
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              return response
-
-          @app.route("/hls/<path:filename>")
-          def serve_hls(filename):
-              file_path = os.path.join("/dev/shm/hls", filename)
-              if not os.path.exists(file_path):
-                  return abort(404)
-              
-              response = make_response(send_from_directory("/dev/shm/hls", filename))
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              response.headers["Access-Control-Allow-Headers"] = "*"
-              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-              response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-              response.headers["Pragma"] = "no-cache"
-              response.headers["Expires"] = "0"
-
-              if filename.endswith(".ts"):
-                  response.headers["Content-Type"] = "video/MP2T"
-              elif filename.endswith(".m3u8"):
-                  response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
-
-              return response
-
-          if __name__ == "__main__":
-              app.run(host="0.0.0.0", port=5000)
-          EOF
-
-      - name: Generate Main Stream Script
-        run: |
-          cat << 'EOF' > start_stream.sh
-          #!/bin/bash
-
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=18080
 
-          echo "💻 Starting SSHX Web Terminal..."
+          # 1. Khởi tạo SSHX Terminal
           sshx > sshx.log 2>&1 &
-          sleep 3
+          sleep 2
           SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
 
-          echo "🌐 Starting Bore Tunnel on Port ${BORE_PORT}..."
+          # 2. Khởi tạo Bore Tunnel
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -128,6 +18,7 @@ jobs:
           ) &
           sleep 4
 
+          # 3. Cập nhật DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
@@ -137,6 +28,7 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
+          # 4. Tạo Master Playlist & Playlist M3U
           cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
@@ -150,36 +42,42 @@ jobs:
           ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
 
-          echo "🚀 Starting Web Server (Gunicorn)..."
-          gunicorn -w 2 --threads 4 --access-logfile - --error-logfile - --keep-alive 5 -b 0.0.0.0:5000 app:app &
+          # 5. Chạy Web Server (Gunicorn)
+          gunicorn -w 2 --threads 4 -b 0.0.0.0:5000 app:app &
           sleep 2
 
           echo "===================================================="
-          echo "🌐 CHRTV N_m3u8DL-RE RESTREAM SERVER IS ONLINE!"
-          echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 AVC MASTER URL    : ${PUBLIC_URL}/hls/axn/master.m3u8"
+          echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
+          echo "🔑 SSHX URL       : ${SSHX_URL}"
+          echo "👉 PLAYLIST URL   : ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 STREAM URL     : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
+          # 6. Cấu hình luồng Stream & DRM Clearkey
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+          # Vòng lặp Restream chuẩn Unix Pipe: N_m3u8DL-RE -> stdout -> FFmpeg
           while true; do
-            echo "🎬 Starting Engine: N_m3u8DL-RE -> FFmpeg..."
+            echo "🎬 Running Stream Pipeline (N_m3u8DL-RE | FFmpeg)..."
             
             N_m3u8DL-RE "$STREAM_MPD" \
               --key "$CLEARKEY" \
-              --header "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+              --header "User-Agent: $USER_AGENT" \
               --header "Referer: https://mytvnet.vn/" \
-              --live-real-time-merge \
-              --live-pipe-options "-c copy -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments+omit_endlist+discont_start -hls_segment_filename /dev/shm/hls/axn/seg_%03d.ts /dev/shm/hls/axn/index.m3u8" \
-              --log-level OFF || true
+              --auto-select \
+              --live-pipe-options "" \
+              --log-level OFF | ffmpeg -y -hide_banner -loglevel warning \
+              -i pipe:0 \
+              -c copy \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist+discont_start \
+              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
+              /dev/shm/hls/axn/index.m3u8 || true
 
-            echo "⚠️ Stream reconnecting in 2 seconds..."
-            sleep 2
+            echo "⚠️ Reconnecting in 3 seconds..."
+            sleep 3
           done
-          EOF
-          chmod +x start_stream.sh
-
-      - name: Execute Streamer
-        run: ./start_stream.sh
