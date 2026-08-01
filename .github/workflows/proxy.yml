@@ -1,4 +1,4 @@
-name: IPTV Pure Proxy & Dynamic Route Engine (Lag Fixed)
+name: IPTV Pure Proxy & Dynamic Route Engine
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Generate App Code & Start Server
+      - name: Generate App Code
         run: |
           cat << 'EOF' > app.py
 import os
@@ -44,25 +44,19 @@ app = Flask(__name__)
 DUCKDNS_DOMAIN = "chrtv"
 DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-TARGET_SERVER = "http://23.237.104.106:8080"
 AMAGI_STUDIO_C = "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8"
 WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
 PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
-KENSCOM_180 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
-KENSCOM_191 = "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
 CG_AXN = "https://thinkkast.dpdns.org/mytv/ph/cg_axn_sd/main/index.m3u8"
-TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
-TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
 
 HEADERS_DEFAULT = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Connection": "keep-alive"
 }
-UA_DALVIK = "Dalvik/2.1.0"
 
 def get_public_base_url():
-    return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:5000")
+    return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:55801")
 
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -70,9 +64,6 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
-# ============================================================================
-# PARROT TROLL GUARD FOR SCANNER / BOT
-# ============================================================================
 def serve_parrot_live():
     try:
         req = requests.get("https://ascii.live/parrot", stream=True, timeout=5)
@@ -88,12 +79,8 @@ def serve_parrot_live():
 def check_anti_scan():
     if request.method == "OPTIONS":
         return
-    
-    # Chỉ bẫy Parrot nếu quét vào trang chủ root "/" bằng curl/bot
-    # Hoặc các route không tồn tại (Scanners)
     user_agent = (request.headers.get("User-Agent") or "").lower()
     is_bot = any(b in user_agent for b in ["zgrab", "nmap", "nikto", "sqlmap", "postman"])
-    
     if is_bot and request.path == "/":
         return serve_parrot_live()
 
@@ -113,10 +100,6 @@ def get_playlist():
         return add_cors_headers(Response(status=204))
     public_url = get_public_base_url()
     m3u_content = f"""#EXTM3U
-#EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
-{public_url}/stream/tv360-9
-#EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
-{public_url}/stream/tv360-10
 #EXTINF:-1 tvg-id="AXN" group-title="PH Live",AXN SD (Proxy)
 {public_url}/stream/cg_axn/index.m3u8
 #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
@@ -124,11 +107,7 @@ def get_playlist():
 #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
 {public_url}/stream/paramount
 #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
-{public_url}/stream/studioc
-#EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
-{public_url}/stream/180.m3u8
-#EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
-{public_url}/stream/191.m3u8"""
+{public_url}/stream/studioc"""
     res = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
     return add_cors_headers(res)
 
@@ -141,10 +120,6 @@ def handle_hls_proxy(default_target_url, endpoint_path):
     target_url = unquote(request.args.get("url") or default_target_url)
     
     req_headers = HEADERS_DEFAULT.copy()
-    if "tv360" in target_url or "vmttv" in target_url:
-        req_headers["User-Agent"] = UA_DALVIK
-    if "103.152.216.26" in target_url:
-        req_headers["Host"] = "103.152.216.26:8443"
     if "thinkkast.dpdns.org" in target_url:
         req_headers["Referer"] = "https://thinkkast.dpdns.org/"
         req_headers["Origin"] = "https://thinkkast.dpdns.org"
@@ -182,12 +157,6 @@ def handle_hls_proxy(default_target_url, endpoint_path):
 @app.route("/stream/cg_axn/index.m3u8", methods=["GET", "OPTIONS"])
 def proxy_cg_axn(): return handle_hls_proxy(CG_AXN, "/stream/cg_axn/index.m3u8")
 
-@app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
-def proxy_tv360_9(): return handle_hls_proxy(TV360_9, "/stream/tv360-9")
-
-@app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
-def proxy_tv360_10(): return handle_hls_proxy(TV360_10, "/stream/tv360-10")
-
 @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
 def proxy_studioc(): return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
 
@@ -197,61 +166,36 @@ def proxy_warner(): return handle_hls_proxy(WARNER_TV, "/stream/warner")
 @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
 def proxy_paramount(): return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
 
-@app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
-def proxy_180(): return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
-
-@app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
-def proxy_191(): return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
 EOF
 
       - name: Start Proxy Server & Tunnel
         run: |
-          cat << 'EOF' > start_proxy.sh
-          #!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          FIXED_PORT=55801
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs)
 
-          echo "🌐 Requesting Port from Bore..."
-          bore local 5000 --to bore.pub > bore.log 2>&1 &
+          echo "🌐 Requesting Port $FIXED_PORT from Bore..."
+          bore local 5000 --to bore.pub --port $FIXED_PORT > bore.log 2>&1 &
+          sleep 3
 
-          ASSIGNED_PORT=""
-          for i in {1..15}; do
-            sleep 1
-            ASSIGNED_PORT=$(grep -oP "listening at bore.pub:\K[0-9]+" bore.log | head -n1)
-            if [ -n "$ASSIGNED_PORT" ]; then break; fi
-          done
-
-          if [ -z "$ASSIGNED_PORT" ]; then
-            echo "❌ Failed to get port from Bore!"
-            cat bore.log
-            exit 1
-          fi
-
-          echo "✅ Bore Port Active: $ASSIGNED_PORT"
-          
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
           fi
 
-          export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${ASSIGNED_PORT}"
+          export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${FIXED_PORT}"
 
           echo "===================================================="
-          echo "🚀 PROXY ACTIVE ON PORT : ${ASSIGNED_PORT}"
+          echo "🚀 PROXY ACTIVE ON PORT : ${FIXED_PORT}"
           echo "🔑 SSHX URL            : ${SSHX_URL}"
           echo "👉 PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
           echo "===================================================="
 
           gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
-          EOF
-          
-          chmod +x start_proxy.sh
-          ./start_proxy.sh
