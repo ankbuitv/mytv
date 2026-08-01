@@ -136,15 +136,17 @@ jobs:
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
 
           while true; do
-            echo "🎬 Restreaming AXN HD (Frame-Perfect Re-encode Mode)..."
+            echo "🎬 Restreaming AXN HD (Frame-Perfect Direct Mode)..."
             ffmpeg -y -hide_banner -loglevel warning \
+              -fflags +genpts+nobuffer+discardcorrupt \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 -preset ultrafast -tune zerolatency \
               -g 50 -keyint_min 50 -sc_threshold 0 \
-              -c:a aac -b:a 128k -ar 44100 \
-              -af "aresample=async=1" \
+              -c:a aac -b:a 128k \
+              -fps_mode passthrough \
+              -max_muxing_queue_size 1024 \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
