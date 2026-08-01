@@ -1,15 +1,133 @@
-- name: Run Restream Service
+name: IPTV Restream - AXN HD (N_m3u8DL-RE)
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl dnsutils tar unzip jq
+          pip install --no-cache-dir flask flask-cors gunicorn
+
+      - name: Install N_m3u8DL-RE
+        run: |
+          RELEASE_JSON=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest)
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("linux-x64")) | .browser_download_url' | head -n 1)
+          
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "❌ Không tìm thấy URL tải N_m3u8DL-RE!"
+            exit 1
+          fi
+
+          echo "📥 Đang tải từ: $DOWNLOAD_URL"
+          curl -sL "$DOWNLOAD_URL" -o n_m3u8dl_archive
+
+          if tar -tzf n_m3u8dl_archive >/dev/null 2>&1; then
+            tar -xzf n_m3u8dl_archive
+          else
+            unzip -o n_m3u8dl_archive
+          fi
+
+          EXE_BIN=$(find . -maxdepth 3 -name "N_m3u8DL-RE" -type f | head -n 1)
+          chmod +x "$EXE_BIN"
+          sudo mv "$EXE_BIN" /usr/local/bin/
+          N_m3u8DL-RE --version
+
+      - name: Setup Cloudflare WARP
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ cloudflare-main main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode warp || true
+          warp-cli --accept-tos connect || true
+          sleep 3
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|ip" || true
+
+      - name: Setup Bore Tunnel & SSHX
+        run: |
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          curl -sSf https://sshx.io/get | sh
+
+      - name: Prepare RAMDisk Environment
+        run: |
+          mkdir -p /dev/shm/hls/axn
+          rm -rf hls
+          ln -s /dev/shm/hls hls
+
+      - name: Create Web Server File
+        run: |
+          cat << 'EOF' > app.py
+          import os
+          from flask import Flask, send_from_directory, abort, make_response
+          from flask_cors import CORS
+
+          app = Flask(__name__)
+          CORS(app, resources={r"/*": {"origins": "*"}})
+
+          @app.route("/")
+          def index():
+              return "IPTV Restream Server (AXN HD Online)", 200
+
+          @app.route("/playlist.m3u")
+          def playlist():
+              response = make_response(send_from_directory(".", "playlist.m3u"))
+              response.headers["Content-Type"] = "audio/x-mpegurl"
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              return response
+
+          @app.route("/hls/<path:filename>")
+          def serve_hls(filename):
+              file_path = os.path.join("/dev/shm/hls", filename)
+              if not os.path.exists(file_path):
+                  return abort(404)
+              
+              response = make_response(send_from_directory("/dev/shm/hls", filename))
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+              response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+              response.headers["Pragma"] = "no-cache"
+              response.headers["Expires"] = "0"
+
+              if filename.endswith(".ts"):
+                  response.headers["Content-Type"] = "video/MP2T"
+              elif filename.endswith(".m3u8"):
+                  response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
+
+              return response
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=5000)
+          EOF
+
+      - name: Run Restream Service
         run: |
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=18080
 
-          # 1. Khởi tạo SSHX Terminal
           sshx > sshx.log 2>&1 &
           sleep 2
           SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
 
-          # 2. Khởi tạo Bore Tunnel
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -18,7 +136,6 @@
           ) &
           sleep 4
 
-          # 3. Cập nhật DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
@@ -28,7 +145,6 @@
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 4. Tạo Master Playlist & Playlist M3U
           cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
@@ -42,7 +158,6 @@
           ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
 
-          # 5. Chạy Web Server (Gunicorn)
           gunicorn -w 2 --threads 4 -b 0.0.0.0:5000 app:app &
           sleep 2
 
@@ -53,12 +168,10 @@
           echo "👉 STREAM URL     : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 6. Cấu hình luồng Stream & DRM Clearkey
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # Vòng lặp Restream chuẩn Unix Pipe: N_m3u8DL-RE -> stdout -> FFmpeg
           while true; do
             echo "🎬 Running Stream Pipeline (N_m3u8DL-RE | FFmpeg)..."
             
