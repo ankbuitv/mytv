@@ -326,16 +326,24 @@ http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 http://chrtv.duckdns.org:4000/hls/hbo/master.m3u8
 
 #EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="🎬 BOX - Giải trí",HBO Family
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
 http://chrtv.duckdns.org:55801/stream/cg_hbofam/index.m3u8
 
 #EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="🎬 BOX - Giải trí",HBO Hits
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
 http://chrtv.duckdns.org:55801/stream/cg_hbohits/index.m3u8
 
 #EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="🎬 BOX - Giải trí",HBO Signature
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
 http://chrtv.duckdns.org:55801/stream/cg_hbosign/index.m3u8
 
 
 #EXTINF:-1 tvg-id="axn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/AXN_logo.svg/1024px-AXN_logo.svg.png" group-title="🎬 BOX - Giải trí",AXN HD
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
 http://chrtv.duckdns.org:55801/stream/cg_axn/index.m3u8
 
 
@@ -375,6 +383,7 @@ http://206.212.244.63/55/index.m3u8
 http://chrtv.duckdns.org:55801/stream/USA_NAT_GEO/index.m3u8
 
 #EXTINF:-1 tvg-id="rakuten-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Rakuten_TV_logo.svg/1024px-Rakuten_TV_logo.svg.png" group-title="🎬 BOX - Giải trí",Rakuten TV
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
 https://devda.undo.it/Stream/index.php?id=rakuten-tv&ext=.m3u8
 
 #EXTINF:-1 tvg-id="history" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/HISTORY_logo_2021.svg/1024px-HISTORY_logo_2021.svg.png" group-title="🎬 BOX - Giải trí",History HD
