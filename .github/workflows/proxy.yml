@@ -31,87 +31,22 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Create app.py
+      - name: Generate app.py from Base64
         run: |
-          python3 -c '
-code = """import os
-import requests
-from urllib.parse import urljoin, quote, unquote
-from flask import Flask, Response, request, stream_with_context
-
-app = Flask(__name__)
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://thinkkast.dpdns.org/",
-    "Origin": "https://thinkkast.dpdns.org",
-    "Connection": "keep-alive"
-}
-
-CHANNELS = {
-    "studioc": "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8",
-    "warner": "http://190.61.90.17:40000/play/a0ho/index.m3u8",
-    "paramount": "http://206.212.244.63/137/index.m3u8",
-    "cg_axn": "https://thinkkast.dpdns.org/mytv/ph/cg_axn/index.m3u8",
-    "cg_hbofam": "https://thinkkast.dpdns.org/mytv/ph/cg_hbofam/index.m3u8",
-    "cg_hbohits": "https://thinkkast.dpdns.org/mytv/ph/cg_hbohits/index.m3u8",
-    "cg_hbosign": "https://thinkkast.dpdns.org/mytv/ph/cg_hbosign/index.m3u8"
-}
-
-def add_cors(r):
-    r.headers["Access-Control-Allow-Origin"] = "*"
-    r.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    return r
-
-def get_base_url():
-    return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:55801")
-
-@app.before_request
-def check_bot():
-    if request.method == "OPTIONS": return
-    ua = (request.headers.get("User-Agent") or "").lower()
-    if any(b in ua for b in ["curl", "wget", "python", "nmap", "zgrab"]):
-        try:
-            rq = requests.get("https://ascii.live/parrot", stream=True, timeout=5)
-            return Response(stream_with_context(rq.iter_content(chunk_size=1024)), mimetype="text/plain; charset=utf-8")
-        except:
-            return Response("Access Denied", status=429)
-
-@app.route("/")
-def home():
-    return f"OK - {get_base_url()}"
-
-@app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
-def get_m3u():
-    if request.method == "OPTIONS": return add_cors(Response(status=204))
-    p = get_base_url()
-    m = f\"\"\"#EXTM3U
-#EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="Cignal",HBO Family
-{p}/stream/cg_hbofam/index.m3u8
-#EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="Cignal",HBO Hits
-{p}/stream/cg_hbohits/index.m3u8
-#EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="Cignal",HBO Signature
-{p}/stream/cg_hbosign/index.m3u8
-#EXTINF:-1 tvg-id="cg_axn" tvg-name="AXN SD" group-title="Cignal",AXN SD
-{p}/stream/cg_axn/index.m3u8
-#EXTINF:-1 tvg-id="WarnerTV" group-title="US Live",Warner TV
-{p}/stream/warner
-#EXTINF:-1 tvg-id="Paramount" group-title="US Live",Paramount Network
-{p}/stream/paramount
-#EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C
-{p}/stream/studioc\"\"\"
-    return add_cors(Response(m.strip(), mimetype="application/x-mpegurl"))
+          echo "aW1wb3J0IG9zCmltcG9ydCByZXF1ZXN0cwpmcm9tIHVybGxpYi5wYXJzZSBpbXBvcnQgdXJsam9pbiwgcXVvdGUsIHVucXVvdGUKZnJvbSBmbGFzayBpbXBvcnQgRmxhc2ssIFJlc3BvbnNlLCByZXF1ZXN0LCBzdHJlYW1fd2l0aF9jb250ZXh0CgphcHAgPSBGbGFzayhfX25hbWVfXykKCkhFQURFUlMgPSB7CiAgICAiVXNlci1BZ2VudCI6ICJNb3ppbGxhLzUuMCAoV2luZG93cyBOVCAxMC4wOyBXaW42NDsgeDY0KSBBcHBsZVdlYktpdC81MzcuMzYgKEtIVE1MLCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwKICAgICJSZWZlcmVyIjogImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy8iLAogICAgIk9yaWdpbiI6ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmciLAogICAgIkNvbm5lY3Rpb24iOiAia2VlcC1hbGl2ZSIKfQoKQ0hBTk5FTFMgPSB7CiAgICAic3R1ZGlvYyI6ICJodHRwczovL2FtZzEyMDU4LWMxNXN0dWRpby1hbWcxMjA1OGMxLWxnLXVzLTU3ODcucGxheW91dHMubm93LmFtYWdpLnR2L3BsYXlsaXN0Lm0zdTgiLAogICAgIndhcm5lciI6ICJodHRwOi8vMTkwLjYxLjkwLjE3OjQwMDAwL3BsYXkvYTBoby9pbmRleC5tM3U4IiwKICAgICJwYXJhbW91bnQiOiAiaHR0cDovLzIwNi4yMTIuMjQ0LjYzLzEzNy9pbmRleC5tM3U4IiwKICAgICJjZ19heG4iOiAiaHR0cHM6Ly90aGlua2thc3QuZHBkbnMub3JnL215dHYvcGgvY2dfYXhuL2luZGV4Lm0zdTgiLAogICAgImNnX2hib2ZhbSI6ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmcvbXl0di9waC9jZ19oYm9mYW0vaW5kZXgubTN1OCIsCiAgICAiY2dfaGJvaGl0cyI6ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmcvbXl0di9waC9jZ19oYm9oaXRzL2luZGV4Lm0zdTgiLAogICAgImNnX2hib3NpZ24iOiAiaHR0cHM6Ly90aGlua2thc3QuZHBkbnMub3JnL215dHYvcGgvY2dfaGJvc2lnbi9pbmRleC5tM3U4Igp9CgpkZWYgYWRkX2NvcnMocik6CiAgICByLmhlYWRlcnNbIkFjY2Vzcy1Db250cm9sLUFsbG93LU9yaWdpbiJdID0gIioiCiAgICByLmhlYWRlcnNbIkFjY2Vzcy1Db250cm9sLUFsbG93LU1ldGhvZHMiXSA9ICJHRVQsIE9QVElPTlMiCiAgICByZXR1cm4gcgoKZGVmIGdldF9iYXNlX3VybCgpOgogICAgcmV0dXJuIG9zLmVudmlyb24uZ2V0KCJQVUJMSUNfQkFTRV9VUkwiLCAiaHR0cDovL2NocnR2LmR1Y2tkbnMub3JnOjU1ODAxIikKQGFwcC5iZWZvcmVfcmVxdWVzdApkZWYgY2hlY2tfYm90KCk6CiAgICBpZiByZXF1ZXN0Lm1ldGhvZCA9PSAiT1BUSU9OUyI6CiAgICAgICAgcmV0dXJuCiAgICB1YSA9IChyZXF1ZXN0LmhlYWRlcnMuZ2V0KCJVc2VyLUFnZW50Iikgb3IgIiIpLmxvd2VyKCkKICAgIGlmIGFueShiIGluIHVhIGZvciBiIGluIFsiY3VybCIsICJ3Z2V0IiwgInB5dGhvbiIsICJubWFwIiwgInpncmFiIl0pOgogICAgICAgIHRyeToKICAgICAgICAgICAgcnEgPSByZXF1ZXN0cy5nZXQoImh0dHBzOi8vYXNjaWkubGl2ZS9wYXJyb3QiLCBzdHJlYW09VHJ1ZSwgdGltZW91dD01KQogICAgICAgICAgICByZXR1cm4gUmVzcG9uc2Uoc3RyZWFtX3dpdGhfY29udGV4dChycS5pdGVyX2NvbnRlbnQoY2h1bmtfc2l6ZT0xMDI0KSksIG1pbWV0eXBlPSJ0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04IikKICAgICAgICBleGNlcHQ6CiAgICAgICAgICAgIHJldHVybiBSZXNwb25zZSgiQWNjZXNzIERlbmllZCIsIHN0YXR1cz00MjkpCgpAYXBwLnJvdXRlKCIvIikKZGVmIGhvbWUoKToKICAgIHJldHVybiBmIk9LIC0ge2dldF9iYXNlX3VybCgpfSIKQGFwcC5yb3V0ZSgiL3BsYXlsaXN0Lm0zdSIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgZ2V0X20zdSgpOgogICAgaWYgcmVxdWVzdC5tZXRob2QgPT0gIk9QVElPTlMiOgogICAgICAgIHJldHVybiBhZGRfY29ycyhSZXNwb25zZShzdGF0dXM9MjA0KSkKICAgIHAgPSBnZXRfYmFzZV91cmwoKQogICAgbSA9IGYifI1FWFRNM1UKI0VYVElORjotMSB0dmctaWQ9ImNnX2hib2ZhbSIgdHZnLW5hbWU9IkhCTyBGYW1pbHkiIHR2Zy1sb2dvPSJodHRwczovL3FwLXBsZHQtaW1hZ2UtcmVzaXplci1jbG91ZC1wcm9kLmFrYW1haXplZC5uZXQvaW1hZ2UvNjJGMUFBRUQtRUI1Ni00OURGLTkxMkQtMEEyMzg4MTMxNzcyLzA2MTY5LmpwZz93aWR0aD0xOTgwIiB0dmctY2hubz0iMzEiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEhCTyBGYW1pbHkNCntwfS9zdHJlYW0vY2dfaGJvZmFtL2luZGV4Lm0zdTgNCiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19oYm9oaXRzIiB0dmctbmFtZT0iSEJPIEhpdHMiIHR2Zy1sb2dvPSJodHRwczovL3FwLXBsZHQtaW1hZ2UtcmVzaXplci1jbG91ZC1wcm9kLmFrYW1haXplZC5uZXQvaW1hZ2UvQ0VFODNFRTUtRDg3MC00QjNDLTkzMzktQUNBNEY2NDAyMEQwLzA2MTY5LmpwZz93aWR0aD0xOTgwIiB0dmctY2hubz0iMzIiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEhCTyBIaXRzDQp7cH0vc3RyZWFtL2NnX2hib2hpdHMvaW5kZXgubTN1OA0KI0VYVElORjotMSB0dmctaWQ9ImNnX2hib3NpZ24iIHR2Zy1uYW1lPSJISk8gU2lnbmF0dXJlIiB0dmctbG9nbz0iaHR0cHM6Ly9xcC1wbGR0LWltYWdlLXJlc2l6ZXItY2xvdWQtcHJvZC5ha2FtYWl6ZWQubmV0L2ltYWdlL0Q1MTI3OTU5LTM0RTQtNDFCMi1BQTgwLUNFNzREREMyQzNDNC8wLTE2eDkuanBnP3dpZHRoPTE5ODAiIHR2Zy1jaG5vPSIzMyIgZ3JvdXAtdGl0bGU9IkNpZ25hbCIsSEJPIFNpZ25hdHVyZQ0Ke3B9L3N0cmVhbS9jZ19oYm9zaWduL2luZGV4Lm0zdTgNCiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19heG4iIHR2Zy1uYW1lPSJBWE4gU0QiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEFYTiBTRA0Ke3B9L3N0cmVhbS9jZ19heG4vaW5kZXgubTN1OA0KI0VYVElORjotMSB0dmctaWQ9Ildhcm5lclRWIiBncm91cC10aXRsZT0iVVMgTGl2ZSIsV2FybmVyIFRWDQp7cH0vc3RyZWFtL3dhcm5lcg0KI0VYVElORjotMSB0dmctaWQ9IlBhcmFtb3VudCIgZ3JvdXAtdGl0bGU9IlVTIExpdmUiLFBhcmFtb3VudCBOZXR3b3JrDQp7cH0vc3RyZWFtL3BhcmFtb3VudA0KI0VYVElORjotMSB0dmctaWQ9IlN0dWRpb0MiIGdyb3VwLXRpdGxlPSJVUyBMaXZlIixBbWFnaSBTdHVkaW8gQw0Ke3B9L3N0cmVhbS9zdHVkaW9j\"\"\"\n    return add_cors(Response(m.replace('\\r', '').strip(), mimetype=\"application/x-mpegurl\"))
 
 def hls_proxy(tgt, path):
-    if request.method == "OPTIONS": return add_cors(Response(status=204))
+    if request.method == "OPTIONS":
+        return add_cors(Response(status=204))
     u = unquote(request.args.get("url") or tgt)
     try:
         rs = requests.get(u, headers=HEADERS, timeout=12, stream=True)
-        if rs.status_code != 200: return add_cors(Response("Err", status=rs.status_code))
+        if rs.status_code != 200:
+            return add_cors(Response("Err", status=rs.status_code))
         ct = rs.headers.get("Content-Type", "")
         if ".m3u8" in u or "m3u8" in ct or rs.text.startswith("#EXTM3U"):
             rw = [f"{path}?url={quote(urljoin(rs.url, l))}" if l and not l.startswith("#") else l for l in rs.text.splitlines()]
-            return add_cors(Response("\\n".join(rw), mimetype="application/x-mpegurl"))
+            return add_cors(Response("\n".join(rw), mimetype="application/x-mpegurl"))
         return add_cors(Response(stream_with_context(rs.iter_content(chunk_size=16384)), mimetype=ct or "video/mp2t"))
     except:
         return add_cors(Response("Ex", status=502))
@@ -125,9 +60,7 @@ def p_chan(chid):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-"""
-open("app.py", "w").write(code)
-'
+" | base64 -d > app.py
 
       - name: Run Server Engine
         run: |
@@ -135,12 +68,12 @@ open("app.py", "w").write(code)
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           FIXED_PORT=55801
 
-          echo "💻 Starting SSHX Web Terminal..."
+          echo "Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
           sleep 4
           SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs)
 
-          echo "🌐 Requesting Port $FIXED_PORT from Bore..."
+          echo "Requesting Port $FIXED_PORT from Bore..."
           bore local 5000 --to bore.pub --port $FIXED_PORT > bore.log 2>&1 &
           sleep 3
 
@@ -152,9 +85,9 @@ open("app.py", "w").write(code)
           export PUBLIC_BASE_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${FIXED_PORT}"
 
           echo "===================================================="
-          echo "🚀 PROXY ACTIVE ON PORT : ${FIXED_PORT}"
-          echo "🔑 SSHX URL            : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
+          echo "PROXY ACTIVE ON PORT : ${FIXED_PORT}"
+          echo "SSHX URL            : ${SSHX_URL}"
+          echo "PLAYLIST URL        : ${PUBLIC_BASE_URL}/playlist.m3u"
           echo "===================================================="
 
           gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app
