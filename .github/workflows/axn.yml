@@ -21,15 +21,15 @@ jobs:
       - name: Install System Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils unzip
+          sudo apt-get install -y ffmpeg curl dnsutils tar
           pip install --no-cache-dir flask flask-cors gunicorn
 
-      - name: Install N_m3u8DL-RE (Correct Repo)
+      - name: Install N_m3u8DL-RE
         run: |
           RE_URL=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest | grep "browser_download_url" | grep -i "linux-x64" | cut -d '"' -f 4 | head -n 1)
           echo "Downloading from: $RE_URL"
-          curl -sL "$RE_URL" -o N_m3u8DL-RE.zip
-          unzip -o N_m3u8DL-RE.zip
+          curl -sL "$RE_URL" -o N_m3u8DL-RE.tar.gz
+          tar -xzf N_m3u8DL-RE.tar.gz
           EXE_PATH=$(find . -name "N_m3u8DL-RE" -type f | head -n 1)
           chmod +x "$EXE_PATH"
           sudo mv "$EXE_PATH" /usr/local/bin/
