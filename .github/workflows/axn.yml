@@ -1,4 +1,4 @@
-name: IPTV Restream Server - AXN HD (Perfect Sync & Frame Perfect)
+name: IPTV Restream Server - AXN HD (Ultra-Low Latency & UDP Speed)
 
 on:
   schedule:
@@ -31,9 +31,11 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Create Workspace Folders
+      - name: Create Workspace Folders in RAMDisk
         run: |
-          mkdir -p hls/axn
+          # Ghi HLS thẳng vào RAMDisk (/dev/shm) để đạt tốc độ như UDP
+          mkdir -p /dev/shm/hls/axn
+          ln -s /dev/shm/hls hls
 
       - name: Generate Flask Web Server (App Code)
         run: |
@@ -47,7 +49,7 @@ jobs:
 
           @app.route("/")
           def index():
-              return "IPTV Restream Server Running (AXN HD Optimized)!", 200
+              return "IPTV Restream Server Running (AXN HD Low-Latency)!", 200
 
           @app.route("/playlist.m3u")
           def playlist():
@@ -58,11 +60,11 @@ jobs:
 
           @app.route("/hls/<path:filename>")
           def serve_hls(filename):
-              file_path = os.path.join("hls", filename)
+              file_path = os.path.join("/dev/shm/hls", filename)
               if not os.path.exists(file_path):
                   return abort(404)
               
-              response = make_response(send_from_directory("hls", filename))
+              response = make_response(send_from_directory("/dev/shm/hls", filename))
               response.headers["Access-Control-Allow-Origin"] = "*"
               response.headers["Access-Control-Allow-Headers"] = "*"
               response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
@@ -136,22 +138,22 @@ jobs:
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
 
           while true; do
-            echo "🎬 Restreaming AXN HD (Frame-Perfect Direct Mode)..."
+            echo "🎬 Restreaming AXN HD (Low-Latency Direct Mode)..."
             ffmpeg -y -hide_banner -loglevel warning \
               -fflags +genpts+nobuffer+discardcorrupt \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 -preset ultrafast -tune zerolatency \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -bf 0 -g 25 -keyint_min 25 -sc_threshold 0 \
               -c:a aac -b:a 128k \
               -fps_mode passthrough \
               -max_muxing_queue_size 1024 \
               -f hls \
-              -hls_time 2 \
-              -hls_list_size 6 \
+              -hls_time 1 \
+              -hls_list_size 5 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
-              -hls_segment_filename "hls/axn/seg_%03d.ts" hls/axn/index.m3u8 || true
+              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" /dev/shm/hls/axn/index.m3u8 || true
 
             echo "⚠️ Stream reconnecting in 2 seconds..."
             sleep 2
