@@ -2,7 +2,7 @@ name: IPTV Stream Server - Pure Stream Copy (TV360-9)
 
 on:
   schedule:
-    - cron: '50 0,5,11,17,23 * * *'
+      - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
