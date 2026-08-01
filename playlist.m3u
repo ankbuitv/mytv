@@ -1,0 +1,564 @@
+#EXTM3U url-tvg="https://vnepg.site/epgc.xml"
+#EXTM3U x-tvg-url="https://vnepg.site/epgu.xml, "https://lichphatsong.site/schedule/epg.xml" tvg-shift=0 cache=500 deinterlace=1 aspect-ratio=16:9 m3uautoload=1"
+
+
+# ==========================================
+# 📺 DANH SÁCH KÊNH TRUYỀN HÌNH VIỆT NAM
+# Cập nhật ngày: 06/01
+# ==========================================
+
+#EXTINF:-1 tvg-id="vietnam-today" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/8c/VTV_Vietnam_Today_2023.png" group-title="TH - Truyền hình Việt",Vietnam Today
+https://vtvgolive-vtv02.vtvdigital.vn/hCfNljLwrSzyEpg2XorHJA/1784701166/hls/vtv/live/vietnamtoday__vtv720p-h264/index.m3u8
+
+#EXTINF:-1 tvg-id="vtv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/4/43/VTV1_2013.png" group-title="TH - Truyền hình Việt",VTV1
+https://live-a.fptplay53.net/live/media/vtv1/live247-hls-avc/vtv1-avc1_2800000=10001-mp4a_131600=20000.m3u8?sign=1784795514-MA-0-0b8b190d70b7da5ab8066a49cc97964e
+
+#EXTINF:-1 tvg-id="vtv2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/5/59/VTV2_2013.png" group-title="TH - Truyền hình Việt",VTV2
+https://vtvgolive-vtv02.vtvdigital.vn/TW7z-ZT_NvvoWSJJOVchhw/1782750595/hls/vtv/live/vtv2__vtv1080p-h264/index.m3u8
+
+#EXTINF:-1 tvg-id="vtv3" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/5/56/VTV3_2013.png" group-title="TH - Truyền hình Việt",VTV3
+https://vtvgolive-vtv02.vtvdigital.vn/63QbTi1LexiLXCk0bLDODw/1784682517/hls/vtv/live/vtv3__vtv720p-h264/index.m3u8
+
+#EXTINF:-1 tvg-id="vtv4" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e7/VTV4_2013.png" group-title="TH - Truyền hình Việt",VTV4
+https://vtvgolive-vtv02.vtvdigital.vn/ReAVPCOCaPHEnfHlxZb1Pw/1784682543/hls/vtv/live/vtv4__vtv720p-h264/index.m3u8
+
+#EXTINF:-1 tvg-id="vtv5" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/0/0f/VTV5_2013.png" group-title="TH - Truyền hình Việt",VTV5
+https://devda.undo.it/Stream/index.php?id=vtv5&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv6" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/85/VTV_Can_Tho_2013.png" group-title="TH - Truyền hình Việt",VTV6
+https://devda.undo.it/Stream/index.php?id=vtv6&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv7" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/c/c5/VTV7_2013.png" group-title="TH - Truyền hình Việt",VTV7
+https://devda.undo.it/Stream/index.php?id=vtv7&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv8" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/8f/VTV8_2013.png" group-title="TH - Truyền hình Việt",VTV8
+https://devda.undo.it/Stream/index.php?id=vtv8&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv9" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/4/48/VTV9_2013.png" group-title="TH - Truyền hình Việt",VTV9
+https://devda.undo.it/Stream/index.php?id=vtv9&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv10" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/VTV10_logo.svg/1024px-VTV10_logo.svg.png" group-title="TH - Truyền hình Việt",VTV10
+https://devda.undo.it/Stream/index.php?id=vtv10&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv5-tay-nam-bo" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/b/bb/VTV5_Tay_Nam_Bo_2022.png" group-title="TH - Truyền hình Việt",VTV5 Tây Nam Bộ
+https://devda.undo.it/Stream/index.php?id=vtv5-tay-nam-bo&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtv5-tay-nguyen" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/f/fc/VTV5_Tay_Nguyen_2022.png" group-title="TH - Truyền hình Việt",VTV5 Tây Nguyên
+https://vtvgolive-vtv02.vtvdigital.vn/4_Mq8aaG6GfbEQiQcQ6TPA/1784875802/hls/vtv/live/vtv5tn__vtv720p-h264/index.m3u8
+
+#EXTINF:-1 tvg-id="qpvn" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/7/70/QPVN_2013.png" group-title="TH - Truyền hình Việt",QPVN
+https://devda.undo.it/Stream/index.php?id=qpvn&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv1" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/c/c7/HTV1.svg/1024px-HTV1.svg.png" group-title="TH - Truyền hình Việt",HTV1
+https://devda.undo.it/Stream/index.php?id=htv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv2" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/9c/HTV2.svg/1024px-HTV2.svg.png" group-title="TH - Truyền hình Việt",HTV2
+https://devda.undo.it/Stream/index.php?id=htv2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv3" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/1/19/HTV3.svg/1024px-HTV3.svg.png" group-title="TH - Truyền hình Việt",HTV3
+https://devda.undo.it/Stream/index.php?id=htv3&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv4" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/9d/HTV4.svg/1024px-HTV4.svg.png" group-title="TH - Truyền hình Việt",HTV4
+https://devda.undo.it/Stream/index.php?id=htv4&ext=.m3u8
+
+#EXTINF:-1 tvg-id="btv9" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/3/31/HTV5.svg/1024px-HTV5.svg.png" group-title="TH - Truyền hình Việt",HTV5
+https://devda.undo.it/Stream/index.php?id=btv9&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv9" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/4/40/HTV9.svg/1024px-HTV9.svg.png" group-title="TH - Truyền hình Việt",HTV9
+https://devda.undo.it/Stream/index.php?id=htv9&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htv-thuan-viet" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/5/5e/HTV_Thu%E1%BA%A7n_Vi%E1%BB%87t.svg/1024px-HTV_Thu%E1%BA%A7n_Vi%E1%BB%87t.svg.png" group-title="TH - Truyền hình Việt",HTV Thuần Việt
+https://devda.undo.it/Stream/index.php?id=htv-thuan-viet&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-ca-nhac" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/0/09/HTVC_Ca_Nh%E1%BA%A1c.svg/1024px-HTVC_Ca_Nh%E1%BA%A1c.svg.png" group-title="TH - Truyền hình Việt",HTVC Ca Nhạc
+https://devda.undo.it/Stream/index.php?id=htvc-ca-nhac&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-du-lich" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/1/12/HTVC_Du_L%E1%BB%8Bch.svg/1024px-HTVC_Du_L%E1%BB%8Bch.svg.png" group-title="TH - Truyền hình Việt",HTVC Du Lịch
+https://devda.undo.it/Stream/index.php?id=htvc-du-lich&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-gia-inh" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/0/01/HTVC_Gia_%C4%90%C3%ACnh.svg/1024px-HTVC_Gia_%C4%90%C3%ACnh.svg.png" group-title="TH - Truyền hình Việt",HTVC Gia Đình
+https://devda.undo.it/Stream/index.php?id=htvc-gia-inh&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-phim" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/2/2d/HTVC_Phim.svg/1024px-HTVC_Phim.svg.png" group-title="TH - Truyền hình Việt",HTVC Phim
+https://devda.undo.it/Stream/index.php?id=htvc-phim&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-phu-nu" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/c/c5/HTVC_Ph%E1%BB%A5_N%E1%BB%AF.svg/1024px-HTVC_Ph%E1%BB%A5_N%E1%BB%AF.svg.png" group-title="TH - Truyền hình Việt",HTVC Phụ Nữ
+https://devda.undo.it/Stream/index.php?id=htvc-phu-nu&ext=.m3u8
+
+#EXTINF:-1 tvg-id="htvc-plus" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/1/1d/HTVC%2B.svg/1024px-HTVC%2B.svg.png" group-title="TH - Truyền hình Việt",HTVC Plus
+https://devda.undo.it/Stream/index.php?id=htvc-plus&ext=.m3u8
+
+#EXTINF:-1 tvg-id="v-family" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/84/V_Family_logo.png" group-title="TH - Truyền hình Việt",V Family
+https://devda.undo.it/Stream/index.php?id=v-family&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vie-network" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a2/Vie_Network_logo.png" group-title="TH - Truyền hình Việt",Vie NetWork
+https://devda.undo.it/Stream/index.php?id=vie-network&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab1-vie-giai-tri" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/d/d7/VTVCab_1.svg/1024px-VTVCab_1.svg.png" group-title="TH - Truyền hình Việt",VTVCab1 Vie Giải trí
+https://devda.undo.it/Stream/index.php?id=vtvcab1-vie-giai-tri&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab15" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/96/VTVCab_15.svg/1024px-VTVCab_15.svg.png" group-title="TH - Truyền hình Việt",VTVCab15
+https://devda.undo.it/Stream/index.php?id=vtvcab15&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab19" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/3/3d/VTVCab_19.svg/1024px-VTVCab_19.svg.png" group-title="TH - Truyền hình Việt",VTVCab19
+https://devda.undo.it/Stream/index.php?id=vtvcab19&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="style-tv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a2/Style_Network_logo.png" group-title="🎬 BOX - Giải trí",STYLE TV
+https://devda.undo.it/Stream/index.php?id=style-tv&ext=.m3u8
+
+
+
+#EXTINF:-1 tvg-id="vtvcab2-phim-viet" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/1/14/VTVCab_2.svg/1024px-VTVCab_2.svg.png" group-title="TH - Truyền hình Việt",VTVCab2 Phim Việt
+https://devda.undo.it/Stream/index.php?id=vtvcab2-phim-viet&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab22" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/2/2a/VTVCab_22.svg/1024px-VTVCab_22.svg.png" group-title="TH - Truyền hình Việt",VTVCab22
+https://devda.undo.it/Stream/index.php?id=vtvcab22&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab4-on-movies" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/6/6c/VTVCab_4.svg/1024px-VTVCab_4.svg.png" group-title="TH - Truyền hình Việt",VTVcab4 On Movies
+https://devda.undo.it/Stream/index.php?id=vtvcab4-on-movies&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab5-echannel" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/4/40/VTVCab_5.svg/1024px-VTVCab_5.svg.png" group-title="TH - Truyền hình Việt",VTVCab5 Echannel
+https://devda.undo.it/Stream/index.php?id=vtvcab5-echannel&ext=.m3u8
+
+#EXTINF:-1 tvg-id="vtvcab8-bibi-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/d/d6/VTVCab_8.svg/1024px-VTVCab_8.svg.png" group-title="TH - Truyền hình Việt",VTVCab8 BiBi TV
+https://freem3u.xyz/api/live/play.m3u8?vid=178
+
+#EXTINF:-1 tvg-id="vtvcab9" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/92/VTVCab_9.svg/1024px-VTVCab_9.svg.png" group-title="TH - Truyền hình Việt",VTVCab9
+https://devda.undo.it/Stream/index.php?id=vtvcab9&ext=.m3u8
+
+#EXTINF:-1 tvg-id="yeah1tv-vtvcab17" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/0/00/VTVCab_17.svg/1024px-VTVCab_17.svg.png" group-title="TH - Truyền hình Việt",Yeah1TV VTVCab17
+https://devda.undo.it/Stream/index.php?id=yeah1tv-vtvcab17&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thvl1-hd" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/5/50/THVL1.svg/1024px-THVL1.svg.png" group-title="TH - Truyền hình Việt",THVL1 HD
+https://devda.undo.it/Stream/index.php?id=thvl1-hd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thvl2-hd" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/97/THVL2.svg/1024px-THVL2.svg.png" group-title="TH - Truyền hình Việt",THVL2 HD
+https://devda.undo.it/Stream/index.php?id=thvl2-hd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thvl3-hd" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/3/36/THVL3.svg/1024px-THVL3.svg.png" group-title="TH - Truyền hình Việt",THVL3 HD
+https://devda.undo.it/Stream/index.php?id=thvl3-hd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thvl4-hd" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/6/62/THVL4.svg/1024px-THVL4.svg.png" group-title="TH - Truyền hình Việt",THVL4 HD
+https://devda.undo.it/Stream/index.php?id=thvl4-hd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ha-noi-1" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/c/c6/Hanoi_TV_1_Logo.svg/1024px-Hanoi_TV_1_Logo.svg.png" group-title="TH - Truyền hình Việt",Hà Nội 1
+https://devda.undo.it/Stream/index.php?id=ha-noi-1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ha-noi-2" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/c/c2/Hanoi_TV_2_Logo.svg/1024px-Hanoi_TV_2_Logo.svg.png" group-title="TH - Truyền hình Việt",Hà Nội 2
+https://devda.undo.it/Stream/index.php?id=ha-noi-2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="atv1" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/ATV_An_Giang_logo.svg/1024px-ATV_An_Giang_logo.svg.png" group-title="TH - Truyền hình Việt",ATV1
+https://devda.undo.it/Stream/index.php?id=atv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="atv2" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/ATV_An_Giang_logo.svg/1024px-ATV_An_Giang_logo.svg.png" group-title="TH - Truyền hình Việt",ATV2
+https://live.fptplay53.net/epzhd2/angiang02hd_vhls.smil/chunklist_b1800000.m3u8
+
+#EXTINF:-1 tvg-id="atv3" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/ATV_An_Giang_logo.svg/1024px-ATV_An_Giang_logo.svg.png" group-title="TH - Truyền hình Việt",ATV3
+https://devda.undo.it/Stream/index.php?id=atv3&ext=.m3u8
+
+#EXTINF:-1 tvg-id="bgtv" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/8/87/BGTV_Bac_Giang_TV.png" group-title="TH - Truyền hình Việt",BGTV
+https://devda.undo.it/Stream/index.php?id=bgtv&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="bptv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e8/BPTV1_Binh_Phuoc_2022.png" group-title="TH - Truyền hình Việt",BPTV1
+https://devda.undo.it/Stream/index.php?id=bptv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="bptv2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/2/28/BPTV2_Binh_Phuoc_2022.png" group-title="TH - Truyền hình Việt",BPTV2
+https://devda.undo.it/Stream/index.php?id=bptv2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="brt" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/b/b6/Logo_BRT.svg/1024px-Logo_BRT.svg.png" group-title="TH - Truyền hình Việt",BRT
+https://devda.undo.it/Stream/index.php?id=brt&ext=.m3u8
+
+#EXTINF:-1 tvg-id="btv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/6/66/BTV_Binh_Duong_2023.png" group-title="TH - Truyền hình Việt",BTV
+https://devda.undo.it/Stream/index.php?id=btv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="btv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/3/3c/BTV1_Binh_Duong_2023.png" group-title="TH - Truyền hình Việt",BTV1
+https://devda.undo.it/Stream/index.php?id=btv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="btv2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/b/b0/BTV2_Binh_Duong_2023.png" group-title="TH - Truyền hình Việt",BTV2
+https://devda.undo.it/Stream/index.php?id=btv2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="crtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/86/CRTV_Cao_Bang_2022.png" group-title="TH - Truyền hình Việt",CRTV
+https://devda.undo.it/Stream/index.php?id=crtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ctv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e9/CTV_Can_Tho_2022.png" group-title="TH - Truyền hình Việt",CTV
+https://devda.undo.it/Stream/index.php?id=ctv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="dn1" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/e/e1/Logo_DN1.svg/1024px-Logo_DN1.svg.png" group-title="TH - Truyền hình Việt",DN1
+https://devda.undo.it/Stream/index.php?id=dn1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="dn2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/9/97/DN2_Da_Nang_2022.png" group-title="TH - Truyền hình Việt",DN2
+https://devda.undo.it/Stream/index.php?id=dn2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="dnrt1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/1/19/DNRT1_Dak_Nong_2022.png" group-title="TH - Truyền hình Việt",DNRT1
+https://devda.undo.it/Stream/index.php?id=dnrt1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="dnrt2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/5/51/DNRT2_Dak_Nong_2022.png" group-title="TH - Truyền hình Việt",DNRT2
+https://devda.undo.it/Stream/index.php?id=dnrt2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="drt" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/8/8f/DRT_Logo.svg/1024px-DRT_Logo.svg.png" group-title="TH - Truyền hình Việt",DRT
+https://devda.undo.it/Stream/index.php?id=drt&ext=.m3u8
+
+#EXTINF:-1 tvg-id="gtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/d/d0/GTV_Gia_Lai_2022.png" group-title="TH - Truyền hình Việt",GTV
+https://devda.undo.it/Stream/index.php?id=gtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="hdtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a7/HDTV_Hai_Duong_2022.png" group-title="TH - Truyền hình Việt",HDTV
+https://devda.undo.it/Stream/index.php?id=hdtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="hytv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/b/b4/HYTV_Hung_Yen_2022.png" group-title="TH - Truyền hình Việt",HYTV
+https://devda.undo.it/Stream/index.php?id=hytv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="kgtv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/f/ff/KGTV_Kien_Giang_2022.png" group-title="TH - Truyền hình Việt",KGTV1
+https://devda.undo.it/Stream/index.php?id=kgtv1&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="ktv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a2/KTV_Kon_Tum_2022.png" group-title="TH - Truyền hình Việt",KTV
+https://devda.undo.it/Stream/index.php?id=ktv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="la34" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/2/25/LA34_Logo.png" group-title="TH - Truyền hình Việt",LA34
+https://devda.undo.it/Stream/index.php?id=la34&ext=.m3u8
+
+#EXTINF:-1 tvg-id="lctv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/d/d3/LCTV_Lao_Cai_2022.png" group-title="TH - Truyền hình Việt",LCTV
+https://devda.undo.it/Stream/index.php?id=lctv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="lstv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/9/90/LSTV_Lang_Son_2022.png" group-title="TH - Truyền hình Việt",LSTV
+https://devda.undo.it/Stream/index.php?id=lstv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ltv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/0/03/LTV1_Lam_Dong_2022.png" group-title="TH - Truyền hình Việt",LTV1
+https://devda.undo.it/Stream/index.php?id=ltv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ltv2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/6/6a/LTV2_Lam_Dong_2022.png" group-title="TH - Truyền hình Việt",LTV2
+https://devda.undo.it/Stream/index.php?id=ltv2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ltv3" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a1/LTV3_Lam_Dong_2022.png" group-title="TH - Truyền hình Việt",LTV3
+https://devda.undo.it/Stream/index.php?id=ltv3&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ntv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/6/61/NTV_Nghe_An_2022.png" group-title="TH - Truyền hình Việt",NTV
+https://vtvgolive-liveh12.vtvdigital.vn/efu-0V5uuI-OQTJSzMVcQg/1784832499/hls/NGHEANTV/01.m3u8
+
+#EXTINF:-1 tvg-id="ptd" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/4/4f/PTD_Phu_Tho_2022.png" group-title="TH - Truyền hình Việt",PTD
+https://devda.undo.it/Stream/index.php?id=ptd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ptp" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/7/79/PTP_Phu_Yen_2022.png" group-title="TH - Truyền hình Việt",PTP
+https://devda.undo.it/Stream/index.php?id=ptp&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ptv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/3/3a/PTV_Phu_Yen_2022.png" group-title="TH - Truyền hình Việt",PTV
+https://devda.undo.it/Stream/index.php?id=ptv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="qbtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e1/QBTV_Quang_Binh_2022.png" group-title="TH - Truyền hình Việt",QBTV
+https://devda.undo.it/Stream/index.php?id=qbtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="qngtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/c/c0/QRT_Quang_Ngai_2022.png" group-title="TH - Truyền hình Việt",QNgTV
+https://devda.undo.it/Stream/index.php?id=qngtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="qttv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/0/0d/QTTV_Quang_Tri_2022.png" group-title="TH - Truyền hình Việt",QTTV
+https://devda.undo.it/Stream/index.php?id=qttv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="qtv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e4/QTV1_Quang_Ninh_2022.png" group-title="TH - Truyền hình Việt",QTV1
+https://devda.undo.it/Stream/index.php?id=qtv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="qtv3" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/9/99/QTV3_Quang_Ninh_2022.png" group-title="TH - Truyền hình Việt",QTV3
+https://devda.undo.it/Stream/index.php?id=qtv3&ext=.m3u8
+
+#EXTINF:-1 tvg-id="stv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/f/f6/STV_Soc_Trang_2022.png" group-title="TH - Truyền hình Việt",STV
+https://devda.undo.it/Stream/index.php?id=stv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tbk" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/8/88/TBK_Bac_Kan_2022.png" group-title="TH - Truyền hình Việt",TBK
+https://devda.undo.it/Stream/index.php?id=tbk&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tbtv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/3/38/TBTV_Thai_Binh_2022.png" group-title="TH - Truyền hình Việt",TBTV
+https://devda.undo.it/Stream/index.php?id=tbtv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thbt" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/c/c7/THBT_Ben_Tre_2022.png" group-title="TH - Truyền hình Việt",THBT
+https://devda.undo.it/Stream/index.php?id=thbt&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thhn" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/ab/THHN_Ha_Nam_2022.png" group-title="TH - Truyền hình Việt",THHN
+https://devda.undo.it/Stream/index.php?id=thhn&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thp" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/2/22/THP_Hai_Phong_2022.png" group-title="TH - Truyền hình Việt",THP
+https://devda.undo.it/Stream/index.php?id=thp&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thtg" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/d/de/THTG_Tien_Giang_2022.png" group-title="TH - Truyền hình Việt",THTG
+https://devda.undo.it/Stream/index.php?id=thtg&ext=.m3u8
+
+#EXTINF:-1 tvg-id="thtpct1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/e/e9/CTV_Can_Tho_2022.png" group-title="TH - Truyền hình Việt",THTPCT
+https://devda.undo.it/Stream/index.php?id=thtpct1&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="tht1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/4/44/THDT1_Dong_Thap_2022.png" group-title="TH - Truyền hình Việt",THĐT1
+https://devda.undo.it/Stream/index.php?id=tht1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tht2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/9/95/THDT2_Dong_Thap_2022.png" group-title="TH - Truyền hình Việt",THĐT2
+https://devda.undo.it/Stream/index.php?id=tht2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tn1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/1/18/TN1_Thai_Nguyen_2022.png" group-title="TH - Truyền hình Việt",TN1
+https://devda.undo.it/Stream/index.php?id=tn1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="trt" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/b/b8/TRT_Tra_Vinh_2022.png" group-title="TH - Truyền hình Việt",TRT
+https://devda.undo.it/Stream/index.php?id=trt&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ttv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/9/92/TTV_Thanh_Hoa_2022.png" group-title="TH - Truyền hình Việt",TTV
+https://devda.undo.it/Stream/index.php?id=ttv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ttv1" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/c/cd/TTV1_Thua_Thien_Hue_2022.png" group-title="TH - Truyền hình Việt",TTV1
+https://devda.undo.it/Stream/index.php?id=ttv1&ext=.m3u8
+
+#EXTINF:-1 tvg-id="ttv2" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/7/7c/TTV2_Thua_Thien_Hue_2022.png" group-title="TH - Truyền hình Việt",TTV2
+https://devda.undo.it/Stream/index.php?id=ttv2&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/c/c8/DTV_Dien_Bien_2022.png" group-title="TH - Truyền hình Việt",ĐTV
+https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
+
+# ==========================================
+# 📺 DANH SÁCH KÊNH PHIM VÀ QUỐC TẾ
+# Cập nhật ngày: 07/24
+# ==========================================
+
+#EXTINF:-1 tvg-id="hbo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",HBO
+http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
+
+
+#EXTINF:-1 tvg-id="hbo-movies" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTZ9ZkdwiuXS_zv7unMJpNdYB2QIJAZwAuyZW7uchKC9w&s" group-title="🎬 BOX - Giải trí",HBO Movies
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:4000/hls/hbo/master.m3u8
+
+#EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="🎬 BOX - Giải trí",HBO Family
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+http://chrtv.duckdns.org:55801/stream/cg_hbofam/index.m3u8
+
+#EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="🎬 BOX - Giải trí",HBO Hits
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+http://chrtv.duckdns.org:55801/stream/cg_hbohits/index.m3u8
+
+#EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="🎬 BOX - Giải trí",HBO Signature
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+http://chrtv.duckdns.org:55801/stream/cg_hbosign/index.m3u8
+
+
+#EXTINF:-1 tvg-id="axn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/AXN_logo.svg/1024px-AXN_logo.svg.png" group-title="🎬 BOX - Giải trí",AXN HD
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+http://chrtv.duckdns.org:55801/stream/cg_axn/index.m3u8
+
+
+
+#EXTINF:-1 tvg-id="warner" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",Warner TV
+http://chrtv.duckdns.org:55801/stream/warner
+
+#EXTINF:-1 tvg-id="cinemax" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Cinemax_logo.svg/1024px-Cinemax_logo.svg.png" group-title="🎬 BOX - Giải trí",Cinemax USA
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_CINEMAX/index.m3u8
+
+
+#EXTINF:-1 tvg-id="cinemaworld" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Cinemax_logo.svg/1024px-Cinemax_logo.svg.png" group-title="🎬 BOX - Giải trí",Cinemaworld
+http://nmk.ioapk.com:5050/4gtv-live069/index.m3u8
+
+#EXTINF:-1 tvg-id="Paramount" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Paramount_Network_logo.svg/1024px-Paramount_Network_logo.svg.png" group-title="🎬 BOX - Giải trí",Paramount TV
+http://chrtv.duckdns.org:55801/stream/paramount
+
+#EXTINF:-1 tvg-id="discovery" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Channel
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_DISCOVERY/index.m3u8
+
+#EXTINF:-1 tvg-id="discovery-family" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Family
+http://40.160.24.52/DISCOVERY_FAMILY/index.m3u8
+
+#EXTINF:-1 tvg-id="discovery-science" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Science
+http://206.212.244.63/55/index.m3u8
+
+#EXTINF:-1 tvg-id="natgeo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/fc/Nat_Geo_Channel_logo.svg/1024px-Nat_Geo_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",National Geographic
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_NAT_GEO/index.m3u8
+
+#EXTINF:-1 tvg-id="rakuten-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Rakuten_TV_logo.svg/1024px-Rakuten_TV_logo.svg.png" group-title="🎬 BOX - Giải trí",Rakuten TV
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
+https://devda.undo.it/Stream/index.php?id=rakuten-tv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="history" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/HISTORY_logo_2021.svg/1024px-HISTORY_logo_2021.svg.png" group-title="🎬 BOX - Giải trí",History HD
+https://freem3u.xyz/api/live/play.m3u8?vid=9856
+
+#EXTINF:-1 tvg-id="davinci-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/11/DaVinci_logo_2013.svg/1024px-DaVinci_logo_2013.svg.png" group-title="🎬 BOX - Giải trí",DaVinci TV
+https://devda.undo.it/Stream/index.php?id=davinci-tv&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="kbs-world" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/HISTORY_logo_2021.svg/1024px-HISTORY_logo_2021.svg.png" group-title="🎬 BOX - Giải trí",KBS World
+https://liveh12.vtvprime.vn/hls/KBS/03.m3u8
+
+#EXTINF:-1 tvg-id="MTV" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/MTV_Logo_2021.svg/1024px-MTV_Logo_2021.svg.png" group-title="🎬 BOX - Giải trí",MTV
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_MTV/index.m3u8
+
+
+#EXTINF:-1 tvg-id="clubbing-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/MTV_Logo_2021.svg/1024px-MTV_Logo_2021.svg.png" group-title="🎬 BOX - Giải trí",Clubbing TV
+https://a-cdn.klowdtv.com/live3/clubbingtv_720p/playlist.m3u8
+
+#EXTINF:-1 tvg-id="crime-investigation" tvg-logo="https://upload.wikimedia.org/wikipedia/en/8/86/True_Crime_Network_logo.png" group-title="🎬 BOX - Giải trí",Crime Investigation
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_CRIME_INVESTIGATION/index.m3u8
+
+
+#EXTINF:-1 tvg-id="animalplanet" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Animal Planet
+http://198.58.104.90:8989/animalplanet/index.m3u8
+
+#EXTINF:-1 tvg-id="americas-got-talent" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/America%27s_Got_Talent_Logo.svg/1024px-America%27s_Got_Talent_Logo.svg.png" group-title="🎬 BOX - Giải trí",America's Got Talent
+https://devda.undo.it/Stream/index.php?id=americas-got-talent&ext=.m3u8
+
+#EXTINF:-1 tvg-id="afn-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/AFN_logo.svg/1024px-AFN_logo.svg.png" group-title="🎬 BOX - Giải trí",AFN TV
+https://live.fptplay53.net/fnxhd2/afchd_vhls.smil/chunklist.m3u8
+
+#EXTINF:-1 tvg-id="cna-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/en/thumb/6/66/Channel_NewsAsia_logo.svg/1024px-Channel_NewsAsia_logo.svg.png" group-title="🎬 BOX - Giải trí",CNA TV
+https://devda.undo.it/Stream/index.php?id=cna-tv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="bloomberg" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Bloomberg-logo.svg/1024px-Bloomberg-logo.svg.png" group-title="🎬 BOX - Giải trí",Bloomberg
+https://devda.undo.it/Stream/index.php?id=bloomberg&ext=.m3u8
+
+#EXTINF:-1 tvg-id="abcau" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/ABC-logo.svg/1024px-ABC-logo.svg.png" group-title="🎬 BOX - Giải trí",ABC Australia
+https://abc-news-dmd-streams-1.akamaized.net/out/v1/701126012d044971b3fa89406a440133/index.m3u8
+
+#EXTINF:-1 tvg-id="sony-channel-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4c/Sony_Channel_2021.svg/1024px-Sony_Channel_2021.svg.png" group-title="🎬 BOX - Giải trí",Sony Channel TV
+https://devda.undo.it/Stream/index.php?id=sony-channel-tv&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="dw" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Deutsche_Welle_symbol_2012.svg/1024px-Deutsche_Welle_symbol_2012.svg.png" group-title="🎬 BOX - Giải trí",DW
+https://devda.undo.it/Stream/index.php?id=dw&ext=.m3u8
+
+#EXTINF:-1 tvg-id="tlc" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/5f/Travel_Channel_Logo.svg/1024px-Travel_Channel_Logo.svg.png" group-title="🎬 BOX - Giải trí",TLC
+http://4.30.180.36:8420/tlc/index.m3u8?token=test
+
+#EXTINF:-1 tvg-id="travel-channel" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/5f/Travel_Channel_Logo.svg/1024px-Travel_Channel_Logo.svg.png" group-title="🎬 BOX - Giải trí",Travel Channel
+http://206.212.244.63/162/index.m3u8
+
+#EXTINF:-1 tvg-id="tv5monde" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/TV5_Monde_2015.svg/1024px-TV5_Monde_2015.svg.png" group-title="🎬 BOX - Giải trí",TV5MONDE
+https://devda.undo.it/Stream/index.php?id=tv5monde&ext=.m3u8
+
+
+#EXTINF:-1 tvg-id="France24" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/France_24.svg/1024px-France_24.svg.png" group-title="🎬 BOX - Giải trí",France 24
+https://live.france24.com/hls/live/2037218-b/F24_EN_HI_HLS/master_500.m3u8
+
+
+#EXTINF:-1 tvg-id="bbc-earth" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/France_24.svg/1024px-France_24.svg.png" group-title="🎬 BOX - Giải trí",BBC Earth
+http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/158.m3u8
+
+#EXTINF:-1 tvg-id="fashion" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Fashion_TV_Logo.svg/1024px-Fashion_TV_Logo.svg.png" group-title="🎬 BOX - Giải trí",Fashion TV
+https://edge-fast3.evrideo.tv/bfdbb576-83f7-11f0-9f89-0200170e3e04_1000028043_HLS/video_10801920_p_0.m3u8
+
+#EXTINF:-1 tvg-id="kix-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/en/0/0d/KIX_Logo_2018.png" group-title="🎬 BOX - Giải trí",KIX TV
+https://devda.undo.it/Stream/index.php?id=kix-tv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="love-nature-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Love_Nature_Logo.svg/1024px-Love_Nature_Logo.svg.png" group-title="🎬 BOX - Giải trí",Love Nature TV
+https://aegis-cloudfront-1.tubi.video/6d6d0f24-8445-4b4c-bdf6-44f9e38beaa4/playlist.m3u8
+
+#EXTINF:-1 tvg-id="nhk-world" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/NHK_World-Japan_TV.svg/1024px-NHK_World-Japan_TV.svg.png" group-title="🎬 BOX - Giải trí",NHK World
+https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8
+
+
+
+#EXTINF:-1 tvg-id="CNHD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Cartoon_Network_2010_logo.svg/1024px-Cartoon_Network_2010_logo.svg.png" group-title="🎬 BOX - Giải trí",Cartoon Network HD
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_CARTOON_NETWORK/index.m3u8?token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+
+#EXTINF:-1 tvg-id="boomerang" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Boomerang_2014_logo.svg/1024px-Boomerang_2014_logo.svg.png" group-title="🎬 BOX - Giải trí",Boomerang
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_BOOMERANG/index.m3u8
+#EXTINF:-1 tvg-id="cartoonito" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4OEJ40DibjTsUKlLhJ-fPrTML-xdE4caJlgEZvhJ8zw&s" group-title="🎬 BOX - Giải trí",Cartoonito
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/147.m3u8
+
+#EXTINF:-1 tvg-id="nick" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Nickelodeon_2023_logo.svg/1024px-Nickelodeon_2023_logo.svg.png" group-title="🎬 BOX - Giải trí",Nickelodeon
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/USA_NICKELODEON/index.m3u8
+
+#EXTINF:-1 tvg-id="dreamworks" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/DreamWorks_Animation_2016.svg/1024px-DreamWorks_Animation_2016.svg.png" group-title="🎬 BOX - Giải trí",Dreamworks HD
+http://200.7.99.59:8000/play/a0mq/index.m3u8
+
+#EXTINF:-1 tvg-id="disney-xd" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Disney_XD_-_2015.svg/1024px-Disney_XD_-_2015.svg.png" group-title="🎬 BOX - Giải trí",Disney XD
+https://devda.undo.it/Stream/index.php?id=disney-xd&ext=.m3u8
+
+#EXTINF:-1 tvg-id="the-lego-channel" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/2d/Lego_logo.svg/1024px-Lego_logo.svg.png" group-title="🎬 BOX - Giải trí",The Lego Channel
+https://devda.undo.it/Stream/index.php?id=the-lego-channel&ext=.m3u8
+
+#EXTINF:-1 tvg-id="babyfirst" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/2d/babyfirst.svg/1024px-Lego_logo.svg.png" group-title="🎬 BOX - Giải trí",BabyFirst
+http://206.212.244.63/639/index.m3u8
+
+
+# ==========================================
+# 📺 DANH SÁCH KÊNH THỂ THAO
+# Cập nhật ngày: 07/24
+# ==========================================
+
+
+#EXTINF:-1 tvg-id="bein" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/BeIn_Sport_Logo.svg/1024px-BeIn_Sport_Logo.svg.png" group-title="⚽ SPORTS - Thể thao",BeIN sport XTRA
+https://bein-xtra-bein.amagi.tv/playlist.m3u8
+
+#EXTINF:-1 tvg-id="WRC" tvg-logo="https://upload.wikimedia.org/wikipedia/en/thumb/6/6b/Rally_TV_logo.svg/1024px-Rally_TV_logo.svg.png" group-title="⚽ SPORTS - Thể thao",Rally TV
+https://rally-tv-live.akamaized.net/hls/live/2117704/RallyTV-Pri/master.m3u8
+
+
+#EXTINF:-1 tvg-id="fifa" tvg-logo="https://upload.wikimedia.org/wikipedia/en/thumb/0/0d/FIFA%2B_logo.svg/1024px-FIFA%2B_logo.svg.png" group-title="⚽ SPORTS - Thể thao",FIFA+
+https://devda.undo.it/Stream/index.php?id=fifa&ext=.m3u8
+
+#EXTINF:-1 tvg-id="red-bull-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/42/Red_Bull_TV_logo.svg/1024px-Red_Bull_TV_logo.svg.png" group-title="⚽ SPORTS - Thể thao",Red Bull TV
+https://devda.undo.it/Stream/index.php?id=red-bull-tv&ext=.m3u8
+
+#EXTINF:-1 tvg-id="sky-premier" tvg-logo="https://upload.wikimedia.org/wikipedia/en/thumb/3/3d/Sky_Sports_Premier_League_logo.svg/1024px-Sky_Sports_Premier_League_logo.svg.png" group-title="⚽ SPORTS - Thể thao",Sky Premier League
+http://s.rocketdns.info:8080/live/monstercable/Dq6jjknxCr/2182.ts
+
+
+#EXTINF:-1 tvg-id="nba" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/03/Nba_logo.png/1024px-Nba_logo.png" group-title="⚽ SPORTS - Thể thao",NBA
+http://198.58.104.90:8989/nba/index.m3u8
+
+#EXTINF:-1 tvg-id="world-poker-tour" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/World_Poker_Tour_2008.svg/1024px-World_Poker_Tour_2008.svg.png" group-title="⚽ SPORTS - Thể thao",World Poker Tour
+https://devda.undo.it/Stream/index.php?id=world-poker-tour&ext=.m3u8
+
+#EXTINF:-1 tvg-id="f1tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/F1_TV_Logo.svg/1024px-F1_TV_Logo.svg.png" group-title="⚽ SPORTS - Thể thao",F1 TV
+#KODIPROP:inputstreamaddon=inputstream.adaptive
+#KODIPROP:inputstream.adaptive.manifest_type=hls
+#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:55801/stream/studioc
+
+#EXTINF:-1 tvg-id="tv360-9" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 9
+http://chrtv.duckdns.org:30106/hls/tv360_9/1080p.m3u8
+
+#EXTINF:-1 tvg-id="tv360-10" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 10
+http://chrtv.duckdns.org:5888/stream/tv360-10
+
+#EXTINF:-1 tvg-id="tv360-11" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 11
+#EXTVLCOPT:http-user-agent=Dalvik/2.1.0
+https://vmttv.dpdns.org/tv360/?id=tv360-11
+
+#EXTINF:-1 tvg-id="tv360-12" group-title="⚽ SPORTS - Thể thao" tvg-logo="https://img-ali1.tv360.vn/image1/2026/03/05/10/1772681417916/2433e49579ab_640_360.png", TV360+12
+#EXTVLCOPT:http-user-agent=Dalvik/2.1.0
+#KODIPROP:inputstream.adaptive.manifest_type=mpd
+#KODIPROP:inputstream.adaptive.license_type=clearkey
+#KODIPROP:inputstream.adaptive.license_key=29b3e7c5de895bfa8850f16dad16e378:72a9e1be1d94ad66207f1ac61bcf7681
+https://vmttv.dpdns.org/tv360/?id=tv360-12
+
+
+#EXTINF:-1 tvg-id="spotv-2" group-title="⚽ SPORTS - Thể thao" tvg-logo="https://img-ali1.tv360.vn/image1/2026/03/05/10/1772681417916/2433e49579ab_640_360.png", SpoTV2
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+https://thinkkast.dpdns.org/tkk-ph/i7/dr_spotv2hd/spotv-2-hd.m3u8
