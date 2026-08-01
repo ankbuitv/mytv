@@ -2,7 +2,7 @@ name: IPTV Stream Server - Web HLS Optimized (1080p Full Power - Channel 191)
 
 on:
   schedule:
-    - cron: '50 0,5,11,17,23 * * *'
+  - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
@@ -122,7 +122,7 @@ jobs:
               -headers "$HEADERS" \\
               -rw_timeout 10000000 \\
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
-              -i "http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8" \\
+              -i "https://thinkkast.dpdns.org/mytv/ph/cg_hbofam/index.m3u8" \\
               -threads 4 \\
               -c:v libx264 -preset superfast -profile:v main -pix_fmt yuv420p \\
               -g 50 -keyint_min 50 -sc_threshold 0 \\
