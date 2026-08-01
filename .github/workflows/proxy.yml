@@ -2,7 +2,7 @@ name: IPTV Pure Proxy & Dynamic Route Engine (Lag Fixed)
 
 on:
   schedule:
-    - cron: '50 0,5,11,17,23 * * *'
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
