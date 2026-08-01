@@ -31,10 +31,10 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Create app.py Directly
+      - name: Create app.py
         run: |
-          cat << 'EOF' > app.py
-import os
+          python3 -c '
+code = """import os
 import requests
 from urllib.parse import urljoin, quote, unquote
 from flask import Flask, Response, request, stream_with_context
@@ -48,9 +48,8 @@ HEADERS = {
     "Connection": "keep-alive"
 }
 
-# Cập nhật lại các link nguồn stream mới nhất
 CHANNELS = {
-    "studioc": "https://amg12058-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8",
+    "studioc": "https://amg12058-c15studio-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8",
     "warner": "http://190.61.90.17:40000/play/a0ho/index.m3u8",
     "paramount": "http://206.212.244.63/137/index.m3u8",
     "cg_axn": "https://thinkkast.dpdns.org/mytv/ph/cg_axn/index.m3u8",
@@ -86,7 +85,7 @@ def home():
 def get_m3u():
     if request.method == "OPTIONS": return add_cors(Response(status=204))
     p = get_base_url()
-    m = f"""#EXTM3U
+    m = f\"\"\"#EXTM3U
 #EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="Cignal",HBO Family
 {p}/stream/cg_hbofam/index.m3u8
 #EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="Cignal",HBO Hits
@@ -100,7 +99,7 @@ def get_m3u():
 #EXTINF:-1 tvg-id="Paramount" group-title="US Live",Paramount Network
 {p}/stream/paramount
 #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C
-{p}/stream/studioc"""
+{p}/stream/studioc\"\"\"
     return add_cors(Response(m.strip(), mimetype="application/x-mpegurl"))
 
 def hls_proxy(tgt, path):
@@ -112,7 +111,7 @@ def hls_proxy(tgt, path):
         ct = rs.headers.get("Content-Type", "")
         if ".m3u8" in u or "m3u8" in ct or rs.text.startswith("#EXTM3U"):
             rw = [f"{path}?url={quote(urljoin(rs.url, l))}" if l and not l.startswith("#") else l for l in rs.text.splitlines()]
-            return add_cors(Response("\n".join(rw), mimetype="application/x-mpegurl"))
+            return add_cors(Response("\\n".join(rw), mimetype="application/x-mpegurl"))
         return add_cors(Response(stream_with_context(rs.iter_content(chunk_size=16384)), mimetype=ct or "video/mp2t"))
     except:
         return add_cors(Response("Ex", status=502))
@@ -126,7 +125,9 @@ def p_chan(chid):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-EOF
+"""
+open("app.py", "w").write(code)
+'
 
       - name: Run Server Engine
         run: |
