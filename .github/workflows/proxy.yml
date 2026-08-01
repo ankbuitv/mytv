@@ -31,9 +31,102 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Decode and Create app.py
+      - name: Create app.py Directly
         run: |
-          echo "aW1wb3J0IG9zCmltcG9ydCByZXF1ZXN0cwpmcm9tIHVybGxpYi5wYXJzZSBpbXBvcnQgdXJsam9pbiwgcXVvdGUsIHVucXVvdGUKZnJvbSBmbGFzayBpbXBvcnQgRmxhc2ssIFJlc3BvbnNlLCByZXF1ZXN0LCBzdHJlYW1fd2l0aF9jb250ZXh0CgphcHAgPSBGbGFzayhfX25hbWVfXykKCkhFQURFUlMgPSB7CiAgICAiVXNlci1BZ2VudCI6ICJNb3ppbGxhLzUuMCAoV2luZG93cyBOVCAxMC4wOyBXaW42NDAgeDY0KSBBcHBsZVdlYktpdC81MzcuMzYgKEtIVE1MLCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwKICAgICJSZWZlcmVyIjogImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy8iLAogICAgIk9yaWdpbiI6ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmciLAogICAgIkNvbm5lY3Rpb24iOiAia2VlcC1hbGl2ZSIKfQoKQU1BR0lfU1RVTElPX0MgPSAiaHR0cHM6Ly9hbWcxMjA1OC1jMTVzdHVkaW8tYW1nMTIwNThjMS1sZy11cy01Nzg3LnBsYXlvdXRzLm5vdy5hbWFnaS50di9wbGF5bGlzdC5tM3U4IgpXQVJORVJfVFYgPSAiaHR0cDovLzE5MC42MS45MC4xNzo0MDAwMC9wbGF5L2EwaG8vaW5kZXgubTN1OCIKUEFSQU1PVU5UID0gImh0dHA6Ly8yMDYuMjEyLjI0NC42My8xMzcvaW5kZXgubTN1OCIKCkNHX0FYTiA9ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmcvbXl0di9waC9jZ19heG5fc2QvaW5kZXgubTN1OCIKQ0dfSEJPRkFNID0gImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy9teXR2L3BoL2NnX2hib2ZhbS9pbmRleC5tM3U4IgpDR19IQk9ISVRTID0gImh0dHBzOi8vdGhpbmtrYXN0LmRwZG5zLm9yZy9teXR2L3BoL2NnX2hib2hpdHMvaW5kZXgubTN1OCIKQ0dfSEJPU0lHTiA9ICJodHRwczovL3RoaW5ra2FzdC5kcGRucy5vcmcvbXl0di9waC9jZ19oYm9zaWduL2luZGV4Lm0zdTgiCgpkZWYgYWRkX2NvcnMocik6CiAgICByLmhlYWRlcnNbIkFjY2Vzcy1Db250cm9sLUFsbG93LU9yaWdpbiJdID0gIioiCiAgICByLmhlYWRlcnNbIkFjY2Vzcy1Db250cm9sLUFsbG93LU1ldGhvZHMiXSA9ICJHRVQsIE9QVElPTlMiCiAgICByZXR1cm4gcgoKZGVmIGdldF9iYXNlX3VybCgpOgogICAgcmV0dXJuIG9zLmVudmlyb24uZ2V0KCJQVUJMSUNfQkFTRV9VUkwiLCAiaHR0cDovL2NocnR2LmR1Y2tkbnMub3JnOjU1ODAxIikKCkBhcHAuYmVmb3JlX3JlcXVlc3QKZGVmIGNoZWNrX2JvdCgpOgogICAgaWYgcmVxdWVzdC5tZXRob2QgPT0gIk9QVElPTlMiOiByZXR1cm4KICAgIHVhID0gKHJlcXVlc3QuaGVhZGVycy5nZXQoIlVzZXItQWdlbnQiKSBvciAiIikubG93ZXIoKQogICAgaWYgYW55KGIgaW4gdWEgZm9yIGIgaW4gWyJjdXJsIiwgIndnZXQiLCAicHl0aG9uIiwgIm5tYXAiLCAiemdyYWIiXSk6CiAgICAgICAgdHJ5OgogICAgICAgICAgICBycSA9IHJlcXVlc3RzLmdldCgiaHR0cHM6Ly9hc2NpaS5saXZlL3BhcnJvdCIsIHN0cmVhbT1UcnVlLCB0aW1lb3V0PTUpCiAgICAgICAgICAgIHJldHVybiBSZXNwb25zZShzdHJlYW1fd2l0aF9jb250ZXh0KHJxLml0ZXJfY29udGVudChjaHVua19zaXplPTEwMjQpKSwgbWltZXR5cGU9InRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgiKQogICAgICAgIGV4Y2VwdDoKICAgICAgICAgICAgcmV0dXJuIFJlc3BvbnNlKCJBY2Nlc3MgRGVuaWVkIiwgc3RhdHVzPTQyOSkKCkBhcHAucm91dGUoIi8iKQpkZWYgaG9tZSgpOgogICAgcmV0dXJuIGYiT0sgLSB7Z2V0X2Jhc2VfdXJsKCl9IgoKQGFwcC5yb3V0ZSgiL3BsYXlsaXN0Lm0zdSIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgZ2V0X20zdSgpOgogICAgaWYgcmVxdWVzdC5tZXRob2QgPT0gIk9QVElPTlMiOiByZXR1cm4gYWRkX2NvcnMoUmVzcG9uc2Uoc3RhdHVzPTIwNCkpCiAgICBwID0gZ2V0X2Jhc2VfdXJsKCkKICAgIG0gPSBmIiIiI0VYVE0zVQojRVhUSU5GOi0xIHR2Zy1pZD0iY2dfaGJvZmFtIiB0dmctbmFtZT0iSEJPIEZhbWlseSIgdHZnLWxvZ289Imh0dHBzOi8vcXAtcGxkdC1pbWFnZS1yZXNpemVyLWNsb3VkLXByb2QuYWthbWFpemVkLm5ldC9pbWFnZS82MkYxQTRFRC1FQjU2LTQ5REYtOTEyRC0wQTIzODgxMzE3NzIvMC0xNng5LmpwZz93aWR0aD0xOTgwIiB0dmctY2hubz0iMzEiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEhCTyBGYW1pbHkKe3B9L3N0cmVhbS9jZ19oYm9mYW0vaW5kZXgubTN1OAojRVhUSU5GOi0xIHR2Zy1pZD0iY2dfaGJvaGl0cyIgdHZnLW5hbWU9IkhCTyBIaXRzIiB0dmctbG9nbz0iaHR0cHM6Ly9xcC1wbGR0LWltYWdlLXJlc2l6ZXItY2xvdWQtcHJvZC5ha2FtYWl6ZWQubmV0L2ltYWdlL0NFRTgzRUU1LUQ0MzctNEIzQy05MzM5LUFDQTNGRjQwMjBEMC8wLTE2eDkuanBnP3dpZHRoPTE5OCIgdHZnLWNobm89IjMyIiBncm91cC10aXRsZT0iQ2lnbmFsIixIQk8gSGl0cwp7cH0vc3RyZWFtL2NnX2hib2hpdHMvaW5kZXgubTN1OAojRVhUSU5GOi0xIHR2Zy1pZD0iY2dfaGJvc2lnbiIgdHZnLW5hbWU9IkhCTyBTaWduYXR1cmUiIHR2Zy1sb2dvPSJodHRwczovL3FwLXBsZHQtaW1hZ2UtcmVzaXplci1jbG91ZC1wcm9kLmFrYW1haXplZC5uZXQvaW1hZ2UvRDUxMjc5NTktMzRGNC00Q0M0LTkzMzktQ0UyMzg4MTMxNzcyLzAtMTZ4OS5qcGc/d2lkdGg9MTk4MCIgdHZnLWNobm89IjMzIiBncm91cC10aXRsZT0iQ2lnbmFsIixIQk8gU2lnbmF0dXJlCntwfS9zdHJlYW0vY2dfaGJvc2lnbi9pbmRleC5tM3U4CiNFWFRJTkY6LTEgdHZnLWlkPSJjZ19heG4iIHR2Zy1uYW1lPSJBWE4gU0QiIGdyb3VwLXRpdGxlPSJDaWduYWwiLEFYTiBTRAp7cH0vc3RyZWFtL2NnX2F4bi9pbmRleC5tM3U4CiNFWFRJTkY6LTEgdHZnLWlkPSJXYXJuZXJUViIgZ3JvdXAtdGl0bGU9IlVTIExpdmUiLFdhem5lciBUVgp7cH0vc3RyZWFtL3dhcm5lcgojRVhUSU5GOi0xIHR2Zy1pZD0iUGFyYW1vdW50IiBncm91cC10aXRsZT0iVVMgTGl2ZSIsUGFyYW1vdW50IE5ldHdvcmsKe3B9L3N0cmVhbS9wYXJhbW91bnQKI0VYVElORjotMSB0dmctaWQ9IlN0dWRpb0MiIGdyb3VwLXRpdGxlPSJVUyBMaXZlIixBbWFnaSBTdHVkaW8gQwp7cH0vc3RyZWFtL3N0dWRpb2MiIiIKICAgIHJldHVybiBhZGRfY29ycyhSZXNwb25zZShtLnN0cmlwKCksIG1pbWV0eXBlPSJhcHBsaWNhdGlvbi94LW1wZWd1cmwiKSkKCmRlZiBobHNfcHJveHkodGd0LCBwYXRoKToKICAgIGlmIHJlcXVlc3QubWV0aG9kID09ICJPUFRJT05TIjogcmV0dXJuIGFkZF9jb3JzKFJlc3BvbnNlKHN0YXR1cz0yMDQpKQogICAgdSA9IHVucXVvdGUocmVxdWVzdC5hcmdzLmdldCgidXJsIikgb3IgdGd0KQogICAgdHJ5OgogICAgICAgIHJzID0gcmVxdWVzdHMuZ2V0KHUsIGhlYWRlcnM9SEVBREVSUywgdGltZW91dD0xMiwgc3RyZWFtPVRydWUpCiAgICAgICAgaWYgcnMuc3RhdHVzX2NvZGUgIT0gMjAwOiByZXR1cm4gYWRkX2NvcnMoUmVzcG9uc2UoIkVyciIsIHN0YXR1cz1ycy5zdGF0dXNfY29kZSkpCiAgICAgICAgY3QgPSBycy5oZWFkZXJzLmdldCgiQ29udGVudC1UeXBlIiwgIiIpCiAgICAgICAgaWYgIi5tM3U4IiBpbiB1IG9yICJtM3U4IiBpbiBjdCBvciBycy50ZXh0LnN0YXJ0c3dpdGgoIiNFWFRNM1UiKToKICAgICAgICAgICAgcnc9IFtmIntwYXRofT91cmw9e3F1b3RlKHVybGpvaW4ocnMudXJsLCBsKSl9IiBpZiAobCBhbmQgbm90IGwuc3RhcnRzd2l0aCgiIyIpKSBlbHNlIGwgZm9yIGwgaW4gcnMudGV4dC5zcGxpdGxpbmVzKCldCiAgICAgICAgICAgIHJldHVybiBhZGRfY29ycyhSZXNwb25zZSgiXG4iLmpvaW4ocncpLCBtaW1ldHlwZT0iYXBwbGljYXRpb24veC1tcGVndXJsIikpCiAgICAgICAgcmV0dXJuIGFkZF9jb3JzKFJlc3BvbnNlKHN0cmVhbV93aXRoX2NvbnRleHQocnMuaXRlcl9jb250ZW50KGNodW5rX3NpemU9MTYzODQpKSwgbWltZXR5cGU9Y3Qgb3IgInZpZGVvL21wMnQiKSkKICAgIGV4Y2VwdDoKICAgICAgICByZXR1cm4gYWRkX2NvcnMoUmVzcG9uc2UoIkV4Iiwgc3RhdHVzPTUwMikpCgpAYXBwLnJvdXRlKCIvc3RyZWFtL2NnX2F4bi9pbmRleC5tM3U4IiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwX2F4bigpOiByZXR1cm4gaGxzX3Byb3h5KENTX0FYTiwgIi9zdHJlYW0vY2dfYXhuL2luZGV4Lm0zdTgiKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS9jZ19oYm9mYW0vaW5kZXgubTN1OCIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgcF9oZmFtKCk6IHJldHVybiBobHNfcHJveHkoQ0dfSEJPRkFNLCAiL3N0cmVhbS9jZ19oYm9mYW0vaW5kZXgubTN1OCIpCgpAYXBwLnJvdXRlKCIvc3RyZWFtL2NnX2hib2hpdHMvaW5kZXgubTN1OCIsIG1ldGhvZHM9WyJHRVQiLCAiT1BUSU9OUyJdKQpkZWYgcF9oaGl0KCk6IHJldHVybiBobHNfcHJveHkoQ0dfSEJPSElUUywgIi9zdHJlYW0vY2dfaGJvaGl0cy9pbmRleC5tM3U4IikKCkBhcHAucm91dGUoIi9zdHJlYW0vY2dfaGJvc2lnbi9pbmRleC5tM3U4IiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwX2hzaWcoKTogcmV0dXJuIGhsc19wcm94eShDR19IQk9TSUdOLCAiL3N0cmVhbS9jZ19oYm9zaWduL2luZGV4Lm0zdTgiKQoKQGFwcC5yb3V0ZSgiL3N0cmVhbS9zdHVkaW9jIiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwX3N0dSgpOiByZXR1cm4gaGxzX3Byb3h5KEFNQUdJX1NUVURJT19DLCAiL3N0cmVhbS9zdHVkaW9jIikKCkBhcHAucm91dGUoIi9zdHJlYW0vd2FybmVyIiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwX3dhcigpOiByZXR1cm4gaGxzX3Byb3h5KFdBUk5FUl9UViwgIi9zdHJlYW0vd2FybmVyIikKCkBhcHAucm91dGUoIi9zdHJlYW0vcGFyYW1vdW50IiwgbWV0aG9kcz1bIkdFVCIsICJPUFRJT05TIl0pCmRlZiBwX3BhcigpOiByZXR1cm4gaGxzX3Byb3h5KFBBUkFNT1VOVCwgIi9zdHJlYW0vcGFyYW1vdW50IikKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBhcHAucnVuKGhvc3Q9IjAuMC4wLjAiLCBwb3J0PTUwMDAsIHRocmVhZGVkPVRydWUpCg==" | base64 -d > app.py
+          cat << 'EOF' > app.py
+import os
+import requests
+from urllib.parse import urljoin, quote, unquote
+from flask import Flask, Response, request, stream_with_context
+
+app = Flask(__name__)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://thinkkast.dpdns.org/",
+    "Origin": "https://thinkkast.dpdns.org",
+    "Connection": "keep-alive"
+}
+
+# Cập nhật lại các link nguồn stream mới nhất
+CHANNELS = {
+    "studioc": "https://amg12058-amg12058c1-lg-us-5787.playouts.now.amagi.tv/playlist.m3u8",
+    "warner": "http://190.61.90.17:40000/play/a0ho/index.m3u8",
+    "paramount": "http://206.212.244.63/137/index.m3u8",
+    "cg_axn": "https://thinkkast.dpdns.org/mytv/ph/cg_axn/index.m3u8",
+    "cg_hbofam": "https://thinkkast.dpdns.org/mytv/ph/cg_hbofam/index.m3u8",
+    "cg_hbohits": "https://thinkkast.dpdns.org/mytv/ph/cg_hbohits/index.m3u8",
+    "cg_hbosign": "https://thinkkast.dpdns.org/mytv/ph/cg_hbosign/index.m3u8"
+}
+
+def add_cors(r):
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    return r
+
+def get_base_url():
+    return os.environ.get("PUBLIC_BASE_URL", "http://chrtv.duckdns.org:55801")
+
+@app.before_request
+def check_bot():
+    if request.method == "OPTIONS": return
+    ua = (request.headers.get("User-Agent") or "").lower()
+    if any(b in ua for b in ["curl", "wget", "python", "nmap", "zgrab"]):
+        try:
+            rq = requests.get("https://ascii.live/parrot", stream=True, timeout=5)
+            return Response(stream_with_context(rq.iter_content(chunk_size=1024)), mimetype="text/plain; charset=utf-8")
+        except:
+            return Response("Access Denied", status=429)
+
+@app.route("/")
+def home():
+    return f"OK - {get_base_url()}"
+
+@app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
+def get_m3u():
+    if request.method == "OPTIONS": return add_cors(Response(status=204))
+    p = get_base_url()
+    m = f"""#EXTM3U
+#EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="Cignal",HBO Family
+{p}/stream/cg_hbofam/index.m3u8
+#EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="Cignal",HBO Hits
+{p}/stream/cg_hbohits/index.m3u8
+#EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="Cignal",HBO Signature
+{p}/stream/cg_hbosign/index.m3u8
+#EXTINF:-1 tvg-id="cg_axn" tvg-name="AXN SD" group-title="Cignal",AXN SD
+{p}/stream/cg_axn/index.m3u8
+#EXTINF:-1 tvg-id="WarnerTV" group-title="US Live",Warner TV
+{p}/stream/warner
+#EXTINF:-1 tvg-id="Paramount" group-title="US Live",Paramount Network
+{p}/stream/paramount
+#EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C
+{p}/stream/studioc"""
+    return add_cors(Response(m.strip(), mimetype="application/x-mpegurl"))
+
+def hls_proxy(tgt, path):
+    if request.method == "OPTIONS": return add_cors(Response(status=204))
+    u = unquote(request.args.get("url") or tgt)
+    try:
+        rs = requests.get(u, headers=HEADERS, timeout=12, stream=True)
+        if rs.status_code != 200: return add_cors(Response("Err", status=rs.status_code))
+        ct = rs.headers.get("Content-Type", "")
+        if ".m3u8" in u or "m3u8" in ct or rs.text.startswith("#EXTM3U"):
+            rw = [f"{path}?url={quote(urljoin(rs.url, l))}" if l and not l.startswith("#") else l for l in rs.text.splitlines()]
+            return add_cors(Response("\n".join(rw), mimetype="application/x-mpegurl"))
+        return add_cors(Response(stream_with_context(rs.iter_content(chunk_size=16384)), mimetype=ct or "video/mp2t"))
+    except:
+        return add_cors(Response("Ex", status=502))
+
+@app.route("/stream/<chid>", methods=["GET", "OPTIONS"])
+@app.route("/stream/<chid>/index.m3u8", methods=["GET", "OPTIONS"])
+def p_chan(chid):
+    if chid in CHANNELS:
+        return hls_proxy(CHANNELS[chid], f"/stream/{chid}")
+    return add_cors(Response("Not Found", status=404))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, threaded=True)
+EOF
 
       - name: Run Server Engine
         run: |
