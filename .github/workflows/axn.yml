@@ -1,4 +1,4 @@
-name: IPTV Restream - AXN HD (Optimized Multi-Client)
+name: IPTV Restream - AXN HD (Optimized Native Nginx)
 
 on:
   schedule:
@@ -13,16 +13,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils tar unzip
-          pip install --no-cache-dir flask flask-cors gunicorn gevent
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar unzip
 
       - name: Setup Cloudflare WARP
         run: |
@@ -41,58 +35,42 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Prepare RAMDisk Environment
+      - name: Prepare RAMDisk & Nginx Web Server
         run: |
           mkdir -p /dev/shm/hls/axn
 
-      - name: Create Web Server File
-        run: |
-          cat << 'EOF' > app.py
-          import os
-          from flask import Flask, send_from_directory, abort, make_response
-          from flask_cors import CORS
+          # Cấu hình Nginx tối ưu phục vụ HLS tĩnh tốc độ cực cao, chống drop connection
+          cat << 'EOF' > /tmp/nginx.conf
+          worker_processes auto;
+          events { worker_connections 2048; }
 
-          app = Flask(__name__)
-          CORS(app, resources={r"/*": {"origins": "*"}})
+          http {
+              include       /etc/nginx/mime.types;
+              default_type  application/octet-stream;
+              sendfile        on;
+              tcp_nopush      on;
+              tcp_nodelay     on;
+              keepalive_timeout  65;
 
-          HLS_DIR = "/dev/shm/hls"
+              server {
+                  listen 5000;
 
-          @app.route("/")
-          def index():
-              return "IPTV Restream Server (AXN HD Online)", 200
-
-          @app.route("/playlist.m3u")
-          def playlist():
-              response = make_response(send_from_directory(".", "playlist.m3u"))
-              response.headers["Content-Type"] = "audio/x-mpegurl"
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              return response
-
-          @app.route("/hls/<path:filename>")
-          def serve_hls(filename):
-              file_path = os.path.join(HLS_DIR, filename)
-              if not os.path.exists(file_path):
-                  return abort(404)
-              
-              directory = os.path.dirname(file_path)
-              basename = os.path.basename(file_path)
-
-              response = make_response(send_from_directory(directory, basename))
-              response.headers["Access-Control-Allow-Origin"] = "*"
-              response.headers["Access-Control-Allow-Headers"] = "*"
-              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
-              response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-
-              if filename.endswith(".ts"):
-                  response.headers["Content-Type"] = "video/mp2t"
-              elif filename.endswith(".m3u8"):
-                  response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
-
-              return response
-
-          if __name__ == "__main__":
-              app.run(host="0.0.0.0", port=5000)
+                  location / {
+                      root /dev/shm;
+                      
+                      # Disable cache cho playlist, cho phép CORS mở rộng
+                      add_header Cache-Control "no-cache, no-store, must-revalidate";
+                      add_header Access-Control-Allow-Origin *;
+                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
+                      add_header Access-Control-Allow-Headers *;
+                  }
+              }
+          }
           EOF
+
+          # Stop service nginx mặc định (nếu có) và khởi động bằng config tối ưu riêng
+          sudo systemctl stop nginx || true
+          sudo nginx -c /tmp/nginx.conf
 
       - name: Run Restream Service
         run: |
@@ -100,10 +78,12 @@ jobs:
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=18080
 
+          # Khởi chạy SSHX
           sshx > sshx.log 2>&1 &
           sleep 2
           SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
 
+          # Khởi chạy Bore Tunnel tới port 5000 của Nginx
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -112,6 +92,7 @@ jobs:
           ) &
           sleep 4
 
+          # Cập nhật IP của Bore.pub sang DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
@@ -121,20 +102,18 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          cat << 'M3U_EOF' > playlist.m3u
+          # Tạo file playlist M3U tĩnh trong RAMDisk
+          cat << M3U_EOF > /dev/shm/playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Optimized Stream)
+          ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
-          echo "${PUBLIC_URL}/hls/axn/master.m3u8" >> playlist.m3u
-
-          # Cấu hình Gunicorn chạy Async Gevent Worker để phục vụ nhiều kết nối tải TS cực mượt
-          gunicorn -k gevent -w 4 -b 0.0.0.0:5000 app:app &
-          sleep 2
 
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
           echo "🔑 SSHX URL       : ${SSHX_URL}"
           echo "👉 STREAM URL     : ${PUBLIC_URL}/hls/axn/master.m3u8"
+          echo "👉 PLAYLIST URL   : ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
 
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
@@ -142,7 +121,7 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🎬 Running Stream Pipeline (720p / Lightweight / Geo-Sync)..."
+            echo "🎬 Running Stream Pipeline (720p / Lightweight / Fixed Timestamp Sync)..."
             
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
             
@@ -153,10 +132,9 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-            # Pipeline FFmpeg giải mã ClearKey + Scale 720p + Siết Bitrate + Fix PTS Sync
+            # Pipeline FFmpeg giải mã ClearKey + Scale 720p + Chuẩn hóa GOP/PTS chống giật/lệch hình
             ffmpeg -y -hide_banner -loglevel error -stats \
               -fflags +genpts+discardcorrupt+igndts \
-              -copyts \
               -start_at_zero \
               -avoid_negative_ts make_zero \
               -user_agent "$USER_AGENT" \
@@ -174,7 +152,7 @@ jobs:
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+discont_start \
+              -hls_flags delete_segments+omit_endlist+discont_start+temp_file \
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
 
