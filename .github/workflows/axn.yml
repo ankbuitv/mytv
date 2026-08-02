@@ -103,7 +103,7 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # 🎯 MAGIC FIX: Bỏ -re, Tự tạo timeline mới dựa trên Frame count
+          # 🎯 MAGIC FIX: Dùng filter realtime để ép tốc độ xuất 1.0x chính xác tuyệt đối
           ffmpeg -y -hide_banner -loglevel error -stats \
           -rw_timeout 10000000 \
           -err_detect ignore_err \
@@ -113,8 +113,8 @@ jobs:
           -cenc_decryption_key "$CLEARKEY" \
           -i "$STREAM_MPD" \
           -map 0:v:0 -map 0:a:0 \
-          -vf "fps=25,scale=1280:720,setpts=N/(25*TB)" \
-          -af "aresample=async=1000,asetpts=N/SR/TB" \
+          -vf "fps=25,scale=1280:720,setpts=N/(25*TB),realtime" \
+          -af "aresample=async=1000,asetpts=N/SR/TB,arealtime" \
           -c:v libx264 -preset veryfast -tune zerolatency \
           -profile:v baseline -level 3.0 -pix_fmt yuv420p \
           -g 50 -keyint_min 50 -sc_threshold 0 \
@@ -125,7 +125,7 @@ jobs:
           -f hls \
           -hls_time 2 \
           -hls_list_size 10 \
-          -hls_flags delete_segments+omit_endlist+discont_start \
+          -hls_flags delete_segments+omit_endlist+independent_segments+discont_start \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
           -start_number 1 \
