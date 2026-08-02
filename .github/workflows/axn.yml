@@ -1,4 +1,5 @@
-name: CHRTV AXN Restream (Sync Fixed)
+name: CHRTV AXN Restream (Copy Mode - Ultra Smooth)
+
 on:
   workflow_dispatch:
   schedule:
@@ -43,7 +44,7 @@ jobs:
                   }
               }
           }
-          EOF
+EOF
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -59,7 +60,18 @@ jobs:
           TARGET_PORT=18080
           # ====================================================
 
-          # 1. Khóa cố định PORT 18080 qua Bore
+          # Tạo thư mục RAM & Master Playlist
+          mkdir -p /dev/shm/hls/axn
+          rm -rf /dev/shm/hls/axn/*
+          
+          cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=2000000
+index.m3u8
+MASTER_EOF
+
+          # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
           (
             while true; do
@@ -86,43 +98,39 @@ jobs:
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg duy trì Stream & Fix Sync tuyệt đối
-          while true; do
-            mkdir -p /dev/shm/hls/axn
-            rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
-            
-            cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2000000
-          index.m3u8
-          MASTER_EOF
+          # 3. Vòng lặp FFmpeg (ĐÃ RÁP LỆNH COPY MỚI)
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-            # 🎯 Cấu hình chống lệch hình/tiếng tuyệt đối:
-            # -fps=25 + -g 50 + -hls_time 2 (mỗi segment đúng 2 giây và luôn bắt đầu bằng Keyframe)
-            # -avoid_negative_ts make_zero + -af aresample=async=1000:first_pts=0 (chuẩn hóa PTS)
+          while true; do
+            echo "► Đang chạy FFmpeg Pass-Through (Copy Mode)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
+              -user_agent "$USER_AGENT" \
               -fflags +genpts+discardcorrupt \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+              -reconnect 1 \
+              -reconnect_streamed 1 \
+              -reconnect_on_network_error 1 \
               -reconnect_on_http_error 404,408,429,5xx \
-              -rw_timeout 10000000 \
+              -rw_timeout 8000000 \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
-              -map 0:v:0 -map 0:a:0 \
-              -vf "scale=-2:720,fps=25" \
-              -c:v libx264 -preset ultrafast -tune zerolatency -crf 26 \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
-              -avoid_negative_ts make_zero \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
-              -af "aresample=async=1000:first_pts=0" \
-              -bsf:a aac_adtstoasc \
+              -map 0:v:0 \
+              -map 0:a:0 \
+              -c:v copy \
+              -c:a copy \
+              -copytb 1 \
+              -avoid_negative_ts make_non_negative \
+              -max_interleave_delta 1000000 \
+              -muxdelay 0 \
+              -muxpreload 0 \
               -f hls \
-              -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist \
-              -hls_segment_filename "/dev/shm/hls/axn/seg_%06d.ts" \
-              /dev/shm/hls/axn/index.m3u8 || true
+              -hls_time 3 \
+              -hls_list_size 20 \
+              -hls_delete_threshold 10 \
+              -hls_flags delete_segments+omit_endlist+temp_file \
+              -hls_segment_type mpegts \
+              -hls_segmentfilename "/dev/shm/hls/axn/seg%06d.ts" \
+              "/dev/shm/hls/axn/index.m3u8" || true
 
-            echo "⚠ FFmpeg rớt kết nối. Đang tự động kết nối lại sau 5s..."
-            sleep 5
+            echo "⚠ FFmpeg ngắt kết nối. Đang khởi động lại sau 3 giây..."
+            sleep 3
           done
