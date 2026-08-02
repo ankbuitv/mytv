@@ -1,151 +1,40 @@
-name: IPTV Restream - AXN HD (Decoded & Re-encoded)
+- name: Run Restream Service
+  run: |
+    # ... (giữ nguyên phần trên) ...
 
-on:
-  schedule:
-    - cron: '0 */5 * * *'
-  workflow_dispatch:
+    while true; do
+      echo "🎬 Decrypting DRM & Re-encoding Stream..."
+      
+      rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
+      
+      cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
+    #EXTM3U
+    #EXT-X-VERSION:3
+    #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
+    index.m3u8
+    MASTER_EOF
 
-jobs:
-  stream:
-    runs-on: ubuntu-latest
+      # FIX: Đồng bộ keyframe + GOP + segment duration
+      ffmpeg -y -hide_banner -loglevel warning -stats \
+        -user_agent "$USER_AGENT" \
+        -headers "Referer: https://mytvnet.vn/" \
+        -cenc_decryption_key "$CLEARKEY" \
+        -i "$STREAM_MPD" \
+        -map 0:v:0 -map 0:a:0 \
+        -vf "scale=1280:720,fps=25" \
+        -c:v libx264 -preset veryfast -tune zerolatency \
+        -g 50 -keyint_min 50 -sc_threshold 0 \
+        -b:v 1500k -maxrate 2000k -bufsize 4000k \
+        -c:a aac -b:a 128k -ar 48000 -ac 2 \
+        -max_muxing_queue_size 2048 \
+        -f hls \
+        -hls_time 2 \
+        -hls_list_size 10 \
+        -hls_flags delete_segments+omit_endlist+independent_segments \
+        -hls_segment_type mpegts \
+        -hls_segment_filename "/dev/shm/hls/axn/seg_%05d.ts" \
+        /dev/shm/hls/axn/index.m3u8 || true
 
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar unzip
-
-      - name: Setup Cloudflare WARP
-        run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ cloudflare-main main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update && sudo apt-get install -y cloudflare-warp
-          warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode warp || true
-          warp-cli --accept-tos connect || true
-          sleep 3
-
-      - name: Setup Bore Tunnel & SSHX
-        run: |
-          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          chmod +x bore
-          sudo mv bore /usr/local/bin/
-          curl -sSf https://sshx.io/get | sh
-
-      - name: Prepare RAMDisk & Nginx Web Server
-        run: |
-          mkdir -p /dev/shm/hls/axn
-
-          # Cấu hình Nginx chịu tải cao, đọc trực tiếp từ RAMDisk
-          cat << 'EOF' > /tmp/nginx.conf
-          worker_processes auto;
-          events { worker_connections 2048; }
-
-          http {
-              include       /etc/nginx/mime.types;
-              default_type  application/octet-stream;
-              sendfile        on;
-              tcp_nopush      on;
-              tcp_nodelay     on;
-              keepalive_timeout  65;
-
-              server {
-                  listen 5000;
-
-                  location / {
-                      root /dev/shm;
-                      add_header Cache-Control "no-cache, no-store, must-revalidate";
-                      add_header Access-Control-Allow-Origin *;
-                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
-                      add_header Access-Control-Allow-Headers *;
-                  }
-              }
-          }
-          EOF
-
-          sudo systemctl stop nginx || true
-          sudo nginx -c /tmp/nginx.conf
-
-      - name: Run Restream Service
-        run: |
-          DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=18080
-
-          sshx > sshx.log 2>&1 &
-          sleep 2
-          SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
-
-          (
-            while true; do
-              bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
-              sleep 3
-            done
-          ) &
-          sleep 4
-
-          BORE_IP=$(dig +short bore.pub | tail -n1)
-          if [ -n "$BORE_IP" ]; then
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
-          else
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}" > /dev/null
-          fi
-
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
-
-          cat << M3U_EOF > /dev/shm/playlist.m3u
-          #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Optimized Stream)
-          ${PUBLIC_URL}/hls/axn/master.m3u8
-          M3U_EOF
-
-          echo "===================================================="
-          echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
-          echo "🔑 SSHX URL       : ${SSHX_URL}"
-          echo "👉 STREAM URL     : ${PUBLIC_URL}/hls/axn/master.m3u8"
-          echo "👉 PLAYLIST URL   : ${PUBLIC_URL}/playlist.m3u"
-          echo "===================================================="
-
-          STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-
-          while true; do
-            echo "🎬 Decrypting DRM & Re-encoding Stream (Fixing Freeze/Sync)..."
-            
-            rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
-            
-            cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
-          index.m3u8
-          MASTER_EOF
-
-            # Pipeline FFmpeg: Giải mã ClearKey -> Re-encode libx264 -> Tạo Keyframe 2s cố định -> Xuất HLS
-            ffmpeg -y -hide_banner -loglevel error -stats \
-              -user_agent "$USER_AGENT" \
-              -headers "Referer: https://mytvnet.vn/" \
-              -cenc_decryption_key "$CLEARKEY" \
-              -i "$STREAM_MPD" \
-              -map 0:v:0 -map 0:a:0 \
-              -vf "scale=1280:720" \
-              -vsync cfr \
-              -c:v libx264 -preset ultrafast -tune zerolatency \
-              -b:v 1500k -maxrate 2000k -bufsize 3000k \
-              -force_key_frames "expr:gte(t,n_forced*2)" \
-              -c:a aac -b:a 128k -ar 44100 -ac 2 \
-              -max_muxing_queue_size 1024 \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 10 \
-              -hls_flags delete_segments+omit_endlist+temp_file \
-              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
-              /dev/shm/hls/axn/index.m3u8 || true
-
-            echo "⚠️ Stream reconnecting in 3 seconds..."
-            sleep 3
-          done
+      echo "⚠️ Stream reconnecting in 3 seconds..."
+      sleep 3
+    done
