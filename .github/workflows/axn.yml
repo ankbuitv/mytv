@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (All-In-One Hardcoded)
+name: CHRTV AXN Restream (Fixed Port 18080)
 on:
   workflow_dispatch:
   schedule:
@@ -7,7 +7,7 @@ on:
 jobs:
   restream:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Tự ngắt trước 6 tiếng để tránh bị GitHub kill đột ngột
+    timeout-minutes: 350
 
     steps:
       - name: Checkout code
@@ -47,33 +47,39 @@ jobs:
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
-      - name: Start Restream & Dynamic Tunneling
+      - name: Start Restream & Fixed Port Tunnel
         run: |
           # ====================================================
-          # 🔑 TẤT CẢ THÔNG SỐ ĐƯỢC GOM TRỰC TIẾP TẠI ĐÂY
+          # 🔑 THÔNG SỐ CỐ ĐỊNH
           # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          TARGET_PORT=18080
           # ====================================================
 
-          # 1. Chạy Bore với Port tự động để tránh bị chiếm port trên server bore.pub
-          bore local 5000 --to bore.pub > bore.log 2>&1 &
-          sleep 4
-          
-          # Trích xuất Port công cộng mà bore được gán
-          BORE_PORT=$(grep -oP 'remote_port=\K\d+' bore.log || echo "18080")
-          echo "► Bore Port được gán: $BORE_PORT"
+          # 1. Ép Bore chạy cố định đúng PORT 18080
+          echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
+          (
+            while true; do
+              bore local 5000 --to bore.pub --port $TARGET_PORT >> bore.log 2>&1
+              echo "⚠ Bore ngắt kết nối, đang thử nối lại..."
+              sleep 3
+            done
+          ) &
+          sleep 5
 
           # 2. Cập nhật IP bore.pub lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
-            echo -e "\n► Đã cập nhật DuckDNS thành công ($BORE_IP)"
+            echo -e "\n► Đã cập nhật DuckDNS ($BORE_IP) cho domain ${DUCKDNS_DOMAIN}.duckdns.org"
+          else
+            echo "❌ Không lấy được IP của bore.pub!"
           fi
 
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${TARGET_PORT}"
           
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
@@ -92,7 +98,7 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-            # FFmpeg encode nhẹ ( scale 720p + CRF 26) để đồng bộ DTS/PTS không bị vỡ mốc thời gian
+            # FFmpeg encode siêu nhẹ sửa timestamp
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -fflags +genpts+discardcorrupt \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
