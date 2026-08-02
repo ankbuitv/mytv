@@ -96,43 +96,49 @@ jobs:
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
+            
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720
-          index.m3u8
-          MASTER_EOF
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+index.m3u8
+MASTER_EOF
           
-          # 🎯 MAGIC FIX: Dùng Wallclock Timestamp, bỏ -re, bỏ copyts
-          ffmpeg -y -hide_banner -loglevel error -stats \
-          -rw_timeout 10000000 \
-          -err_detect ignore_err \
-          -fflags +genpts+discardcorrupt+igndts \
-          -use_wallclock_as_timestamps 1 \
-          -user_agent "$USER_AGENT" \
-          -headers "Referer: https://mytvnet.vn/" \
-          -cenc_decryption_key "$CLEARKEY" \
-          -i "$STREAM_MPD" \
-          -map 0:v:0 -map 0:a:0 \
-          -vf "scale=1280:720" \
-          -af "aresample=async=1000" \
-          -c:v libx264 -preset veryfast -tune zerolatency \
-          -profile:v baseline -level 3.0 -pix_fmt yuv420p \
-          -g 50 -keyint_min 50 -sc_threshold 0 \
-          -b:v 1000k -maxrate 1200k -bufsize 2000k \
-          -c:a aac -b:a 128k -ar 48000 -ac 2 \
-          -avoid_negative_ts make_zero \
-          -muxdelay 0 -muxpreload 0 \
-          -max_muxing_queue_size 2048 \
-          -f hls \
-          -hls_time 2 \
-          -hls_list_size 6 \
-          -hls_flags delete_segments+omit_endlist+independent_segments \
-          -hls_segment_type mpegts \
-          -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
-          -start_number 1 \
-          /dev/shm/hls/axn/index.m3u8 || true
+            # 🎯 BẢN FIX CHUẨN: PTS-STARTPTS đồng bộ cứng AV, ultrafast nhẹ CPU, temp_file chống lỗi đọc dở file
+            ffmpeg -y -hide_banner -loglevel error -stats \
+              -rw_timeout 10000000 \
+              -err_detect ignore_err \
+              -fflags +genpts+discardcorrupt+nobuffer \
+              -user_agent "$USER_AGENT" \
+              -headers "Referer: https://mytvnet.vn/" \
+              -cenc_decryption_key "$CLEARKEY" \
+              -i "$STREAM_MPD" \
+              -map 0:v:0 -map 0:a:0 \
+              \
+              -vf "setpts=PTS-STARTPTS" \
+              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+              \
+              -c:v libx264 -preset ultrafast -tune zerolatency \
+              -profile:v baseline -level 3.0 -pix_fmt yuv420p \
+              -threads 0 \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -refs 1 -bf 0 -x264opts no-mbtree:sliced-threads=1:sync-lookahead=0 \
+              -b:v 1000k -maxrate 1200k -bufsize 2000k \
+              \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -muxdelay 0 -muxpreload 0 \
+              -max_muxing_queue_size 2048 \
+              \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 10 \
+              -hls_delete_threshold 3 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+discont_start+temp_file \
+              -hls_segment_type mpegts \
+              -hls_segment_filename "/dev/shm/hls/axn/seg_%05d.ts" \
+              -start_number 1 \
+              /dev/shm/hls/axn/index.m3u8 || true
           
-          echo "⚠ Reconnecting in 3s..."
-          sleep 3
+            echo "⚠ Reconnecting in 3s..."
+            sleep 3
           done
