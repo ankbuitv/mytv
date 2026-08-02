@@ -1,4 +1,4 @@
-name: IPTV Restream - AXN HD (N_m3u8DL-RE)
+name: IPTV Restream - AXN HD (FFmpeg Native ClearKey)
 
 on:
   schedule:
@@ -21,42 +21,8 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils tar unzip jq
+          sudo apt-get install -y ffmpeg curl dnsutils tar unzip
           pip install --no-cache-dir flask flask-cors gunicorn
-
-      - name: Install N_m3u8DL-RE
-        run: |
-          RELEASE_JSON=$(curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest)
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("linux-x64")) | .browser_download_url' | head -n 1)
-          
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "❌ Không tìm thấy URL tải N_m3u8DL-RE!"
-            exit 1
-          fi
-
-          echo "📥 Đang tải N_m3u8DL-RE từ: $DOWNLOAD_URL"
-          curl -sL "$DOWNLOAD_URL" -o n_m3u8dl_archive
-
-          if tar -tzf n_m3u8dl_archive >/dev/null 2>&1; then
-            tar -xzf n_m3u8dl_archive
-          else
-            unzip -o n_m3u8dl_archive
-          fi
-
-          EXE_BIN=$(find . -maxdepth 3 -name "N_m3u8DL-RE" -type f | head -n 1)
-          chmod +x "$EXE_BIN"
-          sudo mv "$EXE_BIN" /usr/local/bin/
-          N_m3u8DL-RE --version
-
-      - name: Install mp4decrypt (Bento4)
-        run: |
-          echo "📥 Đang tải mp4decrypt (Bento4)..."
-          curl -sL https://www.bento4.com/downloads/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip -o bento4.zip
-          unzip -q bento4.zip
-          sudo cp Bento4-SDK-1-6-0-641.x86_64-unknown-linux/bin/mp4decrypt /usr/local/bin/
-          sudo chmod +x /usr/local/bin/mp4decrypt
-          echo "✅ Đã cài đặt mp4decrypt thành công:"
-          mp4decrypt --version || true
 
       - name: Setup Cloudflare WARP
         run: |
@@ -158,13 +124,13 @@ jobs:
           cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
+          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
           index.m3u8
           MASTER_EOF
 
           cat << M3U_EOF > playlist.m3u
           #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS AVC)
+          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS Direct FFmpeg)
           ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
 
@@ -182,19 +148,16 @@ jobs:
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          export RE_LIVE_PIPE_OPTIONS="-c copy -f mpegts pipe:1"
-
           while true; do
-            echo "🎬 Running Stream Pipeline (N_m3u8DL-RE | FFmpeg)..."
+            echo "🎬 Running Stream Pipeline (FFmpeg Direct Decryption)..."
             
-            N_m3u8DL-RE "$STREAM_MPD" \
-              --key "$CLEARKEY" \
-              --header "User-Agent: $USER_AGENT" \
-              --header "Referer: https://mytvnet.vn/" \
-              --auto-select \
-              --live-pipe-mux \
-              --log-level OFF | ffmpeg -y -hide_banner -loglevel warning \
-              -i pipe:0 \
+            ffmpeg -y -hide_banner -loglevel warning \
+              -user_agent "$USER_AGENT" \
+              -referer "https://mytvnet.vn/" \
+              -cenc_decryption_key "$CLEARKEY" \
+              -i "$STREAM_MPD" \
+              -map 0:v:1 \
+              -map 0:a:0 \
               -c copy \
               -f hls \
               -hls_time 2 \
@@ -203,6 +166,6 @@ jobs:
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
 
-            echo "⚠️ Reconnecting in 3 seconds..."
+            echo "⚠️ Stream re-connecting in 3 seconds..."
             sleep 3
           done
