@@ -1,4 +1,4 @@
-name: IPTV Restream - AXN HD (Optimized Native Nginx)
+name: IPTV Restream - AXN HD (Decoded & Re-encoded)
 
 on:
   schedule:
@@ -39,7 +39,7 @@ jobs:
         run: |
           mkdir -p /dev/shm/hls/axn
 
-          # Cấu hình Nginx tối ưu phục vụ HLS tĩnh tốc độ cực cao, chống drop connection
+          # Cấu hình Nginx chịu tải cao, đọc trực tiếp từ RAMDisk
           cat << 'EOF' > /tmp/nginx.conf
           worker_processes auto;
           events { worker_connections 2048; }
@@ -57,8 +57,6 @@ jobs:
 
                   location / {
                       root /dev/shm;
-                      
-                      # Disable cache cho playlist, cho phép CORS mở rộng
                       add_header Cache-Control "no-cache, no-store, must-revalidate";
                       add_header Access-Control-Allow-Origin *;
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
@@ -68,7 +66,6 @@ jobs:
           }
           EOF
 
-          # Stop service nginx mặc định (nếu có) và khởi động bằng config tối ưu riêng
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -78,12 +75,10 @@ jobs:
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=18080
 
-          # Khởi chạy SSHX
           sshx > sshx.log 2>&1 &
           sleep 2
           SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
 
-          # Khởi chạy Bore Tunnel tới port 5000 của Nginx
           (
             while true; do
               bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -92,7 +87,6 @@ jobs:
           ) &
           sleep 4
 
-          # Cập nhật IP của Bore.pub sang DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
@@ -102,7 +96,6 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # Tạo file playlist M3U tĩnh trong RAMDisk
           cat << M3U_EOF > /dev/shm/playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Optimized Stream)
@@ -121,7 +114,7 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🎬 Running Stream Pipeline (720p / Lightweight / Fixed Timestamp Sync)..."
+            echo "🎬 Decrypting DRM & Re-encoding Stream (Fixing Freeze/Sync)..."
             
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
             
@@ -132,27 +125,24 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-            # Pipeline FFmpeg giải mã ClearKey + Scale 720p + Chuẩn hóa GOP/PTS chống giật/lệch hình
+            # Pipeline FFmpeg: Giải mã ClearKey -> Re-encode libx264 -> Tạo Keyframe 2s cố định -> Xuất HLS
             ffmpeg -y -hide_banner -loglevel error -stats \
-              -fflags +genpts+discardcorrupt+igndts \
-              -start_at_zero \
-              -avoid_negative_ts make_zero \
               -user_agent "$USER_AGENT" \
               -headers "Referer: https://mytvnet.vn/" \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -vf "scale=1280:720,fps=25" \
-              -c:v libx264 -preset ultrafast -tune zerolatency -b:v 1200k -maxrate 1500k -bufsize 3000k \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -vf "scale=1280:720" \
+              -vsync cfr \
+              -c:v libx264 -preset ultrafast -tune zerolatency \
+              -b:v 1500k -maxrate 2000k -bufsize 3000k \
+              -force_key_frames "expr:gte(t,n_forced*2)" \
               -c:a aac -b:a 128k -ar 44100 -ac 2 \
-              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0" \
-              -async 1 \
-              -max_muxing_queue_size 4096 \
+              -max_muxing_queue_size 1024 \
               -f hls \
               -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+discont_start+temp_file \
+              -hls_list_size 10 \
+              -hls_flags delete_segments+omit_endlist+temp_file \
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
 
