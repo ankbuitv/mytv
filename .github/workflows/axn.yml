@@ -21,7 +21,7 @@ jobs:
           # Tải SSHX
           curl -sSf https://sshx.io/get | sh
 
-      - name: Configure Nginx For HLS (Fix Connection Failed)
+      - name: Configure Nginx For HLS
         run: |
           mkdir -p /dev/shm/hls/axn
           cat << 'EOF' | sudo tee /tmp/nginx.conf
@@ -68,14 +68,19 @@ jobs:
             sleep 3
           done
           ) &
-          sleep 4
+          sleep 5
+          echo "===== BORE TUNNEL LOG ====="
+          cat bore.log
+          echo "==========================="
           
-          # 3. Cập nhật IP lên DuckDNS
-          BORE_IP=$(curl -s https://api.ipify.org || dig +short bore.pub | tail -n1)
+          # 3. Cập nhật IP của bore.pub lên DuckDNS (ĐÃ FIX LỖI IP GITHUB)
+          echo "Đang lấy IP của bore.pub..."
+          BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
+            echo "IP bore.pub: $BORE_IP - Đang cập nhật DuckDNS..."
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
           else
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}" > /dev/null
+            echo "Lỗi mạng, không lấy được IP bore.pub!"
           fi
           
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
@@ -96,7 +101,7 @@ jobs:
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
           
-          # 4. Vòng lặp FFmpeg Fix mọi lỗi lệch PTS, Drop frame, Đứt kết nối
+          # 4. Vòng lặp FFmpeg
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
@@ -107,7 +112,6 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # 🎯 MAGIC FIX: Reset Timestamp về 0, Bỏ qua frame hỏng, Ép sync A/V
           ffmpeg -y -hide_banner -loglevel error -stats \
           -err_detect ignore_err \
           -fflags +genpts+discardcorrupt+nobuffer \
