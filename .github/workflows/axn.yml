@@ -1,72 +1,143 @@
-name: AXN Restream Service
-
+name: CHRTV AXN Restream Final Fix
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # Tự động chạy lại mỗi 6 tiếng
+    - cron: '0 */6 * * *'
 
 jobs:
   restream:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
+          # Tải Bore Tunnel
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          sudo mv bore /usr/local/bin/
+          # Tải SSHX
+          curl -sSf https://sshx.io/get | sh
 
-      - name: Run Restream Service
+      - name: Configure Nginx For HLS (Fix Connection Failed)
         run: |
+          mkdir -p /dev/shm/hls/axn
+          cat << 'EOF' | sudo tee /tmp/nginx.conf
+          worker_processes auto;
+          events { worker_connections 2048; }
+          http {
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+              sendfile on;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 65s;
+              keepalive_requests 10000;
+              server {
+                  listen 5000;
+                  location / {
+                      root /dev/shm;
+                      add_header Cache-Control "no-cache, no-store, must-revalidate";
+                      add_header Access-Control-Allow-Origin *;
+                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
+                      add_header Access-Control-Allow-Headers *;
+                  }
+              }
+          }
+          EOF
+          sudo systemctl stop nginx || true
+          sudo nginx -c /tmp/nginx.conf
+
+      - name: Start Tunnel & Restream Service
+        run: |
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT=18080
+          
+          # 1. Chạy SSHX
+          sshx > sshx.log 2>&1 &
+          sleep 2
+          SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
+          
+          # 2. Chạy Bore Tunnel
+          (
+          while true; do
+            bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
+            sleep 3
+          done
+          ) &
+          sleep 4
+          
+          # 3. Cập nhật IP lên DuckDNS
+          BORE_IP=$(curl -s https://api.ipify.org || dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}" > /dev/null
+          fi
+          
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+          cat << M3U_EOF > /dev/shm/playlist.m3u
+          #EXTM3U
+          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Final Fixed)
+          ${PUBLIC_URL}/hls/axn/master.m3u8
+          M3U_EOF
+          
+          echo "===================================================="
+          echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
+          echo "🔑 SSHX URL : ${SSHX_URL}"
+          echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
+          echo "👉 PLAYLIST URL : ${PUBLIC_URL}/playlist.m3u"
+          echo "===================================================="
+          
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-
+          
+          # 4. Vòng lặp FFmpeg Fix mọi lỗi lệch PTS, Drop frame, Đứt kết nối
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
-
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
           #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
           index.m3u8
           MASTER_EOF
-
-            ffmpeg -y -hide_banner -loglevel error -stats \
-              -err_detect ignore_err \
-              -fflags +genpts+discardcorrupt+nobuffer \
-              -user_agent "$USER_AGENT" \
-              -headers "Referer: https://mytvnet.vn/" \
-              -cenc_decryption_key "$CLEARKEY" \
-              -i "$STREAM_MPD" \
-              \
-              -map 0:v:0 -map 0:a:0 \
-              -vf "fps=25,setpts=PTS-STARTPTS" \
-              -c:v libx264 -preset veryfast -tune zerolatency \
-              -profile:v baseline -level 3.0 \
-              -pix_fmt yuv420p \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
-              -refs 1 -bf 0 -x264opts no-mbtree:sliced-threads:sync-lookahead=0 \
-              -b:v 1500k -maxrate 2000k -bufsize 3000k \
-              \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
-              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-              \
-              -muxdelay 0 -muxpreload 0 \
-              -max_muxing_queue_size 2048 \
-              \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+independent_segments \
-              -hls_segment_type mpegts \
-              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
-              -start_number 1 \
-              /dev/shm/hls/axn/index.m3u8 || true
-
-            echo "⚠️ Reconnecting in 3s..."
-            sleep 3
+          
+          # 🎯 MAGIC FIX: Reset Timestamp về 0, Bỏ qua frame hỏng, Ép sync A/V
+          ffmpeg -y -hide_banner -loglevel error -stats \
+          -err_detect ignore_err \
+          -fflags +genpts+discardcorrupt+nobuffer \
+          -flags +low_delay \
+          -use_wallclock_as_timestamps 1 \
+          -user_agent "$USER_AGENT" \
+          -headers "Referer: https://mytvnet.vn/" \
+          -cenc_decryption_key "$CLEARKEY" \
+          -i "$STREAM_MPD" \
+          -map 0:v:0 -map 0:a:0 \
+          -vf "fps=25,scale=1280:720,setpts=PTS-STARTPTS" \
+          -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+          -c:v libx264 -preset veryfast -tune zerolatency \
+          -profile:v baseline -level 3.0 -pix_fmt yuv420p \
+          -g 50 -keyint_min 50 -sc_threshold 0 \
+          -refs 1 -bf 0 -x264opts no-mbtree:sliced-threads:sync-lookahead=0 \
+          -avoid_negative_ts make_zero \
+          -b:v 1500k -maxrate 2000k -bufsize 3000k \
+          -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -muxdelay 0 -muxpreload 0 \
+          -max_muxing_queue_size 2048 \
+          -f hls \
+          -hls_time 2 \
+          -hls_list_size 6 \
+          -hls_flags delete_segments+omit_endlist+independent_segments+discont_start \
+          -hls_segment_type mpegts \
+          -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
+          -start_number 1 \
+          /dev/shm/hls/axn/index.m3u8 || true
+          
+          echo "⚠ Reconnecting in 3s..."
+          sleep 3
           done
