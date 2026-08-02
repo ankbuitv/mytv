@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Direct FFmpeg Fast Edge)
+name: CHRTV AXN Restream (All-In-One Hardcoded)
 on:
   workflow_dispatch:
   schedule:
@@ -7,6 +7,8 @@ on:
 jobs:
   restream:
     runs-on: ubuntu-latest
+    timeout-minutes: 350 # Tự ngắt trước 6 tiếng để tránh bị GitHub kill đột ngột
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,7 +19,6 @@ jobs:
           sudo apt-get install -y ffmpeg nginx curl dnsutils tar
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/
-          curl -sSf https://sshx.io/get | sh
 
       - name: Configure Nginx For HLS
         run: |
@@ -32,7 +33,6 @@ jobs:
               tcp_nopush on;
               tcp_nodelay on;
               keepalive_timeout 65s;
-              keepalive_requests 10000;
               server {
                   listen 5000;
                   location / {
@@ -40,7 +40,6 @@ jobs:
                       add_header Cache-Control "no-cache, no-store, must-revalidate";
                       add_header Access-Control-Allow-Origin *;
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
-                      add_header Access-Control-Allow-Headers *;
                   }
               }
           }
@@ -48,89 +47,71 @@ jobs:
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
-      - name: Start Tunnel & Restream Service
+      - name: Start Restream & Dynamic Tunneling
         run: |
+          # ====================================================
+          # 🔑 TẤT CẢ THÔNG SỐ ĐƯỢC GOM TRỰC TIẾP TẠI ĐÂY
+          # ====================================================
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=18080
+          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
+          STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          # ====================================================
+
+          # 1. Chạy Bore với Port tự động để tránh bị chiếm port trên server bore.pub
+          bore local 5000 --to bore.pub > bore.log 2>&1 &
+          sleep 4
           
-          sshx > sshx.log 2>&1 &
-          sleep 2
-          SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
-          
-          (
-          while true; do
-            bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
-            sleep 3
-          done
-          ) &
-          sleep 5
-          
-          echo "Đang lấy IP của bore.pub..."
+          # Trích xuất Port công cộng mà bore được gán
+          BORE_PORT=$(grep -oP 'remote_port=\K\d+' bore.log || echo "18080")
+          echo "► Bore Port được gán: $BORE_PORT"
+
+          # 2. Cập nhật IP bore.pub lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
-            echo "IP bore.pub: $BORE_IP - Đang cập nhật DuckDNS..."
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" > /dev/null
-          else
-            echo "Lỗi mạng, không lấy được IP bore.pub!"
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+            echo -e "\n► Đã cập nhật DuckDNS thành công ($BORE_IP)"
           fi
-          
+
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
-          cat << M3U_EOF > /dev/shm/playlist.m3u
-          #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Direct FFmpeg)
-          ${PUBLIC_URL}/hls/axn/master.m3u8
-          M3U_EOF
           
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
-          echo "🔑 SSHX URL : ${SSHX_URL}"
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
-          
-          STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
-          
+
+          # 3. Vòng lặp FFmpeg duy trì Stream
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
-            cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
+            
+            cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
           #EXT-X-STREAM-INF:BANDWIDTH=2000000
           index.m3u8
           MASTER_EOF
-          
-          # 🎯 FIX LỖI NON-MONOTONIC DTS: Copy Video + Re-encode Audio để sửa DTS hỏng
-          ffmpeg -y -hide_banner -loglevel error -stats \
-          -fflags +genpts+discardcorrupt \
-          -re \
-          -reconnect 1 \
-          -reconnect_streamed 1 \
-          -reconnect_on_network_error 1 \
-          -reconnect_on_http_error 404,408,429,5xx \
-          -rw_timeout 8000000 \
-          -cenc_decryption_key "$CLEARKEY" \
-          -i "$STREAM_MPD" \
-          -map 0:v:1 \
-          -map 0:a:0 \
-          -c:v copy \
-          -c:a aac -b:a 128k -ar 48000 -ac 2 \
-          -af "aresample=async=1:first_pts=0" \
-          -copytb 1 \
-          -avoid_negative_ts make_zero \
-          -max_interleave_delta 1000000 \
-          -muxdelay 0 \
-          -muxpreload 0 \
-          -f hls \
-          -hls_time 2 \
-          -hls_list_size 10 \
-          -hls_delete_threshold 5 \
-          -hls_flags delete_segments+omit_endlist+temp_file \
-          -hls_segment_type mpegts \
-          -hls_segment_filename "/dev/shm/hls/axn/seg_%06d.ts" \
-          /dev/shm/hls/axn/index.m3u8 || true
-          
-          echo "⚠ Reconnecting in 5s..."
-          sleep 5
+
+            # FFmpeg encode nhẹ ( scale 720p + CRF 26) để đồng bộ DTS/PTS không bị vỡ mốc thời gian
+            ffmpeg -y -hide_banner -loglevel warning -stats \
+              -fflags +genpts+discardcorrupt \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+              -reconnect_on_http_error 404,408,429,5xx \
+              -rw_timeout 10000000 \
+              -cenc_decryption_key "$CLEARKEY" \
+              -i "$STREAM_MPD" \
+              -map 0:v:0 -map 0:a:0 \
+              -vf "scale=-2:720" \
+              -c:v libx264 -preset ultrafast -tune zerolatency -crf 26 \
+              -c:a aac -b:a 128k -ar 44100 -ac 2 \
+              -bsf:a aac_adtstoasc \
+              -f hls \
+              -hls_time 4 \
+              -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist \
+              -hls_segment_filename "/dev/shm/hls/axn/seg_%06d.ts" \
+              /dev/shm/hls/axn/index.m3u8 || true
+
+            echo "⚠ FFmpeg rớt kết nối. Đang tự động kết nối lại sau 5s..."
+            sleep 5
           done
