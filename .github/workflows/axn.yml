@@ -145,21 +145,22 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🎬 Running Stream Pipeline..."
+            echo "🎬 Running Stream Pipeline (Strict Sync Fix)..."
             
-            # Xóa các file cũ tránh bị lặp lại hoặc đụng độ khi FFmpeg khởi động lại
+            # Xóa sạch cache cũ
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
             
-            # Tái tạo lại master.m3u8
+            # Tạo master.m3u8 chuẩn
             cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
-          index.m3u8
-          MASTER_EOF
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+index.m3u8
+MASTER_EOF
 
             ffmpeg -y -hide_banner -loglevel error -stats \
-              -fflags +genpts \
+              -fflags +genpts+discardcorrupt \
+              -avoid_negative_ts make_zero \
               -user_agent "$USER_AGENT" \
               -headers "Referer: https://mytvnet.vn/" \
               -cenc_decryption_key "$CLEARKEY" \
@@ -169,11 +170,11 @@ jobs:
               -c:v copy \
               -bsf:v h264_mp4toannexb \
               -c:a copy \
-              -max_muxing_queue_size 9999 \
+              -max_muxing_queue_size 2048 \
               -f hls \
-              -hls_time 4 \
+              -hls_time 2 \
               -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_flags delete_segments+omit_endlist+discont_start+split_by_time \
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
 
