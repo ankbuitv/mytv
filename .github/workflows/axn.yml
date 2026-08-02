@@ -1,4 +1,4 @@
-name: IPTV Restream - AXN HD (FFmpeg Native ClearKey Sync)
+name: IPTV Restream - AXN HD (Optimized Multi-Client)
 
 on:
   schedule:
@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl dnsutils tar unzip
-          pip install --no-cache-dir flask flask-cors gunicorn
+          pip install --no-cache-dir flask flask-cors gunicorn gevent
 
       - name: Setup Cloudflare WARP
         run: |
@@ -33,7 +33,6 @@ jobs:
           warp-cli --accept-tos mode warp || true
           warp-cli --accept-tos connect || true
           sleep 3
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|ip" || true
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -83,8 +82,6 @@ jobs:
               response.headers["Access-Control-Allow-Headers"] = "*"
               response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
               response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-              response.headers["Pragma"] = "no-cache"
-              response.headers["Expires"] = "0"
 
               if filename.endswith(".ts"):
                   response.headers["Content-Type"] = "video/mp2t"
@@ -126,38 +123,37 @@ jobs:
 
           cat << 'M3U_EOF' > playlist.m3u
           #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS Direct FFmpeg)
+          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Optimized Stream)
           M3U_EOF
           echo "${PUBLIC_URL}/hls/axn/master.m3u8" >> playlist.m3u
 
-          # Cấu hình Gunicorn chạy 4 worker
-          gunicorn -w 4 --threads 4 -b 0.0.0.0:5000 app:app &
+          # Cấu hình Gunicorn chạy Async Gevent Worker để phục vụ nhiều kết nối tải TS cực mượt
+          gunicorn -k gevent -w 4 -b 0.0.0.0:5000 app:app &
           sleep 2
 
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
           echo "🔑 SSHX URL       : ${SSHX_URL}"
-          echo "👉 PLAYLIST URL   : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 STREAM URL     : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🎬 Running Stream Pipeline (Perfect PTS Sync & Full Transcode)..."
+            echo "🎬 Running Stream Pipeline (720p / Lightweight / Geo-Sync)..."
             
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
             
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+          #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
           index.m3u8
           MASTER_EOF
 
-            # Pipeline FFmpeg giải mã DRM + Re-encode + Khóa đồng bộ trục thời gian PTS
+            # Pipeline FFmpeg giải mã ClearKey + Scale 720p + Siết Bitrate + Fix PTS Sync
             ffmpeg -y -hide_banner -loglevel error -stats \
               -fflags +genpts+discardcorrupt+igndts \
               -copyts \
@@ -168,15 +164,16 @@ jobs:
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 \
-              -g 100 -keyint_min 100 -sc_threshold 0 \
+              -vf "scale=1280:720,fps=25" \
+              -c:v libx264 -preset ultrafast -tune zerolatency -b:v 1200k -maxrate 1500k -bufsize 3000k \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
               -c:a aac -b:a 128k -ar 44100 -ac 2 \
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0" \
               -async 1 \
               -max_muxing_queue_size 4096 \
               -f hls \
-              -hls_time 4 \
-              -hls_list_size 10 \
+              -hls_time 2 \
+              -hls_list_size 6 \
               -hls_flags delete_segments+omit_endlist+discont_start \
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
