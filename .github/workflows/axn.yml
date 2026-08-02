@@ -1,53 +1,72 @@
-- name: Run Restream Service
-  run: |
-    STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-    CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
-    USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
+name: AXN Restream Service
 
-    while true; do
-      # 🎯 FIX 1: Tạo thư mục trước khi thao tác file
-      mkdir -p /dev/shm/hls/axn
-      rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # Tự động chạy lại mỗi 6 tiếng
 
-      cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
-#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
-index.m3u8
-MASTER_EOF
+jobs:
+  restream:
+    runs-on: ubuntu-latest
 
-      ffmpeg -y -hide_banner -loglevel error -stats \
-        -err_detect ignore_err \
-        -fflags +genpts+discardcorrupt+nobuffer \
-        -user_agent "$USER_AGENT" \
-        -headers "Referer: https://mytvnet.vn/" \
-        -cenc_decryption_key "$CLEARKEY" \
-        -i "$STREAM_MPD" \
-        \
-        -map 0:v:0 -map 0:a:0 \
-        -vf "fps=25,setpts=PTS-STARTPTS" \
-        -c:v libx264 -preset veryfast -tune zerolatency \
-        -profile:v baseline -level 3.0 \
-        -pix_fmt yuv420p \
-        -g 50 -keyint_min 50 -sc_threshold 0 \
-        -refs 1 -bf 0 -x264opts no-mbtree:sliced-threads:sync-lookahead=0 \
-        -b:v 1500k -maxrate 2000k -bufsize 3000k \
-        \
-        -c:a aac -b:a 128k -ar 48000 -ac 2 \
-        -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-        \
-        -muxdelay 0 -muxpreload 0 \
-        -max_muxing_queue_size 2048 \
-        \
-        -f hls \
-        -hls_time 2 \
-        -hls_list_size 6 \
-        -hls_flags delete_segments+omit_endlist+independent_segments \
-        -hls_segment_type mpegts \
-        -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
-        -start_number 1 \
-        /dev/shm/hls/axn/index.m3u8 || true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      echo "⚠️ Reconnecting in 3s..."
-      sleep 3
-    done
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run Restream Service
+        run: |
+          STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
+
+          while true; do
+            mkdir -p /dev/shm/hls/axn
+            rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
+
+            cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
+          index.m3u8
+          MASTER_EOF
+
+            ffmpeg -y -hide_banner -loglevel error -stats \
+              -err_detect ignore_err \
+              -fflags +genpts+discardcorrupt+nobuffer \
+              -user_agent "$USER_AGENT" \
+              -headers "Referer: https://mytvnet.vn/" \
+              -cenc_decryption_key "$CLEARKEY" \
+              -i "$STREAM_MPD" \
+              \
+              -map 0:v:0 -map 0:a:0 \
+              -vf "fps=25,setpts=PTS-STARTPTS" \
+              -c:v libx264 -preset veryfast -tune zerolatency \
+              -profile:v baseline -level 3.0 \
+              -pix_fmt yuv420p \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -refs 1 -bf 0 -x264opts no-mbtree:sliced-threads:sync-lookahead=0 \
+              -b:v 1500k -maxrate 2000k -bufsize 3000k \
+              \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+              \
+              -muxdelay 0 -muxpreload 0 \
+              -max_muxing_queue_size 2048 \
+              \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_segment_type mpegts \
+              -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
+              -start_number 1 \
+              /dev/shm/hls/axn/index.m3u8 || true
+
+            echo "⚠️ Reconnecting in 3s..."
+            sleep 3
+          done
