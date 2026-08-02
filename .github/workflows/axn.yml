@@ -101,17 +101,15 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # 🎯 FIX TỐC ĐỘ & DUP FRAME: DASH demuxer chỉ giữ 1 segment + -c:v copy + -re
+          # 🎯 FIX LỖI NON-MONOTONIC DTS: Copy Video + Re-encode Audio để sửa DTS hỏng
           ffmpeg -y -hide_banner -loglevel error -stats \
-          -re \
           -fflags +genpts+discardcorrupt \
+          -re \
           -reconnect 1 \
           -reconnect_streamed 1 \
           -reconnect_on_network_error 1 \
           -reconnect_on_http_error 404,408,429,5xx \
           -rw_timeout 8000000 \
-          -window_size 1 \
-          -extra_window_size 1 \
           -cenc_decryption_key "$CLEARKEY" \
           -i "$STREAM_MPD" \
           -map 0:v:1 \
