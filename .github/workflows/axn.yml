@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Copy Mode - Ultra Smooth)
+name: CHRTV AXN Restream (Fixed Sync - Stable)
 
 on:
   workflow_dispatch:
@@ -61,13 +61,11 @@ jobs:
           TARGET_PORT=18080
           # ====================================================
 
-          # Tạo thư mục RAM & Master Playlist
           mkdir -p /dev/shm/hls/axn
           rm -rf /dev/shm/hls/axn/*
-          
+
           printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
 
-          # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
           (
             while true; do
@@ -78,7 +76,6 @@ jobs:
           ) &
           sleep 5
 
-          # 2. Cập nhật IP bore.pub lên DuckDNS
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
             curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
@@ -88,41 +85,48 @@ jobs:
           fi
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${TARGET_PORT}"
-          
+
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg (Copy Mode mượt nhẹ)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+          # ====================================================
+          # 🎬 FFMPEG - RE-ENCODE + FORCE WALLCLOCK SYNC
+          # (Fix triệt để hiện tượng video đứng hình / audio dồn cục)
+          # ====================================================
           while true; do
-            echo "► Đang chạy FFmpeg Pass-Through (Copy Mode)..."
+            echo "► Đang chạy FFmpeg (Force Sync Mode)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
-              -fflags +genpts+discardcorrupt \
+              -fflags +genpts+discardcorrupt+igndts+nobuffer \
+              -use_wallclock_as_timestamps 1 \
+              -thread_queue_size 8192 \
               -reconnect 1 \
               -reconnect_streamed 1 \
               -reconnect_on_network_error 1 \
-              -reconnect_on_http_error 404,408,429,5xx \
+              -reconnect_on_http_error 404,408,429,500,502,503,504 \
               -rw_timeout 8000000 \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
-              -map 0:v:0 \
-              -map 0:a:0 \
-              -c:v copy \
-              -c:a copy \
-              -copytb 1 \
-              -avoid_negative_ts make_non_negative \
-              -max_interleave_delta 1000000 \
-              -muxdelay 0 \
-              -muxpreload 0 \
+              -map 0:v:0 -map 0:a:0 \
+              -filter:v "setpts=PTS-STARTPTS" \
+              -filter:a "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS" \
+              -c:v libx264 -preset veryfast -tune zerolatency \
+                -profile:v main -level 4.0 \
+                -b:v 2000k -maxrate 2500k -bufsize 4000k \
+                -g 50 -keyint_min 50 -sc_threshold 0 -r 25 \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -vsync cfr \
+              -max_muxing_queue_size 9999 \
+              -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 3 \
               -hls_list_size 20 \
               -hls_delete_threshold 10 \
-              -hls_flags delete_segments+omit_endlist+temp_file \
+              -hls_flags delete_segments+omit_endlist+temp_file+independent_segments \
               -hls_segment_type mpegts \
               -hls_segmentfilename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
