@@ -94,14 +94,15 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           # ====================================================
-          # 🎬 FFMPEG - RE-ENCODE, KHÔNG DÙNG WALLCLOCK (fix dup/drop)
+          # 🎬 FFMPEG - GIỮ NGUYÊN QUAN HỆ THỜI GIAN VIDEO/AUDIO
+          # (copyts + start_at_zero => fix triệt để lệch tiếng/hình)
           # ====================================================
           while true; do
-            echo "► Đang chạy FFmpeg (Stable Mode - No Wallclock)..."
+            echo "► Đang chạy FFmpeg (Sync Fixed Mode)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
               -analyzeduration 10000000 -probesize 10000000 \
-              -fflags +genpts+discardcorrupt+igndts \
+              -fflags +discardcorrupt \
               -thread_queue_size 8192 \
               -reconnect 1 \
               -reconnect_streamed 1 \
@@ -110,6 +111,7 @@ jobs:
               -reconnect_delay_max 5 \
               -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY" \
+              -copyts -start_at_zero \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 -preset veryfast -tune zerolatency \
@@ -122,7 +124,7 @@ jobs:
               -af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
               -fps_mode cfr \
               -max_muxing_queue_size 1024 \
-              -avoid_negative_ts make_zero \
+              -muxdelay 0 -muxpreload 0 \
               -f hls \
               -hls_time 2 \
               -hls_list_size 20 \
