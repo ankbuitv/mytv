@@ -97,11 +97,11 @@ jobs:
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2000000
+          #EXT-X-STREAM-INF:BANDWIDTH=1200000
           index.m3u8
           MASTER_EOF
           
-          # 🎯 FIX LỆCH A/V: Bỏ igndts, Copy Video + Re-encode nhẹ Audio để đồng bộ cứng
+          # 🎯 TỐI ƯU TỐC ĐỘ: Chọn luồng 720p (0:v:1) + Nén 1000kbps + Ultrafast
           ffmpeg -y -hide_banner -loglevel error -stats \
           -fflags +genpts+discardcorrupt \
           -re \
@@ -112,9 +112,13 @@ jobs:
           -rw_timeout 8000000 \
           -cenc_decryption_key "$CLEARKEY" \
           -i "$STREAM_MPD" \
-          -map 0:v:0 \
+          -map 0:v:1 \
           -map 0:a:0 \
-          -c:v copy \
+          -c:v libx264 -preset ultrafast -tune zerolatency \
+          -profile:v baseline -level 3.1 -pix_fmt yuv420p \
+          -vf "scale=1280:720" \
+          -b:v 1000k -maxrate 1200k -bufsize 2000k \
+          -g 50 -keyint_min 50 -sc_threshold 0 \
           -c:a aac -b:a 128k -ar 48000 -ac 2 \
           -af "aresample=async=1000:first_pts=0" \
           -copytb 1 \
@@ -123,9 +127,9 @@ jobs:
           -muxdelay 0 \
           -muxpreload 0 \
           -f hls \
-          -hls_time 3 \
-          -hls_list_size 15 \
-          -hls_delete_threshold 10 \
+          -hls_time 2 \
+          -hls_list_size 10 \
+          -hls_delete_threshold 5 \
           -hls_flags delete_segments+omit_endlist+temp_file \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%06d.ts" \
