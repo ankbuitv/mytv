@@ -15,10 +15,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg nginx curl dnsutils tar
-          # Tải Bore Tunnel
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/
-          # Tải SSHX
           curl -sSf https://sshx.io/get | sh
 
       - name: Configure Nginx For HLS
@@ -56,12 +54,10 @@ jobs:
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           BORE_PORT=18080
           
-          # 1. Chạy SSHX
           sshx > sshx.log 2>&1 &
           sleep 2
           SSHX_URL=$(grep -o 'https://sshx.io/s/[^[:space:]]*' sshx.log | head -n1)
           
-          # 2. Chạy Bore Tunnel
           (
           while true; do
             bore local 5000 --to bore.pub --port $BORE_PORT >> bore.log 2>&1
@@ -69,11 +65,7 @@ jobs:
           done
           ) &
           sleep 5
-          echo "===== BORE TUNNEL LOG ====="
-          cat bore.log
-          echo "==========================="
           
-          # 3. Cập nhật IP của bore.pub lên DuckDNS (ĐÃ FIX LỖI IP GITHUB)
           echo "Đang lấy IP của bore.pub..."
           BORE_IP=$(dig +short bore.pub | tail -n1)
           if [ -n "$BORE_IP" ]; then
@@ -101,7 +93,6 @@ jobs:
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
           
-          # 4. Vòng lặp FFmpeg
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
@@ -112,11 +103,11 @@ jobs:
           index.m3u8
           MASTER_EOF
           
+          # 🎯 MAGIC FIX: Thêm -re ép chạy chuẩn 1.0x real-time, bỏ wallclock timestamp
           ffmpeg -y -hide_banner -loglevel error -stats \
+          -re \
           -err_detect ignore_err \
-          -fflags +genpts+discardcorrupt+nobuffer \
-          -flags +low_delay \
-          -use_wallclock_as_timestamps 1 \
+          -fflags +genpts+discardcorrupt \
           -user_agent "$USER_AGENT" \
           -headers "Referer: https://mytvnet.vn/" \
           -cenc_decryption_key "$CLEARKEY" \
@@ -135,7 +126,7 @@ jobs:
           -max_muxing_queue_size 2048 \
           -f hls \
           -hls_time 2 \
-          -hls_list_size 6 \
+          -hls_list_size 10 \
           -hls_flags delete_segments+omit_endlist+independent_segments+discont_start \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
