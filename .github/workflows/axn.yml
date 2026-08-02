@@ -103,29 +103,31 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # 🎯 MAGIC FIX: Dùng filter realtime để ép tốc độ xuất 1.0x chính xác tuyệt đối
+          # 🎯 MAGIC FIX: Dùng Wallclock Timestamp, bỏ -re, bỏ copyts
           ffmpeg -y -hide_banner -loglevel error -stats \
           -rw_timeout 10000000 \
           -err_detect ignore_err \
           -fflags +genpts+discardcorrupt+igndts \
+          -use_wallclock_as_timestamps 1 \
           -user_agent "$USER_AGENT" \
           -headers "Referer: https://mytvnet.vn/" \
           -cenc_decryption_key "$CLEARKEY" \
           -i "$STREAM_MPD" \
           -map 0:v:0 -map 0:a:0 \
-          -vf "fps=25,scale=1280:720,setpts=N/(25*TB),realtime" \
-          -af "aresample=async=1000,asetpts=N/SR/TB,arealtime" \
+          -vf "scale=1280:720" \
+          -af "aresample=async=1000" \
           -c:v libx264 -preset veryfast -tune zerolatency \
           -profile:v baseline -level 3.0 -pix_fmt yuv420p \
           -g 50 -keyint_min 50 -sc_threshold 0 \
           -b:v 1000k -maxrate 1200k -bufsize 2000k \
           -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -avoid_negative_ts make_zero \
           -muxdelay 0 -muxpreload 0 \
           -max_muxing_queue_size 2048 \
           -f hls \
           -hls_time 2 \
-          -hls_list_size 10 \
-          -hls_flags delete_segments+omit_endlist+independent_segments+discont_start \
+          -hls_list_size 6 \
+          -hls_flags delete_segments+omit_endlist+independent_segments \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
           -start_number 1 \
