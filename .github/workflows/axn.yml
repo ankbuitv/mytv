@@ -14,11 +14,13 @@ jobs:
       - name: Install Dependencies & N_m3u8DL-RE
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar wget
-          # Tải N_m3u8DL-RE (bản Linux tự chứa, không cần cài .NET)
-          wget -q "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_Beta_linux-x64_20240728.tar.gz" -O nre.tar.gz
-          tar -xzf nre.tar.gz
-          chmod +x N_m3u8DL-RE
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
+          # Tải N_m3u8DL-RE (Bản Linux tự chứa không cần cài .NET)
+          curl -L "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_Beta_linux-x64_sc_20240728.tar.gz" -o nre.tar.gz
+          mkdir nre_folder
+          tar -xzf nre.tar.gz -C nre_folder
+          find nre_folder -name "N_m3u8DL-RE" -type f -exec sudo cp {} /usr/local/bin/ \;
+          sudo chmod +x /usr/local/bin/N_m3u8DL-RE
           
           # Tải Bore Tunnel & SSHX
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
@@ -109,17 +111,21 @@ jobs:
           MASTER_EOF
           
           # Tạo pipe (đường ống) để N_m3u8DL-RE xuất dữ liệu thẳng sang FFmpeg
+          rm -f stream.pipe
           mkfifo stream.pipe
           
-          # 1. Chạy N_m3u8DL-RE ngầm, giải mã DRM và xuất ra stream.pipe
-          ./N_m3u8DL-RE "$STREAM_MPD" \
+          # 1. Chạy N_m3u8DL-RE ngầm, giải mã DRM và xuất MPEG-TS ra stream.pipe
+          N_m3u8DL-RE "$STREAM_MPD" \
           --live-pipe-mux \
+          --live-real-time-merge \
+          --live-keep-segments false \
+          --tmp-dir /dev/shm \
           -sv best -sa best \
-          -K "${CLEARKEY_KID}:${CLEARKEY_KEY}" > stream.pipe 2>nre.log &
+          --key "${CLEARKEY_KID}:${CLEARKEY_KEY}" > stream.pipe 2>nre.log &
           NRE_PID=$!
           
-          # Đợi 3 giây cho N_m3u8DL-RE tải được một chút dữ liệu
-          sleep 3
+          # Đợi 5 giây cho N_m3u8DL-RE tải được một chút dữ liệu
+          sleep 5
           
           # 2. FFmpeg đọc từ stream.pipe, dùng -c copy (không re-encode tốn CPU) đóng gói HLS
           ffmpeg -y -hide_banner -loglevel error -stats -re -i stream.pipe \
@@ -127,7 +133,7 @@ jobs:
           -f hls \
           -hls_time 4 \
           -hls_list_size 6 \
-          -hls_flags delete_segments+omit_endlist \
+          -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
           -start_number 1 \
