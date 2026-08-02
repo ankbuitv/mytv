@@ -45,8 +45,6 @@ jobs:
       - name: Prepare RAMDisk Environment
         run: |
           mkdir -p /dev/shm/hls/axn
-          rm -rf hls
-          ln -s /dev/shm/hls hls
 
       - name: Create Web Server File
         run: |
@@ -57,6 +55,8 @@ jobs:
 
           app = Flask(__name__)
           CORS(app, resources={r"/*": {"origins": "*"}})
+
+          HLS_DIR = "/dev/shm/hls"
 
           @app.route("/")
           def index():
@@ -71,11 +71,14 @@ jobs:
 
           @app.route("/hls/<path:filename>")
           def serve_hls(filename):
-              file_path = os.path.join("/dev/shm/hls", filename)
+              file_path = os.path.join(HLS_DIR, filename)
               if not os.path.exists(file_path):
                   return abort(404)
               
-              response = make_response(send_from_directory("/dev/shm/hls", filename))
+              directory = os.path.dirname(file_path)
+              basename = os.path.basename(file_path)
+
+              response = make_response(send_from_directory(directory, basename))
               response.headers["Access-Control-Allow-Origin"] = "*"
               response.headers["Access-Control-Allow-Headers"] = "*"
               response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
@@ -121,13 +124,6 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
-          index.m3u8
-          MASTER_EOF
-
           cat << M3U_EOF > playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS Direct FFmpeg)
@@ -149,23 +145,38 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🎬 Running Stream Pipeline (FFmpeg Direct Decryption)..."
+            echo "🎬 Running Stream Pipeline..."
             
-            ffmpeg -y -hide_banner -loglevel warning \
+            # Xóa các file cũ tránh bị lặp lại hoặc đụng độ khi FFmpeg khởi động lại
+            rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
+            
+            # Tái tạo lại master.m3u8
+            cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+          index.m3u8
+          MASTER_EOF
+
+            ffmpeg -y -hide_banner -loglevel error -stats \
+              -fflags +genpts \
               -user_agent "$USER_AGENT" \
-              -referer "https://mytvnet.vn/" \
+              -headers "Referer: https://mytvnet.vn/" \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
-              -map 0:v:1 \
+              -map 0:v:0 \
               -map 0:a:0 \
-              -c copy \
+              -c:v copy \
+              -bsf:v h264_mp4toannexb \
+              -c:a copy \
+              -max_muxing_queue_size 9999 \
               -f hls \
-              -hls_time 2 \
-              -hls_list_size 5 \
-              -hls_flags delete_segments+omit_endlist+discont_start \
+              -hls_time 4 \
+              -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
               /dev/shm/hls/axn/index.m3u8 || true
 
-            echo "⚠️ Stream re-connecting in 3 seconds..."
+            echo "⚠️ Stream reconnecting in 3 seconds..."
             sleep 3
           done
