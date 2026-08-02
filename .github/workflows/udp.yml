@@ -1,4 +1,4 @@
-name: CHRTV UDP Restream Engine
+name: CHRTV AXN Restream Final Engine
 on:
   workflow_dispatch:
   schedule:
@@ -48,7 +48,7 @@ jobs:
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
-      - name: Start UDP Stream & Public Forwarding
+      - name: Start Restream Engine & Public Forwarding
         run: |
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
@@ -73,17 +73,26 @@ jobs:
           
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
           
+          cat << M3U_EOF > /dev/shm/playlist.m3u
+          #EXTM3U
+          #EXTINF:-1 tvg-id="HBO.vn" tvg-name="HBO HD" group-title="VN Live", HBO HD (Stable)
+          ${PUBLIC_URL}/hls/live/index.m3u8
+          M3U_EOF
+          
           echo "===================================================="
-          echo "🌐 CHRTV UDP RESTREAM ENGINE IS ONLINE!"
+          echo "🌐 CHRTV RESTREAM ENGINE IS ONLINE!"
           echo "🔑 SSHX URL   : ${SSHX_URL}"
-          echo "👉 HLS STREAM : ${PUBLIC_URL}/hls/live/index.m3u8"
+          echo "👉 STREAM URL : ${PUBLIC_URL}/hls/live/index.m3u8"
+          echo "👉 M3U URL    : ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
           
           STREAM_MPD="https://s2129134.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
           CLEARKEY="3de0f38dcf014827dfd5bec38743c6a2"
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
           
-          # 1. TIẾN TRÌNH 1: Lấy DRM MyTV -> Bắn ra UDP MPEG-TS nội bộ (Port 12345)
+          # ----------------------------------------------------
+          # TIẾN TRÌNH 1: Giải mã DRM MyTV -> Đổ ra UDP nội bộ
+          # ----------------------------------------------------
           (
           while true; do
             ffmpeg -y -hide_banner -loglevel error \
@@ -97,30 +106,42 @@ jobs:
               -map 0:v:0 -map 0:a:0 \
               -c copy \
               -avoid_negative_ts make_zero \
-              -f mpegts "udp://127.0.0.1:12345?pkt_size=1316" || true
+              -f mpegts "udp://127.0.0.1:12345?pkt_size=1316&buffer_size=6553600" || true
             sleep 2
           done
           ) &
           
           sleep 3
           
-          # 2. TIẾN TRÌNH 2: Đọc từ UDP 12345 -> Cắt HLS MPEG-TS "Sạch" cho Nginx phát public
+          # ----------------------------------------------------
+          # TIẾN TRÌNH 2: Đọc UDP -> Reset Timestamp & Tạo HLS mượt
+          # ----------------------------------------------------
           while true; do
             mkdir -p /dev/shm/hls/live
             rm -f /dev/shm/hls/live/*.ts /dev/shm/hls/live/*.m3u8
             
+            cat << 'MASTER_EOF' > /dev/shm/hls/live/master.m3u8
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720
+          index.m3u8
+          MASTER_EOF
+          
             ffmpeg -y -hide_banner -loglevel error \
               -fflags +genpts+discardcorrupt+nobuffer \
-              -i "udp://127.0.0.1:12345?fifo_size=1000000&overrun_nonfatal=1" \
+              -i "udp://127.0.0.1:12345?fifo_size=2000000&overrun_nonfatal=1" \
               -c copy \
+              -use_wallclock_as_timestamps 1 \
+              -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 2 \
-              -hls_list_size 8 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+split_by_time+temp_file \
               -hls_segment_type mpegts \
               -hls_segment_filename "/dev/shm/hls/live/seg_%05d.ts" \
               -start_number 1 \
               /dev/shm/hls/live/index.m3u8 || true
             
+            echo "⚠ Stream lost, reconnecting in 2s..."
             sleep 2
           done
