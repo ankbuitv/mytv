@@ -124,11 +124,11 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          cat << M3U_EOF > playlist.m3u
+          cat << 'M3U_EOF' > playlist.m3u
           #EXTM3U
           #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (HLS Direct FFmpeg)
-          ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
+          echo "${PUBLIC_URL}/hls/axn/master.m3u8" >> playlist.m3u
 
           gunicorn -w 2 --threads 4 -b 0.0.0.0:5000 app:app &
           sleep 2
@@ -147,16 +147,14 @@ jobs:
           while true; do
             echo "🎬 Running Stream Pipeline (Strict Sync Fix)..."
             
-            # Xóa sạch cache cũ
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
             
-            # Tạo master.m3u8 chuẩn
-            cat << MASTER_EOF > /dev/shm/hls/axn/master.m3u8
-#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
-index.m3u8
-MASTER_EOF
+            cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+          index.m3u8
+          MASTER_EOF
 
             ffmpeg -y -hide_banner -loglevel error -stats \
               -fflags +genpts+discardcorrupt \
