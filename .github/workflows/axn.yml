@@ -23,8 +23,8 @@ jobs:
 
       - name: Configure Nginx For HLS
         run: |
-          mkdir -p /dev/shm/hls/axn
-          cat << 'EOF' | sudo tee /tmp/nginx.conf
+          sudo mkdir -p /dev/shm/hls/axn
+          sudo tee /tmp/nginx.conf > /dev/null << 'EOF'
           worker_processes auto;
           events { worker_connections 2048; }
           http {
@@ -44,7 +44,7 @@ jobs:
                   }
               }
           }
-EOF
+          EOF
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -65,11 +65,11 @@ EOF
           rm -rf /dev/shm/hls/axn/*
           
           cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
-#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-STREAM-INF:BANDWIDTH=2000000
-index.m3u8
-MASTER_EOF
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=2000000
+          index.m3u8
+          MASTER_EOF
 
           # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
@@ -98,7 +98,7 @@ MASTER_EOF
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg (ĐÃ RÁP LỆNH COPY MỚI)
+          # 3. Vòng lặp FFmpeg (Copy Mode mượt nhẹ)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
