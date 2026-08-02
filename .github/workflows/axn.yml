@@ -65,12 +65,7 @@ jobs:
           mkdir -p /dev/shm/hls/axn
           rm -rf /dev/shm/hls/axn/*
           
-          cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
-#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-STREAM-INF:BANDWIDTH=2000000
-index.m3u8
-MASTER_EOF
+          printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
 
           # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
