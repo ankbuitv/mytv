@@ -14,12 +14,15 @@ jobs:
       - name: Install Dependencies & N_m3u8DL-RE
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
-          # Tải N_m3u8DL-RE (Bản Linux tự chứa không cần cài .NET)
-          curl -L "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_Beta_linux-x64_sc_20240728.tar.gz" -o nre.tar.gz
-          mkdir nre_folder
-          tar -xzf nre.tar.gz -C nre_folder
-          find nre_folder -name "N_m3u8DL-RE" -type f -exec sudo cp {} /usr/local/bin/ \;
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar wget grep
+          # Tải tự động N_m3u8DL-RE bản Linux mới nhất từ Github API (tránh lỗi 404)
+          curl -s https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases/latest \
+          | grep "browser_download_url.*linux-x64.*tar.gz" \
+          | head -n 1 \
+          | cut -d '"' -f 4 \
+          | wget -qi -
+          tar -xzf N_m3u8DL-RE_Beta_linux-x64*.tar.gz
+          find . -name "N_m3u8DL-RE" -type f -exec sudo cp {} /usr/local/bin/ \;
           sudo chmod +x /usr/local/bin/N_m3u8DL-RE
           
           # Tải Bore Tunnel & SSHX
@@ -106,7 +109,7 @@ jobs:
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
+          #EXT-X-STREAM-INF:BANDWIDTH=2000000
           index.m3u8
           MASTER_EOF
           
@@ -127,9 +130,15 @@ jobs:
           # Đợi 5 giây cho N_m3u8DL-RE tải được một chút dữ liệu
           sleep 5
           
-          # 2. FFmpeg đọc từ stream.pipe, dùng -c copy (không re-encode tốn CPU) đóng gói HLS
-          ffmpeg -y -hide_banner -loglevel error -stats -re -i stream.pipe \
-          -c copy \
+          # 2. FFmpeg đọc từ stream.pipe. Copy Video, Re-encode Audio để fix DTS lỗi
+          ffmpeg -y -hide_banner -loglevel error -stats -re \
+          -fflags +genpts+discardcorrupt+igndts \
+          -thread_queue_size 1024 \
+          -i stream.pipe \
+          -c:v copy \
+          -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -af "aresample=async=1000:first_pts=0" \
+          -muxdelay 0 -muxpreload 0 \
           -f hls \
           -hls_time 4 \
           -hls_list_size 6 \
