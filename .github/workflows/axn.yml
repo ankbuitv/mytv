@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (N_m3u8DL-RE Multi-thread)
+name: CHRTV AXN Restream (Direct FFmpeg Fast Edge)
 on:
   workflow_dispatch:
   schedule:
@@ -11,16 +11,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Dependencies & N_m3u8DL-RE
+      - name: Install Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar wget
-          # Tải N_m3u8DL-RE bản Linux Self-Contained
-          wget -q "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_Beta_linux-x64_sc_20240728.tar.gz" -O nre.tar.gz
-          tar -xzf nre.tar.gz
-          chmod +x N_m3u8DL-RE
-          
-          # Tải Bore Tunnel & SSHX
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
@@ -84,7 +78,7 @@ jobs:
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
           cat << M3U_EOF > /dev/shm/playlist.m3u
           #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Fast Fetch)
+          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Direct FFmpeg)
           ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
           
@@ -95,8 +89,7 @@ jobs:
           echo "===================================================="
           
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          CLEARKEY_KID="9d29f87efdec3c9fab368f724a62ad0e"
-          CLEARKEY_KEY="6f1c09c035eab36323d60d1454db3d20"
+          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           
           while true; do
             mkdir -p /dev/shm/hls/axn
@@ -108,45 +101,35 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # Tạo pipe (đường ống) để N_m3u8DL-RE xuất dữ liệu thẳng sang FFmpeg
-          rm -f stream.pipe
-          mkfifo stream.pipe
-          
-          # 1. N_m3u8DL-RE tải đa luồng (multi-thread) cực nhanh + bóc DRM
-          ./N_m3u8DL-RE "$STREAM_MPD" \
-          --live-pipe-mux \
-          --live-real-time-merge \
-          --live-keep-segments false \
-          --tmp-dir /dev/shm \
-          -sv best -sa best \
-          --key "${CLEARKEY_KID}:${CLEARKEY_KEY}" > stream.pipe 2>nre.log &
-          NRE_PID=$!
-          
-          # Đợi 5 giây cho N_m3u8DL-RE tải được một chút dữ liệu
-          sleep 5
-          
-          # 2. FFmpeg đọc từ stream.pipe. Dùng -c copy (KHÔNG ĐỤNG FRAME) + -re hãm nhịp
-          ffmpeg -y -hide_banner -loglevel error -stats -re \
+          # 🎯 FIX TỐC ĐỘ & DUP FRAME: Cắm ngay Live Edge + -c:v copy
+          ffmpeg -y -hide_banner -loglevel error -stats \
           -fflags +genpts+discardcorrupt \
-          -thread_queue_size 1024 \
-          -i stream.pipe \
-          -c copy \
+          -reconnect 1 \
+          -reconnect_streamed 1 \
+          -reconnect_on_network_error 1 \
+          -reconnect_on_http_error 404,408,429,5xx \
+          -rw_timeout 8000000 \
+          -live_start_index -1 \
+          -cenc_decryption_key "$CLEARKEY" \
+          -i "$STREAM_MPD" \
+          -map 0:v:1 \
+          -map 0:a:0 \
+          -c:v copy \
+          -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -af "aresample=async=1:first_pts=0" \
           -copytb 1 \
           -avoid_negative_ts make_zero \
           -max_interleave_delta 1000000 \
           -muxdelay 0 \
           -muxpreload 0 \
           -f hls \
-          -hls_time 4 \
+          -hls_time 2 \
           -hls_list_size 10 \
+          -hls_delete_threshold 5 \
           -hls_flags delete_segments+omit_endlist+temp_file \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%06d.ts" \
           /dev/shm/hls/axn/index.m3u8 || true
-          
-          # Dọn dẹp nếu FFmpeg bị văng
-          kill $NRE_PID || true
-          rm -f stream.pipe
           
           echo "⚠ Reconnecting in 5s..."
           sleep 5
