@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fixed Port 18080)
+name: CHRTV AXN Restream (Fixed Audio-Video Sync)
 on:
   workflow_dispatch:
   schedule:
@@ -59,7 +59,7 @@ jobs:
           TARGET_PORT=18080
           # ====================================================
 
-          # 1. Ép Bore chạy cố định đúng PORT 18080
+          # 1. Khóa cố định PORT 18080 qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
           (
             while true; do
@@ -86,7 +86,7 @@ jobs:
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg duy trì Stream
+          # 3. Vòng lặp FFmpeg duy trì Stream & Fix Sync tuyệt đối
           while true; do
             mkdir -p /dev/shm/hls/axn
             rm -f /dev/shm/hls/axn/*.ts /dev/shm/hls/axn/*.m3u8
@@ -98,7 +98,7 @@ jobs:
           index.m3u8
           MASTER_EOF
 
-            # FFmpeg encode siêu nhẹ sửa timestamp
+            # 🎯 Cấu hình chống lệch tiếng (fps=25 + -g 50 + -af aresample=async=1000)
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -fflags +genpts+discardcorrupt \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
@@ -107,9 +107,11 @@ jobs:
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -vf "scale=-2:720" \
+              -vf "scale=-2:720,fps=25" \
               -c:v libx264 -preset ultrafast -tune zerolatency -crf 26 \
-              -c:a aac -b:a 128k -ar 44100 -ac 2 \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -af "aresample=async=1000" \
               -bsf:a aac_adtstoasc \
               -f hls \
               -hls_time 4 \
