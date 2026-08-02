@@ -101,9 +101,9 @@ jobs:
           index.m3u8
           MASTER_EOF
           
-          # 🎯 Code kết hợp từ gợi ý của bạn bè Philippines + Tối ưu GitHub Actions
+          # 🎯 FIX LỆCH A/V: Bỏ igndts, Copy Video + Re-encode nhẹ Audio để đồng bộ cứng
           ffmpeg -y -hide_banner -loglevel error -stats \
-          -fflags +genpts+discardcorrupt+igndts \
+          -fflags +genpts+discardcorrupt \
           -re \
           -reconnect 1 \
           -reconnect_streamed 1 \
@@ -115,7 +115,8 @@ jobs:
           -map 0:v:0 \
           -map 0:a:0 \
           -c:v copy \
-          -c:a copy \
+          -c:a aac -b:a 128k -ar 48000 -ac 2 \
+          -af "aresample=async=1000:first_pts=0" \
           -copytb 1 \
           -avoid_negative_ts make_zero \
           -max_interleave_delta 1000000 \
