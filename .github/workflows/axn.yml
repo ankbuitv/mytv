@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream Final Fix
+name: CHRTV AXN Restream (N_m3u8DL-RE Pipe)
 on:
   workflow_dispatch:
   schedule:
@@ -11,10 +11,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Dependencies & Tools
+      - name: Install Dependencies & N_m3u8DL-RE
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
+          sudo apt-get install -y ffmpeg nginx curl dnsutils tar wget
+          # Tải N_m3u8DL-RE (bản Linux tự chứa, không cần cài .NET)
+          wget -q "https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_Beta_linux-x64_20240728.tar.gz" -O nre.tar.gz
+          tar -xzf nre.tar.gz
+          chmod +x N_m3u8DL-RE
+          
+          # Tải Bore Tunnel & SSHX
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
@@ -78,7 +84,7 @@ jobs:
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
           cat << M3U_EOF > /dev/shm/playlist.m3u
           #EXTM3U
-          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (Final Fixed)
+          #EXTINF:-1 tvg-id="AXN.vn" tvg-name="AXN HD" group-title="VN Live", AXN HD (N_m3u8DL-RE)
           ${PUBLIC_URL}/hls/axn/master.m3u8
           M3U_EOF
           
@@ -86,12 +92,11 @@ jobs:
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
           echo "🔑 SSHX URL : ${SSHX_URL}"
           echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
-          echo "👉 PLAYLIST URL : ${PUBLIC_URL}/playlist.m3u"
           echo "===================================================="
           
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
+          CLEARKEY_KID="9d29f87efdec3c9fab368f724a62ad0e"
+          CLEARKEY_KEY="6f1c09c035eab36323d60d1454db3d20"
           
           while true; do
             mkdir -p /dev/shm/hls/axn
@@ -99,42 +104,39 @@ jobs:
             cat << 'MASTER_EOF' > /dev/shm/hls/axn/master.m3u8
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720
+          #EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
           index.m3u8
           MASTER_EOF
           
-          # 🎯 TỔ HỢP CHUẨN XÁC: Wallclock + Realtime + Temp File
-          ffmpeg -y -hide_banner -loglevel error -stats \
-          -rw_timeout 10000000 \
-          -use_wallclock_as_timestamps 1 \
-          -re \
-          -thread_queue_size 512 \
-          -err_detect ignore_err \
-          -fflags +genpts+discardcorrupt+igndts \
-          -user_agent "$USER_AGENT" \
-          -headers "Referer: https://mytvnet.vn/" \
-          -cenc_decryption_key "$CLEARKEY" \
-          -i "$STREAM_MPD" \
-          -map 0:v:0 -map 0:a:0 \
-          -vf "scale=1280:720,fps=25,setpts=PTS-STARTPTS" \
-          -af "aresample=async=1000:first_pts=0,asetpts=PTS-STARTPTS" \
-          -c:v libx264 -preset veryfast -tune zerolatency \
-          -profile:v baseline -level 3.0 -pix_fmt yuv420p \
-          -g 50 -keyint_min 50 -sc_threshold 0 \
-          -b:v 1000k -maxrate 1200k -bufsize 2000k \
-          -c:a aac -b:a 128k -ar 48000 -ac 2 \
-          -avoid_negative_ts make_zero \
-          -muxdelay 0 -muxpreload 0 \
-          -max_muxing_queue_size 2048 \
+          # Tạo pipe (đường ống) để N_m3u8DL-RE xuất dữ liệu thẳng sang FFmpeg
+          mkfifo stream.pipe
+          
+          # 1. Chạy N_m3u8DL-RE ngầm, giải mã DRM và xuất ra stream.pipe
+          ./N_m3u8DL-RE "$STREAM_MPD" \
+          --live-pipe-mux \
+          -sv best -sa best \
+          -K "${CLEARKEY_KID}:${CLEARKEY_KEY}" > stream.pipe 2>nre.log &
+          NRE_PID=$!
+          
+          # Đợi 3 giây cho N_m3u8DL-RE tải được một chút dữ liệu
+          sleep 3
+          
+          # 2. FFmpeg đọc từ stream.pipe, dùng -c copy (không re-encode tốn CPU) đóng gói HLS
+          ffmpeg -y -hide_banner -loglevel error -stats -re -i stream.pipe \
+          -c copy \
           -f hls \
-          -hls_time 2 \
+          -hls_time 4 \
           -hls_list_size 6 \
-          -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+          -hls_flags delete_segments+omit_endlist \
           -hls_segment_type mpegts \
           -hls_segment_filename "/dev/shm/hls/axn/seg_%03d.ts" \
           -start_number 1 \
           /dev/shm/hls/axn/index.m3u8 || true
           
-          echo "⚠ Reconnecting in 3s..."
-          sleep 3
+          # Dọn dẹp nếu FFmpeg bị văng
+          kill $NRE_PID || true
+          rm -f stream.pipe
+          
+          echo "⚠ Reconnecting in 5s..."
+          sleep 5
           done
