@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Cloudflare Tunnel + Zero-CPU HLS)
+name: CHRTV AXN Restream (Fixed Cloudflare Domain Engine)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg nginx curl tar
-          # Cài đặt Cloudflare Tunnel (cloudflared) chính chủ
+          # Cài cloudflared chính chủ
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
@@ -69,49 +69,20 @@ jobs:
 
           sudo systemctl restart nginx
 
-      - name: Start Restream & Cloudflare Tunnel Engine
+      - name: Start Restream & Cloudflare Fixed Tunnel
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           CLEARKEY: ${{ secrets.CLEARKEY }}
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
         run: |
-          # 1. Bật Cloudflare Quick Tunnel forward cổng 5000 của Nginx
-          echo "🚀 Starting Cloudflare Tunnel..."
-          cloudflared tunnel --url http://localhost:5000 > /tmp/tunnel.log 2>&1 &
-          sleep 8
-
-          # Tách lấy URL Tunnel HTTPS công cộng do Cloudflare cấp
-          TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/tunnel.log | head -n 1)
-          echo "🔗 Cloudflare Public Tunnel URL: ${TUNNEL_URL}"
-
-          # 2. Cập nhật CNAME Cloudflare Domain (Mây cam Proxied) trỏ vào Quick Tunnel
-          if [ -n "${TUNNEL_URL}" ]; then
-            TUNNEL_HOST=$(echo "${TUNNEL_URL}" | sed 's/https:\/\///')
-            echo "🌐 Updating Cloudflare CNAME Record for ${CF_SUBDOMAIN} -> ${TUNNEL_HOST}..."
-            
-            RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" | jq -r '.result[0].id')
-
-            if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-                -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${TUNNEL_HOST}\",\"ttl\":120,\"proxied\":true}" > /dev/null
-            else
-              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-                -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${TUNNEL_HOST}\",\"ttl\":120,\"proxied\":true}" > /dev/null
-            fi
-            echo "✅ DNS updated successfully!"
-          fi
+          # 1. Kích hoạt Cloudflare Fixed Tunnel bằng Token
+          echo "🚀 Connecting Fixed Cloudflare Tunnel..."
+          cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" > /dev/null 2>&1 &
+          sleep 3
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # 3. Chạy FFmpeg Pass-Through HLS (-c copy) -> Cực mát CPU, phát Live chuẩn 100%
+          # 2. FFmpeg HLS Pass-through (-c copy) -> CPU ~0%, Live continuous
           while true; do
             echo "🚀 Starting FFmpeg Zero-CPU HLS Stream..."
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
