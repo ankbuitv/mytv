@@ -21,11 +21,11 @@ jobs:
           curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/
 
-      - name: Configure Nginx For HLS
+      - name: Configure Nginx For HLS High Bandwidth
         run: |
           sudo mkdir -p /dev/shm/hls/axn
           sudo chmod -R 777 /dev/shm/hls
-          printf 'worker_processes auto;\nevents { worker_connections 2048; }\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65s;\n    server {\n        listen 5000 default_server;\n        server_name _;\n        location / {\n            root /dev/shm;\n            add_header Cache-Control "no-cache, no-store, must-revalidate";\n            add_header Access-Control-Allow-Origin *;\n            add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";\n        }\n    }\n}\n' | sudo tee /tmp/nginx.conf > /dev/null
+          printf 'worker_processes auto;\nevents { worker_connections 4096; }\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65s;\n    types_hash_max_size 2048;\n    server {\n        listen 5000 default_server;\n        server_name _;\n        location / {\n            root /dev/shm;\n            add_header Cache-Control "no-cache, no-store, must-revalidate";\n            add_header Access-Control-Allow-Origin *;\n            add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";\n        }\n    }\n}\n' | sudo tee /tmp/nginx.conf > /dev/null
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -89,31 +89,38 @@ jobs:
           echo "👉 STREAM PATH : /hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg (Re-encode Video để triệt hạ lỗi H.264 & Sync Audio)
+          # 3. Vòng lặp FFmpeg (Fix Dup Frame, Speed Drop & Audio Lock)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "► Đang chạy FFmpeg Restream (Full Clean Transcode)..."
+            echo "► Đang chạy FFmpeg Restream (Cấu hình Ultra-Smooth)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
+              -fflags +genpts+igndts+discardcorrupt \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 404,408,429,5xx \
               -rw_timeout 10000000 \
               -cenc_decryption_key "$CLEARKEY" \
+              -re \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 \
               -preset ultrafast \
               -tune zerolatency \
-              -crf 23 \
+              -profile:v baseline \
+              -r 25 \
               -g 50 -keyint_min 50 -sc_threshold 0 \
-              -c:a copy \
+              -fps_mode passthrough \
+              -c:a aac \
+              -ar 48000 \
+              -ac 2 \
+              -b:a 128k \
               -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 4 \
-              -hls_list_size 6 \
-              -hls_delete_threshold 3 \
-              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_list_size 5 \
+              -hls_delete_threshold 2 \
+              -hls_flags delete_segments+omit_endlist+discont_start+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
