@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fixed Engine)
+name: CHRTV AXN Restream (Nginx Direct MPEG-TS Engine)
 
 on:
   workflow_dispatch:
@@ -15,15 +15,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar
+          sudo apt-get install -y ffmpeg nginx curl tar
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
 
-      - name: Configure nginx for HLS
+      - name: Configure Nginx for Direct MPEG-TS
         run: |
-          sudo rm -rf /dev/shm/hls/axn
-          sudo mkdir -p /dev/shm/hls/axn
-          sudo chmod -R 777 /dev/shm/hls
+          sudo rm -rf /dev/shm/stream
+          sudo mkdir -p /dev/shm/stream
+          sudo chmod -R 777 /dev/shm/stream
 
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
@@ -41,24 +41,26 @@ jobs:
               sendfile on;
               tcp_nopush on;
               tcp_nodelay on;
-              keepalive_timeout 30;
+              keepalive_timeout 65;
 
               access_log off;
               error_log /dev/null crit;
-
-              gzip on;
-              gzip_types application/vnd.apple.mpegurl;
 
               server {
                   listen 5000 default_server;
                   server_name _;
 
                   location / {
-                      root /dev/shm;
+                      root /dev/shm/stream;
                       add_header Access-Control-Allow-Origin "*" always;
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
                       add_header Access-Control-Allow-Headers "*" always;
                       add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                      
+                      # Tối ưu cho luồng MPEG-TS
+                      types {
+                          video/mp2t ts;
+                      }
                   }
               }
           }
@@ -66,7 +68,7 @@ jobs:
 
           sudo systemctl restart nginx
 
-      - name: Start restream engine
+      - name: Start Restream Engine
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
@@ -75,28 +77,19 @@ jobs:
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           TARGET_PORT: "18080"
         run: |
-          rm -rf /dev/shm/hls/axn/*
-          mkdir -p /dev/shm/hls/axn
-
-          cat > /dev/shm/hls/axn/master.m3u8 << 'EOF'
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=1920x1080
-          index.m3u8
-          EOF
-
+          # Bật Bore Tunnel nối cổng 5000 của Nginx
           (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
           sleep 3
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "Starting FFmpeg Decryption & Restream..."
+            echo "🚀 Starting Direct MPEG-TS Stream to File..."
             
             # Tách lấy đúng 32 ký tự Key đằng sau dấu :
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
-            # ĐIỂM CỐT LÕI: -cenc_decryption_key PHẢI ĐẶT TRƯỚC -i
+            # FFmpeg cởi mã hóa CENC -> Copy Stream -> Ghi đè liên tục ra /dev/shm/stream/axn.ts
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
               -cenc_decryption_key "${DEC_KEY}" \
@@ -105,26 +98,11 @@ jobs:
               -probesize 10000000 -analyzeduration 10000000 \
               -i "${STREAM_MPD}" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 \
-              -preset ultrafast \
-              -tune zerolatency \
-              -profile:v baseline \
-              -r 25 \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v 1400k -maxrate 1600k -bufsize 3200k \
-              -c:a aac \
-              -ar 48000 \
-              -ac 2 \
-              -b:a 128k \
-              -avoid_negative_ts make_zero \
-              -f hls \
-              -hls_time 3 \
-              -hls_list_size 10 \
-              -hls_delete_threshold 3 \
-              -hls_flags delete_segments+omit_endlist+discont_start+independent_segments \
-              -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
-              "/dev/shm/hls/axn/index.m3u8" || true
+              -c:v copy \
+              -c:a copy \
+              -f mpegts \
+              "/dev/shm/stream/axn.ts" || true
 
-            echo "FFmpeg restarted in 2s..."
+            echo "⚠️ FFmpeg restarted in 2s..."
             sleep 2
           done
