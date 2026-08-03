@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fixed Sync - Stable)
+name: CHRTV AXN Restream (Nginx + Free Tunnel - No Card Required)
 
 on:
   workflow_dispatch:
@@ -45,27 +45,31 @@ jobs:
                   }
               }
           }
-          EOF
+EOF
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
-      - name: Start Restream & Fixed Port Tunnel
+      - name: Start Restream & Dynamic DNS Update
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
         run: |
           # ====================================================
           # 🔑 THÔNG SỐ CỐ ĐỊNH
           # ====================================================
-          DUCKDNS_DOMAIN="chrtv"
-          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
           CLEARKEY="6f1c09c035eab36323d60d1454db3d20"
           STREAM_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           TARGET_PORT=18080
           # ====================================================
 
+          # Tạo thư mục RAM & Master Playlist
           mkdir -p /dev/shm/hls/axn
           rm -rf /dev/shm/hls/axn/*
-
+          
           printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
 
+          # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
           (
             while true; do
@@ -76,61 +80,63 @@ jobs:
           ) &
           sleep 5
 
+          # 2. Lấy IP Bore và Cập nhật thẳng vào DNS Cloudflare (Thay cho DuckDNS)
           BORE_IP=$(dig +short bore.pub | tail -n1)
-          if [ -n "$BORE_IP" ]; then
-            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
-            echo -e "\n► Đã cập nhật DuckDNS ($BORE_IP) cho domain ${DUCKDNS_DOMAIN}.duckdns.org"
-          else
-            echo "❌ Không lấy được IP của bore.pub!"
-          fi
+          
+          if [ -n "$BORE_IP" ] && [ -n "$CF_API_TOKEN" ]; then
+            echo "► Đang cập nhật IP $BORE_IP lên Cloudflare Domain..."
+            
+            # Lấy Record ID nếu đã tồn tại
+            RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
 
-          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${TARGET_PORT}"
+            if [ -n "$RECORD_ID" ]; then
+              # Update record cũ
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}"
+            else
+              # Tạo record mới
+              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}"
+            fi
+            echo "✅ Cập nhật DNS Cloudflare thành công!"
+          else
+            echo "⚠ Không tìm thấy Token hoặc IP. Vui lòng kiểm tra lại Secrets!"
+          fi
 
           echo "===================================================="
           echo "🌐 CHRTV IPTV RESTREAM SERVER IS ONLINE!"
-          echo "👉 STREAM URL : ${PUBLIC_URL}/hls/axn/master.m3u8"
+          echo "👉 STREAM PATH : /hls/axn/master.m3u8"
           echo "===================================================="
 
+          # 3. Vòng lặp FFmpeg (Mã hóa siêu nhẹ + Keyframe ngắn chống giật lag)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # ====================================================
-          # 🎬 FFMPEG - GIỮ NGUYÊN QUAN HỆ THỜI GIAN VIDEO/AUDIO
-          # (copyts + start_at_zero => fix triệt để lệch tiếng/hình)
-          # ====================================================
           while true; do
-            echo "► Đang chạy FFmpeg (Sync Fixed Mode)..."
+            echo "► Đang chạy FFmpeg Restream..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
-              -analyzeduration 10000000 -probesize 10000000 \
-              -fflags +discardcorrupt \
-              -thread_queue_size 8192 \
-              -reconnect 1 \
-              -reconnect_streamed 1 \
-              -reconnect_on_network_error 1 \
-              -reconnect_on_http_error 404,408,429,500,502,503,504 \
-              -reconnect_delay_max 5 \
-              -rw_timeout 15000000 \
+              -fflags +genpts+discardcorrupt \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+              -reconnect_on_http_error 404,408,429,5xx \
+              -rw_timeout 10000000 \
               -cenc_decryption_key "$CLEARKEY" \
-              -copyts -start_at_zero \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 -preset veryfast -tune zerolatency \
-                -profile:v main -level 4.0 \
-                -b:v 2500k -maxrate 3000k -bufsize 5000k \
-                -g 50 -keyint_min 50 -sc_threshold 0 \
-                -force_key_frames "expr:gte(t,n_forced*2)" \
-                -r 25 \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
-              -af "aresample=async=1:min_hard_comp=0.100000:first_pts=0" \
-              -fps_mode cfr \
-              -max_muxing_queue_size 1024 \
-              -muxdelay 0 -muxpreload 0 \
+              -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -c:a copy \
+              -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 2 \
-              -hls_list_size 20 \
-              -hls_delete_threshold 10 \
-              -hls_flags delete_segments+omit_endlist+temp_file+independent_segments \
-              -hls_segment_type mpegts \
+              -hls_list_size 10 \
+              -hls_delete_threshold 5 \
+              -hls_flags delete_segments+omit_endlist+temp_file \
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
