@@ -1,9 +1,7 @@
-name: CHRTV AXN Restream Ultra Smooth
+name: CHRTV AXN Restream (Fixed Engine)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
 
 jobs:
   restream:
@@ -20,10 +18,8 @@ jobs:
           sudo apt-get install -y ffmpeg nginx curl dnsutils tar
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
-          bore --version || true
-          ffmpeg -version | head -n 1
 
-      - name: Configure nginx for Ultra Smooth HLS
+      - name: Configure nginx for HLS
         run: |
           sudo rm -rf /dev/shm/hls/axn
           sudo mkdir -p /dev/shm/hls/axn
@@ -32,7 +28,6 @@ jobs:
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
           pid /run/nginx.pid;
-          include /etc/nginx/modules-enabled/*.conf;
 
           events {
               worker_connections 4096;
@@ -51,14 +46,8 @@ jobs:
               access_log off;
               error_log /dev/null crit;
 
-              # Bật nén Gzip giúp playlist load xé gió
               gzip on;
               gzip_types application/vnd.apple.mpegurl;
-
-              types {
-                  application/vnd.apple.mpegurl m3u8;
-                  video/mp2t ts;
-              }
 
               server {
                   listen 5000 default_server;
@@ -70,18 +59,14 @@ jobs:
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
                       add_header Access-Control-Allow-Headers "*" always;
                       add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
-                      add_header Pragma "no-cache" always;
-                      add_header Expires "0" always;
-                      try_files $uri =404;
                   }
               }
           }
           EOF
 
-          sudo nginx -t
           sudo systemctl restart nginx
 
-      - name: Start restream and tunnel
+      - name: Start restream engine
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
@@ -90,66 +75,34 @@ jobs:
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           TARGET_PORT: "18080"
         run: |
-          set -u
-
-          if [ -z "${CLEARKEY:-}" ]; then
-            echo "Missing CLEARKEY GitHub secret."
-            exit 1
-          fi
-
           rm -rf /dev/shm/hls/axn/*
           mkdir -p /dev/shm/hls/axn
 
           cat > /dev/shm/hls/axn/master.m3u8 << 'EOF'
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=1920x1080,CODECS="avc1.42c028,mp4a.40.2"
+          #EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=1920x1080
           index.m3u8
           EOF
 
-          echo "Starting bore tunnel..."
-          (
-            while true; do
-              bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1
-              echo "Bore disconnected. Reconnecting in 2s..."
-              sleep 2
-            done
-          ) &
-
-          sleep 4
-
-          BORE_IP="$(dig +short bore.pub | tail -n1)"
-          if [ -n "${BORE_IP}" ] && [ -n "${CF_API_TOKEN:-}" ] && [ -n "${CF_ZONE_ID:-}" ] && [ -n "${CF_SUBDOMAIN:-}" ]; then
-            echo "Updating Cloudflare DNS..."
-            RECORD_ID="$(curl -fsS -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4 || true)"
-
-            if [ -n "${RECORD_ID}" ]; then
-              curl -fsS -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-                -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}" > /dev/null
-              echo "DNS updated."
-            else
-              echo "Cloudflare record not found. Skipping DNS update."
-            fi
-          else
-            echo "Cloudflare DNS env is incomplete. Skipping DNS update."
-          fi
-
-          echo "Restream URL: http://${CF_SUBDOMAIN:-127.0.0.1}:${TARGET_PORT}/hls/axn/master.m3u8"
+          (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
+          sleep 3
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "Starting FFmpeg restream (Anti-Lag Optimization)..."
+            echo "Starting FFmpeg Decryption & Restream..."
+            
+            # Tách lấy đúng 32 ký tự Key đằng sau dấu :
+            DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+
+            # ĐIỂM CỐT LÕI: -cenc_decryption_key PHẢI ĐẶT TRƯỚC -i
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
+              -cenc_decryption_key "${DEC_KEY}" \
               -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
               -probesize 10000000 -analyzeduration 10000000 \
-              -cenc_decryption_key "$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')" \
               -i "${STREAM_MPD}" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 \
@@ -172,6 +125,6 @@ jobs:
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
-            echo "FFmpeg stopped or failed. Restarting in 2s..."
+            echo "FFmpeg restarted in 2s..."
             sleep 2
           done
