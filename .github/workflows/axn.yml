@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fix Duplicate & Fix A-V Sync)
+name: CHRTV AXN Restream (Full Speed & Realtime Smooth)
 
 on:
   workflow_dispatch:
@@ -115,36 +115,34 @@ jobs:
 
           echo "===================================================="
           echo "🌐 CHRTV RESTREAM IS READY!"
-          echo "👉 URL: http://${CF_SUBDOMAIN}/hls/axn/master.m3u8"
+          echo "👉 URL (HTTP): http://${CF_SUBDOMAIN}:${TARGET_PORT}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. FFmpeg Engine - Khắc phục Dup Frame & AV Sync
+          # 3. FFmpeg Engine - Khóa cứng 25FPS & Smooth Speed 1.0x
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "► Đang chạy FFmpeg Restream (Fix Sync & Passthrough FPS)..."
+            echo "► Đang chạy FFmpeg Restream (Full Speed & Realtime Smooth)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
+              -probesize 10000000 -analyzeduration 10000000 \
               -cenc_decryption_key "$CLEARKEY" \
-              -re \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -fps_mode passthrough \
               -c:v libx264 \
               -preset ultrafast \
               -tune zerolatency \
               -profile:v baseline \
-              -b:v 1800k -maxrate 2200k -bufsize 3600k \
+              -r 25 \
               -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 2000k -maxrate 2500k -bufsize 5000k \
               -c:a aac \
-              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0" \
               -ar 48000 \
               -ac 2 \
               -b:a 128k \
               -avoid_negative_ts make_zero \
-              -fflags +genpts+discardcorrupt \
               -f hls \
               -hls_time 4 \
               -hls_list_size 5 \
@@ -153,6 +151,6 @@ jobs:
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
-            echo "⚠ FFmpeg tạm dừng/lỗi. Khởi động lại luồng sau 2s..."
+            echo "⚠ FFmpeg ngắt luồng. Thử lại sau 2s..."
             sleep 2
           done
