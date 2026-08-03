@@ -149,7 +149,7 @@ jobs:
               -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
               -probesize 10000000 -analyzeduration 10000000 \
-              -cenc_decryption_key "${CLEARKEY}" \
+              -cenc_decryption_key "$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')" \
               -i "${STREAM_MPD}" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 \
