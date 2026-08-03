@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Nginx Direct MPEG-TS Engine)
+name: CHRTV AXN Restream (Nginx M3U8 + Continuous TS Engine)
 
 on:
   workflow_dispatch:
@@ -19,12 +19,23 @@ jobs:
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
 
-      - name: Configure Nginx for Direct MPEG-TS
+      - name: Configure Nginx & Create Static M3U8
         run: |
           sudo rm -rf /dev/shm/stream
           sudo mkdir -p /dev/shm/stream
           sudo chmod -R 777 /dev/shm/stream
 
+          # 1. Tạo file index.m3u8 cố định chỉ trỏ vào axn.ts
+          cat << 'EOF' | sudo tee /dev/shm/stream/index.m3u8 > /dev/null
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-TARGETDURATION:10
+          #EXT-X-MEDIA-SEQUENCE:0
+          #EXTINF:10.0,
+          axn.ts
+          EOF
+
+          # 2. Cấu hình Nginx với MIME types chuẩn cho HLS & MPEG-TS
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
           pid /run/nginx.pid;
@@ -57,8 +68,8 @@ jobs:
                       add_header Access-Control-Allow-Headers "*" always;
                       add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
                       
-                      # Tối ưu cho luồng MPEG-TS
                       types {
+                          application/vnd.apple.mpegurl m3u8;
                           video/mp2t ts;
                       }
                   }
@@ -77,19 +88,17 @@ jobs:
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           TARGET_PORT: "18080"
         run: |
-          # Bật Bore Tunnel nối cổng 5000 của Nginx
           (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
           sleep 3
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "🚀 Starting Direct MPEG-TS Stream to File..."
+            echo "🚀 Starting Direct MPEG-TS Stream to RAM..."
             
-            # Tách lấy đúng 32 ký tự Key đằng sau dấu :
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
-            # FFmpeg cởi mã hóa CENC -> Copy Stream -> Ghi đè liên tục ra /dev/shm/stream/axn.ts
+            # FFmpeg xả luồng stream trực tiếp vào file axn.ts
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
               -cenc_decryption_key "${DEC_KEY}" \
