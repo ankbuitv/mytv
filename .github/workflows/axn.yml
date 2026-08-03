@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Nginx + Free Tunnel - No Card Required)
+name: CHRTV AXN Restream (Fix 308 Redirect & Smooth Stream)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo mkdir -p /dev/shm/hls/axn
           sudo chmod -R 777 /dev/shm/hls
-          printf 'worker_processes auto;\nevents { worker_connections 2048; }\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65s;\n    server {\n        listen 5000;\n        location / {\n            root /dev/shm;\n            add_header Cache-Control "no-cache, no-store, must-revalidate";\n            add_header Access-Control-Allow-Origin *;\n            add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";\n        }\n    }\n}\n' | sudo tee /tmp/nginx.conf > /dev/null
+          printf 'worker_processes auto;\nevents { worker_connections 2048; }\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65s;\n    server {\n        listen 5000 default_server;\n        server_name _;\n        location / {\n            root /dev/shm;\n            add_header Cache-Control "no-cache, no-store, must-revalidate";\n            add_header Access-Control-Allow-Origin *;\n            add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";\n        }\n    }\n}\n' | sudo tee /tmp/nginx.conf > /dev/null
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -66,27 +66,22 @@ jobs:
           if [ -n "$BORE_IP" ] && [ -n "$CF_API_TOKEN" ]; then
             echo "► Đang cập nhật IP $BORE_IP lên Cloudflare Domain..."
             
-            # Lấy Record ID nếu đã tồn tại
             RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
               -H "Content-Type: application/json" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4)
 
             if [ -n "$RECORD_ID" ]; then
-              # Update record cũ
               curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
                 -H "Authorization: Bearer ${CF_API_TOKEN}" \
                 -H "Content-Type: application/json" \
                 --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}"
             else
-              # Tạo record mới
               curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
                 -H "Authorization: Bearer ${CF_API_TOKEN}" \
                 -H "Content-Type: application/json" \
                 --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}"
             fi
             echo "✅ Cập nhật DNS Cloudflare thành công!"
-          else
-            echo "⚠ Không tìm thấy Token hoặc IP. Vui lòng kiểm tra lại Secrets!"
           fi
 
           echo "===================================================="
@@ -94,7 +89,7 @@ jobs:
           echo "👉 STREAM PATH : /hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg (Mã hóa siêu nhẹ + Keyframe ngắn chống giật lag)
+          # 3. Vòng lặp FFmpeg (Pass-Through Copy mượt mà, không bị dup frame)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
@@ -108,12 +103,11 @@ jobs:
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 -preset ultrafast -tune zerolatency -crf 28 \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -c:v copy \
               -c:a copy \
               -avoid_negative_ts make_zero \
               -f hls \
-              -hls_time 2 \
+              -hls_time 4 \
               -hls_list_size 10 \
               -hls_delete_threshold 5 \
               -hls_flags delete_segments+omit_endlist+temp_file \
