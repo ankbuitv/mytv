@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Ultra Stable & Low-Latency)
+name: CHRTV AXN Restream (Fix Realtime Sync & No Dup)
 
 on:
   workflow_dispatch:
@@ -26,11 +26,9 @@ jobs:
           sudo mkdir -p /dev/shm/hls/axn
           sudo chmod -R 777 /dev/shm/hls
 
-          # Config Nginx tối ưu tối đa cho HLS Streaming: Tắt buffer, mở CORS
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
           pid /run/nginx.pid;
-          include /etc/nginx/modules-enabled/*.conf;
 
           events {
               worker_connections 2048;
@@ -46,7 +44,6 @@ jobs:
               tcp_nodelay on;
               keepalive_timeout 15;
 
-              # Tắt log để tiết kiệm tài nguyên RAM/CPU
               access_log off;
               error_log /dev/null crit;
 
@@ -56,18 +53,11 @@ jobs:
 
                   location / {
                       root /dev/shm;
-                      
-                      # Tắt toàn bộ cache trên Nginx & Browser Client
                       add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0";
                       add_header Pragma "no-cache";
                       add_header Expires 0;
-                      
-                      # Cross-Origin cho IPTV Players (Tivi, PC, Phone)
                       add_header Access-Control-Allow-Origin *;
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
-                      
-                      # Tắt buffering để HLS segment push ngay lập tức
-                      proxy_buffering off;
                   }
               }
           }
@@ -89,11 +79,9 @@ jobs:
           TARGET_PORT=18080
           # ====================================================
 
-          # Làm sạch RAM Temp
           rm -rf /dev/shm/hls/axn/*
           mkdir -p /dev/shm/hls/axn
           
-          # Master Playlist
           printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
 
           # 1. Chạy Bore Tunnel giữ kết nối
@@ -129,36 +117,35 @@ jobs:
           echo "👉 URL: http://${CF_SUBDOMAIN}/hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. FFmpeg Engine Tối Ưu Tối Đa Luồng Live Stream
+          # 3. FFmpeg Engine Chuẩn Realtime & Zero Sync Delay
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "► Đang chạy FFmpeg Restream Engine..."
+            echo "► Đang chạy FFmpeg Restream (Realtime Stream - Perfect AV Sync)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
-              -fflags +genpts+igndts+discardcorrupt \
               -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -rw_timeout 10000000 \
               -cenc_decryption_key "$CLEARKEY" \
+              -re \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 \
               -preset ultrafast \
               -tune zerolatency \
               -profile:v baseline \
-              -r 25 \
-              -fps_mode cfr \
-              -b:v 1800k -maxrate 2200k -bufsize 3000k \
+              -b:v 1800k -maxrate 2200k -bufsize 3600k \
               -g 50 -keyint_min 50 -sc_threshold 0 \
               -c:a aac \
+              -af "aresample=async=1000" \
               -ar 48000 \
               -ac 2 \
               -b:a 128k \
               -avoid_negative_ts make_zero \
               -f hls \
-              -hls_time 3 \
-              -hls_list_size 6 \
-              -hls_delete_threshold 3 \
+              -hls_time 4 \
+              -hls_list_size 5 \
+              -hls_delete_threshold 2 \
               -hls_flags delete_segments+omit_endlist+discont_start+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
