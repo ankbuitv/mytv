@@ -47,7 +47,7 @@ jobs:
           mkdir -p /dev/shm/hls/axn
           rm -rf /dev/shm/hls/axn/*
           
-          printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
+          printf "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=2500000\nindex.m3u8\n" > /dev/shm/hls/axn/master.m3u8
 
           # 1. Khóa cố định PORT qua Bore
           echo "► Đang kết nối Bore tới cổng $TARGET_PORT..."
@@ -89,30 +89,31 @@ jobs:
           echo "👉 STREAM PATH : /hls/axn/master.m3u8"
           echo "===================================================="
 
-          # 3. Vòng lặp FFmpeg (Đã fix Bitstream Filter, AV-Sync & AnnexB Convert)
+          # 3. Vòng lặp FFmpeg (Re-encode Video để triệt hạ lỗi H.264 & Sync Audio)
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           while true; do
-            echo "► Đang chạy FFmpeg Restream..."
+            echo "► Đang chạy FFmpeg Restream (Full Clean Transcode)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "$USER_AGENT" \
-              -fflags +genpts+igndts+discardcorrupt \
-              -correct_ts_overflow 1 \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 404,408,429,5xx \
               -rw_timeout 10000000 \
               -cenc_decryption_key "$CLEARKEY" \
               -i "$STREAM_MPD" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v copy \
+              -c:v libx264 \
+              -preset ultrafast \
+              -tune zerolatency \
+              -crf 23 \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
               -c:a copy \
-              -bsf:v h264_mp4toannexb \
               -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 4 \
               -hls_list_size 6 \
               -hls_delete_threshold 3 \
-              -hls_flags delete_segments+omit_endlist+discont_start \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
