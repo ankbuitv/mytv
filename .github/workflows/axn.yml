@@ -1,7 +1,9 @@
-name: CHRTV AXN Restream (Friend's FFmpeg Engine)
+name: CHRTV AXN Restream Ultra Smooth
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
 
 jobs:
   restream:
@@ -18,8 +20,10 @@ jobs:
           sudo apt-get install -y ffmpeg nginx curl dnsutils tar
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
+          bore --version || true
+          ffmpeg -version | head -n 1
 
-      - name: Configure nginx for HLS
+      - name: Configure nginx for Ultra Smooth HLS
         run: |
           sudo rm -rf /dev/shm/hls/axn
           sudo mkdir -p /dev/shm/hls/axn
@@ -28,15 +32,33 @@ jobs:
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
           pid /run/nginx.pid;
+          include /etc/nginx/modules-enabled/*.conf;
 
           events {
-              worker_connections 2048;
+              worker_connections 4096;
+              multi_accept on;
           }
 
           http {
               include /etc/nginx/mime.types;
               default_type application/octet-stream;
+
               sendfile on;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 30;
+
+              access_log off;
+              error_log /dev/null crit;
+
+              # Bật nén Gzip giúp playlist load xé gió
+              gzip on;
+              gzip_types application/vnd.apple.mpegurl;
+
+              types {
+                  application/vnd.apple.mpegurl m3u8;
+                  video/mp2t ts;
+              }
 
               server {
                   listen 5000 default_server;
@@ -45,75 +67,111 @@ jobs:
                   location / {
                       root /dev/shm;
                       add_header Access-Control-Allow-Origin "*" always;
-                      add_header Cache-Control "no-cache";
+                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
+                      add_header Access-Control-Allow-Headers "*" always;
+                      add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                      add_header Pragma "no-cache" always;
+                      add_header Expires "0" always;
+                      try_files $uri =404;
                   }
               }
           }
           EOF
 
+          sudo nginx -t
           sudo systemctl restart nginx
 
-      - name: Start restream with Friend's Config
+      - name: Start restream and tunnel
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
-          AUTHORIZED_KEY: ${{ secrets.CLEARKEY }}
+          CLEARKEY: ${{ secrets.CLEARKEY }}
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
           TARGET_PORT: "18080"
         run: |
+          set -u
+
+          if [ -z "${CLEARKEY:-}" ]; then
+            echo "Missing CLEARKEY GitHub secret."
+            exit 1
+          fi
+
           rm -rf /dev/shm/hls/axn/*
           mkdir -p /dev/shm/hls/axn
 
           cat > /dev/shm/hls/axn/master.m3u8 << 'EOF'
           #EXTM3U
           #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=2200000
+          #EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=1920x1080,CODECS="avc1.42c028,mp4a.40.2"
           index.m3u8
           EOF
 
-          (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
-          sleep 3
+          echo "Starting bore tunnel..."
+          (
+            while true; do
+              bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1
+              echo "Bore disconnected. Reconnecting in 2s..."
+              sleep 2
+            done
+          ) &
 
-          echo "Restream Link: http://${CF_SUBDOMAIN}:${TARGET_PORT}/hls/axn/master.m3u8"
+          sleep 4
+
+          BORE_IP="$(dig +short bore.pub | tail -n1)"
+          if [ -n "${BORE_IP}" ] && [ -n "${CF_API_TOKEN:-}" ] && [ -n "${CF_ZONE_ID:-}" ] && [ -n "${CF_SUBDOMAIN:-}" ]; then
+            echo "Updating Cloudflare DNS..."
+            RECORD_ID="$(curl -fsS -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" | grep -o '"id":"[^"]*' | head -n1 | cut -d'"' -f4 || true)"
+
+            if [ -n "${RECORD_ID}" ]; then
+              curl -fsS -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${BORE_IP}\",\"ttl\":120,\"proxied\":false}" > /dev/null
+              echo "DNS updated."
+            else
+              echo "Cloudflare record not found. Skipping DNS update."
+            fi
+          else
+            echo "Cloudflare DNS env is incomplete. Skipping DNS update."
+          fi
+
+          echo "Restream URL: http://${CF_SUBDOMAIN:-127.0.0.1}:${TARGET_PORT}/hls/axn/master.m3u8"
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # 🚀 ĐÂY LÀ LỆNH FFMPEG THEO Ý BẠN BRO:
           while true; do
+            echo "Starting FFmpeg restream (Anti-Lag Optimization)..."
             ffmpeg -y -hide_banner -loglevel warning -stats \
-              -user_agent "$USER_AGENT" \
-              -fflags +genpts+discardcorrupt \
-              -err_detect ignore_err \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -user_agent "${USER_AGENT}" \
+              -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
-              -cenc_decryption_key "$AUTHORIZED_KEY" \
-              -i "$STREAM_MPD" \
+              -probesize 10000000 -analyzeduration 10000000 \
+              -cenc_decryption_key "${CLEARKEY}" \
+              -i "${STREAM_MPD}" \
               -map 0:v:0 -map 0:a:0 \
               -c:v libx264 \
-              -preset veryfast \
+              -preset ultrafast \
               -tune zerolatency \
-              -profile:v main \
-              -level 4.0 \
-              -pix_fmt yuv420p \
-              -b:v 1800k -maxrate 2200k -bufsize 4400k \
+              -profile:v baseline \
+              -r 25 \
               -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 1400k -maxrate 1600k -bufsize 3200k \
               -c:a aac \
               -ar 48000 \
               -ac 2 \
               -b:a 128k \
-              -af "aresample=async=1000:first_pts=0" \
-              -max_muxing_queue_size 4096 \
               -avoid_negative_ts make_zero \
               -f hls \
               -hls_time 3 \
-              -hls_list_size 8 \
-              -hls_delete_threshold 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+program_date_time \
-              -hls_start_number_source epoch \
+              -hls_list_size 10 \
+              -hls_delete_threshold 3 \
+              -hls_flags delete_segments+omit_endlist+discont_start+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%06d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
-            echo "FFmpeg restart in 2s..."
+            echo "FFmpeg stopped or failed. Restarting in 2s..."
             sleep 2
           done
