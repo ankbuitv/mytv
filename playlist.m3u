@@ -410,6 +410,9 @@ https://a-cdn.klowdtv.com/live3/clubbingtv_720p/playlist.m3u8
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 http://chrtv.duckdns.org:55801/stream/USA_CRIME_INVESTIGATION/index.m3u8
 
+#EXTINF:-1 tvg-id="outdoor" group-title="🎬 BOX - Giải trí" tvg-logo="https://images.fptplay53.net/media/channels/icon_channel_outdoor-channel_165649323545.png", Outdoor Channel
+#EXTVLCOPT:http-user-agent=VThanhTivi
+https://live.fptplay53.net/epzhd2/outdoorfhd_vhls.smil/chunklist_b5000000.m3u8
 
 #EXTINF:-1 tvg-id="animalplanet" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Animal Planet
 http://198.58.104.90:8989/animalplanet/index.m3u8
@@ -556,7 +559,12 @@ https://vmttv.dpdns.org/tv360/?id=tv360-11
 https://vmttv.dpdns.org/tv360/?id=tv360-12
 
 
-#EXTINF:-1 tvg-id="spotv-2" group-title="⚽ SPORTS - Thể thao" tvg-logo="https://img-ali1.tv360.vn/image1/2026/03/05/10/1772681417916/2433e49579ab_640_360.png", SpoTV2
+#EXTINF:-1 tvg-id="spotv-2" group-title="⚽ SPORTS - Thể thao" , SpoTV1
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 #EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
-https://thinkkast.dpdns.org/tkk-ph/i7/dr_spotv2hd/spotv-2-hd.m3u8
+https://thinkkast.dpdns.org/thinkkast/cg_spotvhd/versiglia/index.m3u8
+
+#EXTINF:-1 tvg-id="spotv-2" group-title="⚽ SPORTS - Thể thao" , SpoTV1
+#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)
+#EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
+https://thinkkast.dpdns.org/thinkkast/dr_spotv2hd/versiglia/index.m3u8
