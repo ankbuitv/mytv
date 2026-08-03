@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Nginx M3U8 + Auto Cloudflare DNS)
+name: CHRTV AXN Restream (Cloudflare Tunnel + Zero-CPU HLS)
 
 on:
   workflow_dispatch:
@@ -15,27 +15,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl dnsutils tar jq
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          sudo mv bore /usr/local/bin/bore
+          sudo apt-get install -y ffmpeg nginx curl tar
+          # Cài đặt Cloudflare Tunnel (cloudflared) chính chủ
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
-      - name: Configure Nginx & Create Static M3U8
+      - name: Configure Nginx for Real HLS
         run: |
-          sudo rm -rf /dev/shm/stream
-          sudo mkdir -p /dev/shm/stream
-          sudo chmod -R 777 /dev/shm/stream
+          sudo rm -rf /dev/shm/hls/axn
+          sudo mkdir -p /dev/shm/hls/axn
+          sudo chmod -R 777 /dev/shm/hls
 
-          # 1. Tạo file index.m3u8 cố định trỏ vào axn.ts
-          cat << 'EOF' | sudo tee /dev/shm/stream/index.m3u8 > /dev/null
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-TARGETDURATION:10
-          #EXT-X-MEDIA-SEQUENCE:0
-          #EXTINF:10.0,
-          axn.ts
-          EOF
-
-          # 2. Cấu hình Nginx
           cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
           worker_processes auto;
           pid /run/nginx.pid;
@@ -62,7 +52,7 @@ jobs:
                   server_name _;
 
                   location / {
-                      root /dev/shm/stream;
+                      root /dev/shm/hls/axn;
                       add_header Access-Control-Allow-Origin "*" always;
                       add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
                       add_header Access-Control-Allow-Headers "*" always;
@@ -79,49 +69,51 @@ jobs:
 
           sudo systemctl restart nginx
 
-      - name: Start Restream & Auto Cloudflare DNS
+      - name: Start Restream & Cloudflare Tunnel Engine
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
           CLEARKEY: ${{ secrets.CLEARKEY }}
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          TARGET_PORT: "18080"
         run: |
-          # 1. Bật Bore Tunnel nối cổng 5000 ra Target Port
-          (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
-          sleep 3
+          # 1. Bật Cloudflare Quick Tunnel forward cổng 5000 của Nginx
+          echo "🚀 Starting Cloudflare Tunnel..."
+          cloudflared tunnel --url http://localhost:5000 > /tmp/tunnel.log 2>&1 &
+          sleep 8
 
-          # 2. TỰ ĐỘNG CẬP NHẬT CLOUDFLARE DNS (MÂY XÁM - DNS ONLY ĐỂ KHÔNG BỊ BÓP PORT 18080)
-          echo "🌐 Updating Cloudflare DNS for ${CF_SUBDOMAIN}..."
-          
-          # Tìm Record ID hiện tại trên Cloudflare
-          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" | jq -r '.result[0].id')
+          # Tách lấy URL Tunnel HTTPS công cộng do Cloudflare cấp
+          TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' /tmp/tunnel.log | head -n 1)
+          echo "🔗 Cloudflare Public Tunnel URL: ${TUNNEL_URL}"
 
-          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-            # Cập nhật CNAME Record trỏ về bore.pub (proxied: false để dùng port 18080 thoải mái)
-            curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+          # 2. Cập nhật CNAME Cloudflare Domain (Mây cam Proxied) trỏ vào Quick Tunnel
+          if [ -n "${TUNNEL_URL}" ]; then
+            TUNNEL_HOST=$(echo "${TUNNEL_URL}" | sed 's/https:\/\///')
+            echo "🌐 Updating Cloudflare CNAME Record for ${CF_SUBDOMAIN} -> ${TUNNEL_HOST}..."
+            
+            RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}" > /dev/null
-            echo "✅ Cloudflare DNS updated successfully!"
-          else
-            # Nếu chưa có thì tạo mới
-            curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}" > /dev/null
-            echo "✅ Created new Cloudflare DNS Record!"
+              -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+            if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${TUNNEL_HOST}\",\"ttl\":120,\"proxied\":true}" > /dev/null
+            else
+              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"${TUNNEL_HOST}\",\"ttl\":120,\"proxied\":true}" > /dev/null
+            fi
+            echo "✅ DNS updated successfully!"
           fi
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # 3. Chạy FFmpeg Direct Copy
+          # 3. Chạy FFmpeg Pass-Through HLS (-c copy) -> Cực mát CPU, phát Live chuẩn 100%
           while true; do
-            echo "🚀 Starting Direct MPEG-TS Stream to RAM..."
-            
+            echo "🚀 Starting FFmpeg Zero-CPU HLS Stream..."
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
             ffmpeg -y -hide_banner -loglevel warning -stats \
@@ -134,8 +126,12 @@ jobs:
               -map 0:v:0 -map 0:a:0 \
               -c:v copy \
               -c:a copy \
-              -f mpegts \
-              "/dev/shm/stream/axn.ts" || true
+              -f hls \
+              -hls_time 3 \
+              -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_segment_filename "/dev/shm/hls/axn/seg%05d.ts" \
+              "/dev/shm/hls/axn/index.m3u8" || true
 
             echo "⚠️ FFmpeg restarted in 2s..."
             sleep 2
