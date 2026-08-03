@@ -25,27 +25,7 @@ jobs:
         run: |
           sudo mkdir -p /dev/shm/hls/axn
           sudo chmod -R 777 /dev/shm/hls
-          sudo tee /tmp/nginx.conf > /dev/null << 'EOF'
-          worker_processes auto;
-          events { worker_connections 2048; }
-          http {
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
-              sendfile on;
-              tcp_nopush on;
-              tcp_nodelay on;
-              keepalive_timeout 65s;
-              server {
-                  listen 5000;
-                  location / {
-                      root /dev/shm;
-                      add_header Cache-Control "no-cache, no-store, must-revalidate";
-                      add_header Access-Control-Allow-Origin *;
-                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";
-                  }
-              }
-          }
-EOF
+          printf 'worker_processes auto;\nevents { worker_connections 2048; }\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65s;\n    server {\n        listen 5000;\n        location / {\n            root /dev/shm;\n            add_header Cache-Control "no-cache, no-store, must-revalidate";\n            add_header Access-Control-Allow-Origin *;\n            add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD";\n        }\n    }\n}\n' | sudo tee /tmp/nginx.conf > /dev/null
           sudo systemctl stop nginx || true
           sudo nginx -c /tmp/nginx.conf
 
@@ -80,7 +60,7 @@ EOF
           ) &
           sleep 5
 
-          # 2. Lấy IP Bore và Cập nhật thẳng vào DNS Cloudflare (Thay cho DuckDNS)
+          # 2. Lấy IP Bore và Cập nhật thẳng vào DNS Cloudflare
           BORE_IP=$(dig +short bore.pub | tail -n1)
           
           if [ -n "$BORE_IP" ] && [ -n "$CF_API_TOKEN" ]; then
