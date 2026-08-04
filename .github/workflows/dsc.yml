@@ -1,0 +1,222 @@
+name: CHRTV Discovery Restream (Final Fixed Engine)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mpd_url:
+        description: DASH/CENC MPD URL
+        required: true
+        default: https://s7770.cdn.mytvnet.vn/pkg20/live_dzones/dsc.smil/manifest.mpd
+      clearkey_api:
+        description: ClearKey License API
+        required: false
+        default: https://sgchill.duckdns.org/tv/clearkey.php?id=discovery
+      bore_port:
+        description: Optional Bore port. Leave empty to auto-pick a free port.
+        required: false
+      udp_port:
+        description: Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.
+        required: false
+      udp_target:
+        description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
+        required: false
+
+jobs:
+  restream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------
+      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
+      # ----------------------------------------------------
+      - name: Connect to Tailscale Network
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Install dependencies & Stream Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg nginx curl tar jq python3-pip
+          pip3 install --break-system-packages yt-dlp streamlink
+          
+          # Install Bore Tunnel
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          sudo mv bore /usr/local/bin/bore
+          sudo chmod +x /usr/local/bin/bore
+
+      - name: Configure Nginx for HLS delivery
+        run: |
+          sudo rm -rf /dev/shm/hls/discovery
+          sudo mkdir -p /dev/shm/hls/discovery
+          sudo chmod -R 777 /dev/shm/hls
+
+          cat <<'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
+          worker_processes auto;
+          pid /run/nginx.pid;
+
+          events {
+              worker_connections 8192;
+              multi_accept on;
+              use epoll;
+          }
+
+          http {
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+
+              sendfile off;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 30;
+              access_log off;
+              error_log /dev/null crit;
+
+              server {
+                  listen 5000 default_server;
+                  server_name _;
+
+                  location / {
+                      root /dev/shm/hls/discovery;
+
+                      add_header Access-Control-Allow-Origin "*" always;
+                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
+                      add_header Access-Control-Allow-Headers "*" always;
+
+                      location ~* \.m3u8$ {
+                          add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                      }
+
+                      location ~* \.ts$ {
+                          add_header Cache-Control "public, max-age=31536000, immutable" always;
+                      }
+
+                      types {
+                          application/vnd.apple.mpegurl m3u8;
+                          video/mp2t ts;
+                      }
+                  }
+              }
+          }
+          EOF
+
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl restart nginx || true
+          else
+            sudo service nginx restart || sudo nginx
+          fi
+
+      - name: Start Restream Engine & Auto Update DNS
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
+          CLEARKEY_API: ${{ github.event.inputs.clearkey_api }}
+          TARGET_PORT: ${{ github.event.inputs.bore_port }}
+          UDP_PORT: ${{ github.event.inputs.udp_port }}
+          UDP_TARGET: ${{ github.event.inputs.udp_target }}
+          STREAM_MPD: ${{ github.event.inputs.mpd_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${TARGET_PORT}" ]; then
+            BORE_PORT="${TARGET_PORT}"
+          else
+            BORE_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0", 0)); print(s.getsockname()[1]); s.close()')"
+          fi
+
+          echo "🚀 Starting Bore tunnel on port ${BORE_PORT}..."
+          (while true; do
+            bore local 5000 --to bore.pub --port "${BORE_PORT}" >> /tmp/bore.log 2>&1
+            sleep 2
+          done) &
+          sleep 5
+
+          echo "🌐 Cleaning existing Cloudflare DNS records..."
+          FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
+
+          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
+            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" > /dev/null
+          fi
+
+          CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
+
+          # Lấy User-Agent Dalvik đúng với nguồn IPTV
+          USER_AGENT="Dalvik/2.1.0 (Linux; U; Android 9; SM-G960F Build/PPR1.180610.011)"
+          HEADERS_FFMPEG=$'Referer: https://mytvnet.vn/\r\nOrigin: https://mytvnet.vn\r\n'
+          HLS_DIR="/dev/shm/hls/discovery"
+          mkdir -p "$HLS_DIR"
+
+          # Tải ClearKey tự động từ API
+          echo "🔑 Fetching ClearKey from License Server..."
+          RAW_KEY_RESP=$(curl -s -A "${USER_AGENT}" "${CLEARKEY_API}" || true)
+          
+          # Tách lấy đoạn HEX KEY duy nhất từ chuỗi KID:KEY hoặc JSON/Text
+          DEC_KEY=$(echo "$RAW_KEY_RESP" | grep -oE '[a-fA-F0-9]{32}:[a-fA-F0-9]{32}' | awk -F':' '{print $2}' | head -n1 || true)
+
+          if [ -z "$DEC_KEY" ]; then
+            # Trường hợp API trả về thẳng chuỗi Key duy nhất mà không có KID
+            DEC_KEY=$(echo "$RAW_KEY_RESP" | grep -oE '[a-fA-F0-9]{32}' | tail -n1 || true)
+          fi
+
+          echo "🔑 Resolved Decryption Key: ${DEC_KEY:0:6}***"
+
+          while true; do
+            echo "🔥 Starting Discovery FFmpeg Restream Engine..."
+
+            UDP_ARGS=()
+            if [ -n "${UDP_PORT}" ]; then
+              if [ -n "${UDP_TARGET}" ]; then
+                UDP_DEST="${UDP_TARGET}:${UDP_PORT}"
+              else
+                UDP_DEST="127.0.0.1:${UDP_PORT}"
+              fi
+              echo "🌊 Setting up parallel RTP MPEG-TS stream to rtp://${UDP_DEST}"
+              UDP_ARGS=(
+                -map "0:v:0?" -map "0:a:0?"
+                -c copy
+                -f rtp_mpegts "rtp://${UDP_DEST}?pkt_size=1316"
+              )
+            fi
+
+            ffmpeg -y -hide_banner -loglevel warning -stats \
+              -user_agent "${USER_AGENT}" \
+              -headers "${HEADERS_FFMPEG}" \
+              -cenc_decryption_key "${DEC_KEY}" \
+              -rw_timeout 15000000 \
+              -err_detect ignore_err \
+              -fflags +genpts+discardcorrupt+nobuffer \
+              -i "${STREAM_MPD}" \
+              -map "0:v:0?" -map "0:a:0?" \
+              -c:v libx264 \
+              -preset ultrafast \
+              -tune zerolatency \
+              -profile:v main \
+              -pix_fmt yuv420p \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -c:a copy \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 6 \
+              -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
+              -hls_flags delete_segments+append_list+omit_endlist \
+              "${HLS_DIR}/index.m3u8" \
+              "${UDP_ARGS[@]}" || true
+
+            echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
+            sleep 3
+          done
