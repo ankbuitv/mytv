@@ -116,16 +116,7 @@ jobs:
           if [ -n "${TARGET_PORT}" ]; then
             BORE_PORT="${TARGET_PORT}"
           else
-            BORE_PORT="$(python3 - <<'PY'
-import socket
-s = socket.socket()
-try:
-    s.bind(("0.0.0.0", 0))
-    print(s.getsockname()[1])
-finally:
-    s.close()
-PY
-)"
+            BORE_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0", 0)); print(s.getsockname()[1]); s.close()')"
           fi
 
           echo "🚀 Starting Bore tunnel on port ${BORE_PORT}..."
@@ -167,9 +158,32 @@ PY
 
           while true; do
             echo "🔥 Starting resilient FFmpeg Engine..."
-            rm -rf "$HLS_DIR"/*
 
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+
+            # Tối ưu cờ FFmpeg dùng chung cho cả 2 nhánh
+            FFMPEG_COMMON_ARGS=(
+              -y -hide_banner -loglevel warning -stats
+              -threads 0
+              -user_agent "${USER_AGENT}"
+              -cenc_decryption_key "${DEC_KEY}"
+              -analyzeduration 10M -probesize 10M
+              -err_detect ignore_err
+              -fflags +genpts+discardcorrupt+igndts+fastseek
+              -flags +low_delay
+              -max_delay 500000
+              -i "${STREAM_MPD}"
+              -map 0:v:0? -map 0:a:0?
+              -c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0
+              -c:a aac -b:a 128k -ar 48000
+              -vf "fps=25,setpts=PTS-STARTPTS"
+              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS"
+              -g 25 -keyint_min 25 -sc_threshold 0
+              -hls_time 1 -hls_list_size 6 -hls_delete_threshold 3
+              -hls_segment_filename "${HLS_DIR}/seg_%06d.ts"
+              -hls_flags delete_segments+omit_endlist+discont_start+append_list
+              -f hls "${HLS_DIR}/index.m3u8"
+            )
 
             if [ -n "${UDP_PORT}" ]; then
               if [ -n "${UDP_TARGET}" ]; then
@@ -179,46 +193,9 @@ PY
               fi
 
               echo "🌊 Streaming UDP to ${UDP_DEST}"
-              ffmpeg -y -hide_banner -loglevel warning -stats \
-                -user_agent "${USER_AGENT}" \
-                -cenc_decryption_key "${DEC_KEY}" \
-                -analyzeduration 10M -probesize 10M \
-                -err_detect ignore_err \
-                -fflags +genpts+discardcorrupt+igndts+fastseek \
-                -flags +low_delay \
-                -max_delay 500000 \
-                -i "${STREAM_MPD}" \
-                -map 0:v:0? -map 0:a:0? \
-                -c:v libx264 -preset veryfast -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0 \
-                -c:a aac -b:a 128k -ar 48000 \
-                -vf "fps=25,setpts=PTS-STARTPTS" \
-                -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-                -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
-                -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-                -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
-                -hls_flags delete_segments+omit_endlist+discont_start+append_list \
-                -f hls "${HLS_DIR}/index.m3u8" \
-                -f mpegts "udp://${UDP_DEST}" || true
+              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" -f mpegts "udp://${UDP_DEST}" || true
             else
-              ffmpeg -y -hide_banner -loglevel warning -stats \
-                -user_agent "${USER_AGENT}" \
-                -cenc_decryption_key "${DEC_KEY}" \
-                -analyzeduration 10M -probesize 10M \
-                -err_detect ignore_err \
-                -fflags +genpts+discardcorrupt+igndts+fastseek \
-                -flags +low_delay \
-                -max_delay 500000 \
-                -i "${STREAM_MPD}" \
-                -map 0:v:0? -map 0:a:0? \
-                -c:v libx264 -preset veryfast -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0 \
-                -c:a aac -b:a 128k -ar 48000 \
-                -vf "fps=25,setpts=PTS-STARTPTS" \
-                -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-                -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
-                -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-                -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
-                -hls_flags delete_segments+omit_endlist+discont_start+append_list \
-                -f hls "${HLS_DIR}/index.m3u8" || true
+              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" || true
             fi
 
             echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
