@@ -114,6 +114,7 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           # 4. Chạy FFmpeg Engine - Khô máu tài nguyên, ép FPS & Khóa A/V Sync tuyệt đối
+          # 4. Chạy FFmpeg Engine - Khô máu tài nguyên, ép FPS & Khóa A/V Sync tuyệt đối
           while true; do
             echo "🔥 Starting ULTRA-ROBUST FFmpeg Stream Engine..."
             
@@ -133,6 +134,7 @@ jobs:
               -vf "fps=25,setpts=PTS-STARTPTS" \
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
               -c:v libx264 -preset veryfast -profile:v high -level 4.1 -tune zerolatency \
+              -flags +cgop \
               -threads 0 \
               -crf 23 -maxrate 3000k -bufsize 6000k \
               -g 50 -keyint_min 50 -sc_threshold 0 \
@@ -141,7 +143,7 @@ jobs:
               -f hls \
               -hls_time 2 \
               -hls_list_size 12 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+cgop \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%05d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
