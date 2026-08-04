@@ -1,4 +1,4 @@
-name: CHRTV Discovery Restream (Final Fixed Engine)
+name: CHRTV Discovery Restream (Fixed Port 54115)
 
 on:
   workflow_dispatch:
@@ -12,15 +12,15 @@ on:
         required: false
         default: 'https://sgchill.duckdns.org/tv/clearkey.php?id=discovery'
       bore_port:
-        description: 'Optional Bore port. Leave empty to auto-pick a free port.'
+        description: 'Fixed Bore public port'
         required: false
         default: '54115'
       udp_port:
-        description: 'Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.'
+        description: 'Optional RTP output port (e.g. 14214).'
         required: false
         default: '14214'
       udp_target:
-        description: 'Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.'
+        description: 'Target Tailscale IP'
         required: false
         default: '100.101.202.77'
 
@@ -127,36 +127,46 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Ép mặc định là 54115 nếu người dùng không truyền giá trị
+          FIXED_PORT="${TARGET_PORT:-54115}"
+
           # ----------------------------------------------------
-          # 🚀 KHỞI CHẠY BORE TUNNEL
+          # 🚀 KHỞI CHẠY BORE TUNNEL (FIXED PORT 54115)
           # ----------------------------------------------------
-          echo "🚀 Starting Bore tunnel..."
+          echo "🚀 Starting Bore tunnel on FIXED port: ${FIXED_PORT}..."
           rm -f /tmp/bore.log
 
-          if [ -n "${TARGET_PORT}" ]; then
-            echo "Attempting to bind requested port: ${TARGET_PORT}"
-            bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-            sleep 3
-          fi
+          # Thử kết nối cố định port 54115 (Loop retry nếu chưa giải phóng kịp)
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          REAL_BORE_PORT=""
 
-          REAL_BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log 2>/dev/null | cut -d':' -f2 | head -n1 || true)
-
-          if [ -z "$REAL_BORE_PORT" ]; then
-            echo "⚠️ Target port unavailable or not set. Requesting dynamic port from bore.pub..."
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             pkill bore || true
-            bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
-            sleep 4
+            sleep 1
+            
+            bore local 5000 --to bore.pub --port "${FIXED_PORT}" > /tmp/bore.log 2>&1 &
+            sleep 3
+
             REAL_BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log 2>/dev/null | cut -d':' -f2 | head -n1 || true)
-          fi
+            
+            if [ -n "$REAL_BORE_PORT" ]; then
+              break
+            fi
+
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            echo "⚠️ Port ${FIXED_PORT} is busy or waiting for reset. Retrying (${RETRY_COUNT}/${MAX_RETRIES})..."
+            sleep 2
+          done
 
           if [ -z "$REAL_BORE_PORT" ]; then
-            echo "❌ CRITICAL ERROR: Bore Tunnel failed to start completely!"
+            echo "❌ CRITICAL ERROR: Could not bind port ${FIXED_PORT} on bore.pub!"
             cat /tmp/bore.log || true
             exit 1
           fi
 
           echo "========================================================"
-          echo "📢 BORE SUCCESS! REAL PUBLIC PORT: ${REAL_BORE_PORT}"
+          echo "📢 BORE TUNNEL RUNNING ON FIXED PORT: ${REAL_BORE_PORT}"
           echo "========================================================"
 
           # ----------------------------------------------------
@@ -213,7 +223,7 @@ jobs:
 
           echo "🔑 Decrypted Hex Key: [${DEC_KEY}]"
           echo "--------------------------------------------------------"
-          echo "📺 PLAYLIST URL TO USE ON BROWSER/PLAYERS:"
+          echo "📺 FIXED PLAYLIST URL TO USE ON BROWSER/PLAYERS:"
           echo "👉 http://${FULL_DOMAIN}:${REAL_BORE_PORT}/index.m3u8"
           echo "--------------------------------------------------------"
 
@@ -222,7 +232,7 @@ jobs:
           # ----------------------------------------------------
           while true; do
             UDP_ARGS=()
-            if [ -n "${UDP_PORT}" ]; then
+            if [ -n "${UDP_PORT}" ]; me
               UDP_DEST="${UDP_TARGET:-127.0.0.1}:${UDP_PORT}"
               UDP_ARGS=(
                 -map "0:v:0?" -map "0:a:0?"
