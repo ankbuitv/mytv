@@ -127,16 +127,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ép mặc định là 54115 nếu người dùng không truyền giá trị
           FIXED_PORT="${TARGET_PORT:-54115}"
 
           # ----------------------------------------------------
-          # 🚀 KHỞI CHẠY BORE TUNNEL (FIXED PORT 54115)
+          # 🚀 KHỞI CHẠY BORE TUNNEL
           # ----------------------------------------------------
           echo "🚀 Starting Bore tunnel on FIXED port: ${FIXED_PORT}..."
           rm -f /tmp/bore.log
 
-          # Thử kết nối cố định port 54115 (Loop retry nếu chưa giải phóng kịp)
           MAX_RETRIES=5
           RETRY_COUNT=0
           REAL_BORE_PORT=""
@@ -228,11 +226,11 @@ jobs:
           echo "--------------------------------------------------------"
 
           # ----------------------------------------------------
-          # 🔥 FFMPEG ENGINE
+          # 🔥 FFMPEG ENGINE (FIXED IF/THEN SYNTAX)
           # ----------------------------------------------------
           while true; do
             UDP_ARGS=()
-            if [ -n "${UDP_PORT}" ]; me
+            if [ -n "${UDP_PORT}" ]; then
               UDP_DEST="${UDP_TARGET:-127.0.0.1}:${UDP_PORT}"
               UDP_ARGS=(
                 -map "0:v:0?" -map "0:a:0?"
