@@ -161,35 +161,39 @@ jobs:
           mkdir -p "$HLS_DIR"
 
           # ----------------------------------------------------
-          # 🔑 TẢI VÀ GIẢI MÃ CLEARKEY BASE64URL -> HEX
+          # 🔑 TẢI VÀ GIẢI MÃ CLEARKEY BASE64URL -> HEX (FIX HTML RESPONSE)
           # ----------------------------------------------------
           echo "🔑 Fetching ClearKey JWK from License Server..."
           RAW_KEY_RESP=$(curl -s -L -A "${USER_AGENT}" "${CLEARKEY_API}" || true)
-          echo "Raw API Response: $RAW_KEY_RESP"
 
-          # Tạo script Python riêng biệt để tránh lỗi cú pháp YAML
+          # Sử dụng Script Python dùng Regex quét trực tiếp lấy chuỗi Base64 bất chấp HTML
           cat << 'PYEOF' > parse_key.py
-          import json, base64, sys
+          import re, base64, sys
 
           try:
-              raw_input = sys.stdin.read().strip()
-              data = json.loads(raw_input)
-              k_b64 = data["keys"][0]["k"]
-              k_b64 += "=" * ((4 - len(k_b64) % 4) % 4)
-              key_bytes = base64.urlsafe_b64decode(k_b64)
-              print(key_bytes.hex())
-          except Exception as e:
+              raw_input = sys.stdin.read()
+              # Tìm chuỗi "k":"..." bằng Regex bất chấp JSON hay HTML
+              match = re.search(r'"k"\s*:\s*"([^"]+)"', raw_input)
+              if match:
+                  k_b64 = match.group(1)
+                  k_b64 += "=" * ((4 - len(k_b64) % 4) % 4)
+                  key_bytes = base64.urlsafe_b64decode(k_b64)
+                  print(key_bytes.hex())
+              else:
+                  sys.exit(1)
+          except Exception:
               sys.exit(1)
           PYEOF
 
           DEC_KEY=$(echo "$RAW_KEY_RESP" | python3 parse_key.py || true)
 
-          echo "🔑 Extracted Decrypted Hex Key: [${DEC_KEY}]"
-
+          # Backup: Nếu không bóc được từ Regex HTML, gán cứng Key Hex đã giải mã chuẩn của kênh Discovery
           if [ -z "$DEC_KEY" ]; then
-            echo "❌ ERROR: Cannot extract/convert ClearKey to HEX! Exiting..."
-            exit 1
+            echo "⚠️ Warning: Failed to parse API, falling back to static hex key..."
+            DEC_KEY="bea5a07157e0c4d17b11ab399517f952"
           fi
+
+          echo "🔑 Extracted Decrypted Hex Key: [${DEC_KEY}]"
 
           # ----------------------------------------------------
           # 🔥 BẮT ĐẦU TIẾN TRÌNH RESTREAM FFMPEG
