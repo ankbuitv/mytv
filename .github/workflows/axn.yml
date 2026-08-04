@@ -10,7 +10,7 @@ on:
       clearkey_hex:
         description: ClearKey hex key
         required: false
-        default: 9d29f87efdec3c9fab368f724a62ad0e:6f1c09c035eab36323d60d1454db3d20
+        default: "9d29f87efdec3c9fab368f724a62ad0e:6f1c09c035eab36323d60d1454db3d20"
       bore_port:
         description: Optional Bore port. Leave empty to auto-pick a free port.
         required: false
@@ -186,15 +186,16 @@ PY
                 -err_detect ignore_err \
                 -fflags +genpts+discardcorrupt+igndts+fastseek \
                 -flags +low_delay \
+                -max_delay 500000 \
                 -i "${STREAM_MPD}" \
                 -map 0:v:0? -map 0:a:0? \
-                -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
+                -c:v libx264 -preset veryfast -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0 \
                 -c:a aac -b:a 128k -ar 48000 \
                 -vf "fps=25,setpts=PTS-STARTPTS" \
                 -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
                 -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
                 -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-                -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
+                -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
                 -hls_flags delete_segments+omit_endlist+discont_start+append_list \
                 -f hls "${HLS_DIR}/index.m3u8" \
                 -f mpegts "udp://${UDP_DEST}" || true
@@ -206,15 +207,16 @@ PY
                 -err_detect ignore_err \
                 -fflags +genpts+discardcorrupt+igndts+fastseek \
                 -flags +low_delay \
+                -max_delay 500000 \
                 -i "${STREAM_MPD}" \
                 -map 0:v:0? -map 0:a:0? \
-                -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
+                -c:v libx264 -preset veryfast -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0 \
                 -c:a aac -b:a 128k -ar 48000 \
                 -vf "fps=25,setpts=PTS-STARTPTS" \
                 -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
                 -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
                 -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-                -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
+                -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
                 -hls_flags delete_segments+omit_endlist+discont_start+append_list \
                 -f hls "${HLS_DIR}/index.m3u8" || true
             fi
