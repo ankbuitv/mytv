@@ -4,22 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       mpd_url:
-        description: DASH/CENC MPD URL
+        description: 'DASH/CENC MPD URL'
         required: true
-        default: https://s7770.cdn.mytvnet.vn/pkg20/live_dzones/dsc.smil/manifest.mpd
+        default: 'https://s7770.cdn.mytvnet.vn/pkg20/live_dzones/dsc.smil/manifest.mpd'
       clearkey_api:
-        description: ClearKey License API
+        description: 'ClearKey License API'
         required: false
-        default: https://sgchill.duckdns.org/tv/clearkey.php?id=discovery
+        default: 'https://sgchill.duckdns.org/tv/clearkey.php?id=discovery'
       bore_port:
-        description: Optional Bore port. Leave empty to auto-pick a free port.
+        description: 'Optional Bore port. Leave empty to auto-pick a free port.'
         required: false
       udp_port:
-        description: Optional RTP output port (e.g. 14214). Leave empty to skip RTP output.
+        description: 'Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.'
         required: false
+        default: '14214'
       udp_target:
-        description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
+        description: 'Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.'
         required: false
+        default: '100.101.202.77'
 
 jobs:
   restream:
@@ -124,28 +126,41 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Khởi chạy Bore Tunnel
-          BORE_CMD="bore local 5000 --to bore.pub"
-          if [ -n "${TARGET_PORT}" ]; then
-            BORE_CMD="${BORE_CMD} --port ${TARGET_PORT}"
-          fi
-
+          # ----------------------------------------------------
+          # 🚀 KHỞI CHẠY BORE TUNNEL
+          # ----------------------------------------------------
           echo "🚀 Starting Bore tunnel..."
-          $BORE_CMD > /tmp/bore.log 2>&1 &
-          sleep 4
+          rm -f /tmp/bore.log
 
-          # Bóc tách Port Bore thực tế từ Log
-          REAL_BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log | cut -d':' -f2 | head -n1 || true)
-          
-          if [ -z "$REAL_BORE_PORT" ]; then
-            echo "⚠️ Warning: Could not detect Bore port automatically. Using default or target port."
-            REAL_BORE_PORT="${TARGET_PORT:-5000}"
+          if [ -n "${TARGET_PORT}" ]; then
+            echo "Attempting to bind requested port: ${TARGET_PORT}"
+            bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
+            sleep 3
           fi
 
-          echo "📢 BORE PUBLIC PORT IS: ${REAL_BORE_PORT}"
+          REAL_BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log 2>/dev/null | cut -d':' -f2 | head -n1 || true)
 
-          # 2. Cập nhật Cloudflare DNS
-          echo "🌐 Updating Cloudflare DNS record..."
+          if [ -z "$REAL_BORE_PORT" ]; then
+            echo "⚠️ Target port unavailable or not set. Requesting dynamic port from bore.pub..."
+            pkill bore || true
+            bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
+            sleep 4
+            REAL_BORE_PORT=$(grep -oE 'listening at bore.pub:[0-9]+' /tmp/bore.log 2>/dev/null | cut -d':' -f2 | head -n1 || true)
+          fi
+
+          if [ -z "$REAL_BORE_PORT" ]; then
+            echo "❌ CRITICAL ERROR: Bore Tunnel failed to start completely!"
+            cat /tmp/bore.log || true
+            exit 1
+          fi
+
+          echo "========================================================"
+          echo "📢 BORE SUCCESS! REAL PUBLIC PORT: ${REAL_BORE_PORT}"
+          echo "========================================================"
+
+          # ----------------------------------------------------
+          # 🌐 CẬP NHẬT CLOUDFLARE DNS
+          # ----------------------------------------------------
           FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
 
           RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
@@ -168,13 +183,13 @@ jobs:
           HLS_DIR="/dev/shm/hls/discovery"
           mkdir -p "$HLS_DIR"
 
-          # 3. Lấy và giải mã ClearKey (Base64URL -> HEX)
-          echo "🔑 Fetching ClearKey JWK from License Server..."
+          # ----------------------------------------------------
+          # 🔑 PARSE CLEARKEY (BASE64URL -> HEX)
+          # ----------------------------------------------------
           RAW_KEY_RESP=$(curl -s -L -A "${USER_AGENT}" "${CLEARKEY_API}" || true)
 
           cat << 'PYEOF' > parse_key.py
           import re, base64, sys
-
           try:
               raw_input = sys.stdin.read()
               match = re.search(r'"k"\s*:\s*"([^"]+)"', raw_input)
@@ -192,27 +207,22 @@ jobs:
           DEC_KEY=$(echo "$RAW_KEY_RESP" | python3 parse_key.py || true)
 
           if [ -z "$DEC_KEY" ]; then
-            echo "⚠️ Falling back to static hex key for Discovery..."
             DEC_KEY="bea5a07157e0c4d17b11ab399517f952"
           fi
 
           echo "🔑 Decrypted Hex Key: [${DEC_KEY}]"
           echo "--------------------------------------------------------"
-          echo "📺 STREAM HLS URL: http://${FULL_DOMAIN}:${REAL_BORE_PORT}/index.m3u8"
+          echo "📺 PLAYLIST URL TO USE ON BROWSER/PLAYERS:"
+          echo "👉 http://${FULL_DOMAIN}:${REAL_BORE_PORT}/index.m3u8"
           echo "--------------------------------------------------------"
 
-          # 4. Chạy FFmpeg
+          # ----------------------------------------------------
+          # 🔥 FFMPEG ENGINE
+          # ----------------------------------------------------
           while true; do
-            echo "🔥 Starting Discovery FFmpeg Restream Engine..."
-
             UDP_ARGS=()
             if [ -n "${UDP_PORT}" ]; then
-              if [ -n "${UDP_TARGET}" ]; then
-                UDP_DEST="${UDP_TARGET}:${UDP_PORT}"
-              else
-                UDP_DEST="127.0.0.1:${UDP_PORT}"
-              fi
-              echo "🌊 Setting up parallel RTP MPEG-TS stream to rtp://${UDP_DEST}"
+              UDP_DEST="${UDP_TARGET:-127.0.0.1}:${UDP_PORT}"
               UDP_ARGS=(
                 -map "0:v:0?" -map "0:a:0?"
                 -c copy
@@ -244,6 +254,5 @@ jobs:
               "${HLS_DIR}/index.m3u8" \
               "${UDP_ARGS[@]}" || true
 
-            echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
             sleep 3
           done
