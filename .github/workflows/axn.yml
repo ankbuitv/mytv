@@ -171,6 +171,7 @@ jobs:
 
             FFMPEG_COMMON_ARGS=(
               -y -hide_banner -loglevel warning -stats
+              # --- INPUT OPTIONS (Đặt trước -i) ---
               -threads 0
               -thread_queue_size 512
               -user_agent "${USER_AGENT}"
@@ -180,14 +181,15 @@ jobs:
               -fflags +genpts+discardcorrupt+igndts+fastseek+nobuffer
               -flags +low_delay
               -max_delay 500000
-              -max_muxing_queue_size 9999
               -i "${STREAM_MPD}"
+              # --- OUTPUT OPTIONS (Đặt sau -i) ---
+              -max_muxing_queue_size 9999
               -map 0:v:0? -map 0:a:0?
               -c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -bf 0 -b:v 1600k -maxrate 2000k -bufsize 3000k -pix_fmt yuv420p -profile:v high -level 4.0 -x264-params "bframes=0:rc-lookahead=0:scenecut=0:ref=1"
               -c:a aac -b:a 128k -ar 48000
               -vf "fps=25,format=yuv420p,setpts=PTS-STARTPTS"
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS"
-              -vsync cfr
+              -fps_mode cfr
               -g 25 -keyint_min 25 -force_key_frames "expr:gte(t,n_forced*1)" -sc_threshold 0
               -hls_time 1 -hls_list_size 4 -hls_delete_threshold 2
               -hls_playlist_type event
