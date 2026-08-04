@@ -132,6 +132,7 @@ jobs:
 
           # 4. Chạy FFmpeg Ultra-Sync Engine
           # 4. Chạy FFmpeg Engine - Khóa Cứng Realtime Clock & Đồng Bộ A/V 100%
+          # 4. Chạy FFmpeg Ultra-Sync Realtime Engine (Reset PTS 100%)
           while true; do
             echo "🔥 Starting REALTIME PERFECT-SYNC FFmpeg Engine..."
             
@@ -139,27 +140,26 @@ jobs:
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
             ffmpeg -y -hide_banner -loglevel warning -stats \
+              -re \
               -user_agent "${USER_AGENT}" \
               -cenc_decryption_key "${DEC_KEY}" \
               -err_detect ignore_err \
-              -probesize 50M -analyzeduration 50M \
               -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
               -i "${STREAM_MPD}" \
               -vf "fps=25,setpts=PTS-STARTPTS" \
-              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-              -c:v libx264 -preset superfast -profile:v main -level 4.0 \
-              -vsync cfr \
-              -flags +cgop \
+              -af "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS" \
+              -c:v libx264 -preset ultrafast -tune zerolatency \
               -threads 0 \
               -b:v 2500k -maxrate 2500k -bufsize 5000k \
               -g 50 -keyint_min 50 -sc_threshold 0 \
               -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -async 1 \
               -map 0:v:0 -map 0:a:0 \
               -f hls \
               -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist+discont_start \
               -hls_segment_filename "/dev/shm/hls/axn/seg%05d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
 
