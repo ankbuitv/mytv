@@ -365,6 +365,9 @@ http://chrtv.duckdns.org:55801/stream/paramount
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 http://chrtv.duckdns.org:55801/stream/USA_DISCOVERY/index.m3u8
 
+#EXTINF:-1 tvg-id="discovery-vn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Việt Nam (UNSTABLE)
+http://amg01982-tqg-vnmytk.ankb.qzz.io:54115/index.m3u8
+
 #EXTINF:-1 tvg-id="discovery-family" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Family
 http://40.160.24.52/DISCOVERY_FAMILY/index.m3u8
 
