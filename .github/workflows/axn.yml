@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Standard Cloudflare DNS + Bore)
+name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
 
-      - name: Configure Nginx for Real HLS
+      - name: Configure Nginx for High Performance HLS
         run: |
           sudo rm -rf /dev/shm/hls/axn
           sudo mkdir -p /dev/shm/hls/axn
@@ -77,40 +77,43 @@ jobs:
           TARGET_PORT: "14211"
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
         run: |
-          # 1. Bật Bore Tunnel nối cổng 5000 ra Target Port 18080
+          # 1. Bật Bore Tunnel đẩy cổng Nginx 5000 ra ngoài 14211
           echo "🚀 Starting Bore Tunnel on port ${TARGET_PORT}..."
           (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
           sleep 5
 
-          # In log Bore ra màn hình để kiểm tra
           echo "--- 📋 BORE LOG CHECK ---"
           cat /tmp/bore.log | tail -n 10
           echo "------------------------"
 
-          # 2. Bắn API sang Cloudflare để ép CNAME về bore.pub (DÙNG MÂY XÁM - PROXIED: FALSE)
-          echo "🌐 Updating Cloudflare DNS for ${CF_SUBDOMAIN}..."
+          # 2. Xóa sạch record cũ nếu có để tránh xung đột A vs CNAME
+          echo "🌐 Cleaning existing records & updating Cloudflare DNS..."
           
-          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_SUBDOMAIN}" \
+          FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
+          
+          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: application/json" | jq -r '.result[0].id')
 
           if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-            curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+            echo "🗑️ Deleting existing record ID: ${RECORD_ID}..."
+            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}" > /dev/null
-            echo "✅ DNS updated: CNAME -> bore.pub (Mây Xám - DNS Only)"
-          else
-            curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}" > /dev/null
-            echo "✅ Created new CNAME -> bore.pub (Mây Xám - DNS Only)"
+              -H "Content-Type: application/json" > /dev/null
           fi
+
+          # 3. Tạo mới CNAME trỏ về bore.pub (Mây Xám - DNS Only)
+          echo "✨ Creating fresh CNAME -> bore.pub..."
+          CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
+
+          echo "✅ Cloudflare Response: $(echo $CREATE_RES | jq -r '.success')"
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # 3. Chạy FFmpeg HLS Pass-Through (-c copy) -> CPU ~0%, Live chuẩn 100%
+          # 4. Chạy FFmpeg Pass-Through
           while true; do
             echo "🚀 Starting FFmpeg Stream..."
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
