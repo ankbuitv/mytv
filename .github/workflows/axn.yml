@@ -6,8 +6,19 @@ on:
       mpd_url:
         description: DASH/CENC MPD URL
         required: true
+        default: https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd
       clearkey_hex:
         description: ClearKey hex key
+        required: false
+        default: 9d29f87efdec3c9fab368f724a62ad0e:6f1c09c035eab36323d60d1454db3d20
+      bore_port:
+        description: Optional Bore port. Leave empty to auto-pick a free port.
+        required: false
+      udp_port:
+        description: Optional UDP output port. Leave empty to skip UDP output.
+        required: false
+      udp_target:
+        description: Optional UDP target host, e.g. 1.2.3.4. Leave empty to use localhost.
         required: false
 
 jobs:
@@ -94,15 +105,32 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
           CLEARKEY: ${{ github.event.inputs.clearkey_hex || secrets.CLEARKEY }}
-          TARGET_PORT: "14211"
+          TARGET_PORT: ${{ github.event.inputs.bore_port }}
+          UDP_PORT: ${{ github.event.inputs.udp_port }}
+          UDP_TARGET: ${{ github.event.inputs.udp_target }}
           STREAM_MPD: ${{ github.event.inputs.mpd_url }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "🚀 Starting Bore tunnel on port ${TARGET_PORT}..."
+          if [ -n "${TARGET_PORT}" ]; then
+            BORE_PORT="${TARGET_PORT}"
+          else
+            BORE_PORT="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+try:
+    s.bind(("0.0.0.0", 0))
+    print(s.getsockname()[1])
+finally:
+    s.close()
+PY
+)"
+          fi
+
+          echo "🚀 Starting Bore tunnel on port ${BORE_PORT}..."
           (while true; do
-            bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1
+            bore local 5000 --to bore.pub --port "${BORE_PORT}" >> /tmp/bore.log 2>&1
             sleep 2
           done) &
           sleep 5
@@ -143,24 +171,53 @@ jobs:
 
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
-            ffmpeg -y -hide_banner -loglevel warning -stats \
-              -user_agent "${USER_AGENT}" \
-              -cenc_decryption_key "${DEC_KEY}" \
-              -analyzeduration 10M -probesize 10M \
-              -err_detect ignore_err \
-              -fflags +genpts+discardcorrupt+igndts+fastseek \
-              -flags +low_delay \
-              -i "${STREAM_MPD}" \
-              -map 0:v:0? -map 0:a:0? \
-              -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
-              -c:a aac -b:a 128k -ar 48000 \
-              -vf "fps=25,setpts=PTS-STARTPTS" \
-              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-              -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
-              -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-              -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
-              -hls_flags delete_segments+omit_endlist+discont_start+append_list \
-              -f hls "${HLS_DIR}/index.m3u8" || true
+            if [ -n "${UDP_PORT}" ]; then
+              if [ -n "${UDP_TARGET}" ]; then
+                UDP_DEST="${UDP_TARGET}:${UDP_PORT}"
+              else
+                UDP_DEST="127.0.0.1:${UDP_PORT}"
+              fi
+
+              echo "🌊 Streaming UDP to ${UDP_DEST}"
+              ffmpeg -y -hide_banner -loglevel warning -stats \
+                -user_agent "${USER_AGENT}" \
+                -cenc_decryption_key "${DEC_KEY}" \
+                -analyzeduration 10M -probesize 10M \
+                -err_detect ignore_err \
+                -fflags +genpts+discardcorrupt+igndts+fastseek \
+                -flags +low_delay \
+                -i "${STREAM_MPD}" \
+                -map 0:v:0? -map 0:a:0? \
+                -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
+                -c:a aac -b:a 128k -ar 48000 \
+                -vf "fps=25,setpts=PTS-STARTPTS" \
+                -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+                -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
+                -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
+                -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
+                -hls_flags delete_segments+omit_endlist+discont_start+append_list \
+                -f hls "${HLS_DIR}/index.m3u8" \
+                -f mpegts "udp://${UDP_DEST}" || true
+            else
+              ffmpeg -y -hide_banner -loglevel warning -stats \
+                -user_agent "${USER_AGENT}" \
+                -cenc_decryption_key "${DEC_KEY}" \
+                -analyzeduration 10M -probesize 10M \
+                -err_detect ignore_err \
+                -fflags +genpts+discardcorrupt+igndts+fastseek \
+                -flags +low_delay \
+                -i "${STREAM_MPD}" \
+                -map 0:v:0? -map 0:a:0? \
+                -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
+                -c:a aac -b:a 128k -ar 48000 \
+                -vf "fps=25,setpts=PTS-STARTPTS" \
+                -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+                -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
+                -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
+                -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
+                -hls_flags delete_segments+omit_endlist+discont_start+append_list \
+                -f hls "${HLS_DIR}/index.m3u8" || true
+            fi
 
             echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
             sleep 3
