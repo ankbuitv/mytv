@@ -167,20 +167,22 @@ jobs:
           RAW_KEY_RESP=$(curl -s -L -A "${USER_AGENT}" "${CLEARKEY_API}" || true)
           echo "Raw API Response: $RAW_KEY_RESP"
 
-          DEC_KEY=$(python3 -c '
-import json, base64, sys
+          # Tạo script Python riêng biệt để tránh lỗi cú pháp YAML
+          cat << 'PYEOF' > parse_key.py
+          import json, base64, sys
 
-try:
-    data = json.loads("""'"$RAW_KEY_RESP"'""")
-    k_b64 = data["keys"][0]["k"]
-    # Thêm padding "=" nếu bị thiếu chuẩn Base64
-    k_b64 += "=" * ((4 - len(k_b64) % 4) % 4)
-    # Convert base64url sang hex
-    key_bytes = base64.urlsafe_b64decode(k_b64)
-    print(key_bytes.hex())
-except Exception as e:
-    sys.exit(1)
-' || true)
+          try:
+              raw_input = sys.stdin.read().strip()
+              data = json.loads(raw_input)
+              k_b64 = data["keys"][0]["k"]
+              k_b64 += "=" * ((4 - len(k_b64) % 4) % 4)
+              key_bytes = base64.urlsafe_b64decode(k_b64)
+              print(key_bytes.hex())
+          except Exception as e:
+              sys.exit(1)
+          PYEOF
+
+          DEC_KEY=$(echo "$RAW_KEY_RESP" | python3 parse_key.py || true)
 
           echo "🔑 Extracted Decrypted Hex Key: [${DEC_KEY}]"
 
