@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore)
+name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore + Tailscale)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
         description: Optional UDP output port. Leave empty to skip UDP output.
         required: false
       udp_target:
-        description: Optional UDP target host, e.g. 1.2.3.4. Leave empty to use localhost.
+        description: Target Tailscale IP (e.g. 100.64.X.X). Leave empty to use localhost.
         required: false
 
 jobs:
@@ -29,6 +29,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # ----------------------------------------------------
+      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
+      # ----------------------------------------------------
+      - name: Connect to Tailscale Network
+        uses: tailscale/tailscale-action@v2
+        with:
+          oauth-client-id: "" # Không dùng OAuth
+          oauth-secret: ""
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          tags: tag:ci
 
       - name: Install dependencies
         run: |
@@ -161,27 +172,30 @@ jobs:
 
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
-            # Tối ưu cờ FFmpeg dùng chung cho cả 2 nhánh
             FFMPEG_COMMON_ARGS=(
               -y -hide_banner -loglevel warning -stats
               -threads 0
+              -thread_queue_size 512
               -user_agent "${USER_AGENT}"
               -cenc_decryption_key "${DEC_KEY}"
               -analyzeduration 10M -probesize 10M
               -err_detect ignore_err
-              -fflags +genpts+discardcorrupt+igndts+fastseek
+              -fflags +genpts+discardcorrupt+igndts+fastseek+nobuffer
               -flags +low_delay
               -max_delay 500000
+              -max_muxing_queue_size 9999
               -i "${STREAM_MPD}"
               -map 0:v:0? -map 0:a:0?
-              -c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -b:v 1800k -maxrate 2200k -bufsize 4000k -pix_fmt yuv420p -profile:v high -level 4.0
+              -c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -bf 0 -b:v 1600k -maxrate 2000k -bufsize 3000k -pix_fmt yuv420p -profile:v high -level 4.0 -x264-params "bframes=0:rc-lookahead=0:scenecut=0:ref=1"
               -c:a aac -b:a 128k -ar 48000
-              -vf "fps=25,setpts=PTS-STARTPTS"
+              -vf "fps=25,format=yuv420p,setpts=PTS-STARTPTS"
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS"
-              -g 25 -keyint_min 25 -sc_threshold 0
-              -hls_time 1 -hls_list_size 6 -hls_delete_threshold 3
+              -vsync cfr
+              -g 25 -keyint_min 25 -force_key_frames "expr:gte(t,n_forced*1)" -sc_threshold 0
+              -hls_time 1 -hls_list_size 4 -hls_delete_threshold 2
+              -hls_playlist_type event
               -hls_segment_filename "${HLS_DIR}/seg_%06d.ts"
-              -hls_flags delete_segments+omit_endlist+discont_start+append_list
+              -hls_flags delete_segments+omit_endlist+discont_start+append_list+independent_segments
               -f hls "${HLS_DIR}/index.m3u8"
             )
 
