@@ -131,8 +131,9 @@ jobs:
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           # 4. Chạy FFmpeg Ultra-Sync Engine
+          # 4. Chạy FFmpeg Engine - Khóa Cứng Realtime Clock & Đồng Bộ A/V 100%
           while true; do
-            echo "🔥 Starting PERFECT-SYNC FFmpeg Engine..."
+            echo "🔥 Starting REALTIME PERFECT-SYNC FFmpeg Engine..."
             
             rm -rf /dev/shm/hls/axn/*
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
@@ -141,13 +142,14 @@ jobs:
               -user_agent "${USER_AGENT}" \
               -cenc_decryption_key "${DEC_KEY}" \
               -err_detect ignore_err \
-              -probesize 100M -analyzeduration 100M \
+              -probesize 50M -analyzeduration 50M \
               -fflags +genpts+discardcorrupt+igndts \
               -rw_timeout 10000000 \
               -i "${STREAM_MPD}" \
               -vf "fps=25,setpts=PTS-STARTPTS" \
-              -af "aresample=async=1:min_hard_comp=0.010000:first_pts=0,asetpts=PTS-STARTPTS" \
-              -c:v libx264 -preset ultrafast -tune zerolatency \
+              -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
+              -c:v libx264 -preset superfast -profile:v main -level 4.0 \
+              -vsync cfr \
               -flags +cgop \
               -threads 0 \
               -b:v 2500k -maxrate 2500k -bufsize 5000k \
