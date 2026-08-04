@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Optimized Copy Engine + Bore + Tailscale)
+name: CHRTV AXN Restream (Final Fixed Engine)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd
       clearkey_hex:
-        description: ClearKey hex key
+        description: ClearKey hex key (Format KID:KEY)
         required: false
         default: "9d29f87efdec3c9fab368f724a62ad0e:6f1c09c035eab36323d60d1454db3d20"
       bore_port:
@@ -38,10 +38,13 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Install dependencies
+      - name: Install dependencies & Stream Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl tar jq
+          sudo apt-get install -y ffmpeg nginx curl tar jq python3-pip
+          pip3 install --break-system-packages yt-dlp streamlink
+          
+          # Install Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
           sudo mv bore /usr/local/bin/bore
           sudo chmod +x /usr/local/bin/bore
@@ -152,16 +155,17 @@ jobs:
             -H "Content-Type: application/json" \
             --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
 
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          HEADERS_FFMPEG=$'Referer: https://mytvnet.vn/\r\nOrigin: https://mytvnet.vn\r\n'
           HLS_DIR="/dev/shm/hls/axn"
           mkdir -p "$HLS_DIR"
 
+          # Tách Key Hex từ cặp KID:KEY
+          DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+
           while true; do
-            echo "🔥 Starting High-Efficiency FFmpeg Passthrough Engine..."
+            echo "🔥 Starting High-Efficiency FFmpeg Engine..."
 
-            DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
-
-            # Tách tham số UDP target
             UDP_ARGS=()
             if [ -n "${UDP_PORT}" ]; then
               if [ -n "${UDP_TARGET}" ]; then
@@ -177,13 +181,15 @@ jobs:
               )
             fi
 
-            # FFmpeg Command Tối ưu (Passthrough Stream)
+            # Chạy FFmpeg mở rộng tương thích DASH CENC MyTV
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
+              -headers "${HEADERS_FFMPEG}" \
               -cenc_decryption_key "${DEC_KEY}" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -rw_timeout 15000000 \
+              -probesize 50M -analyzeduration 50M \
               -err_detect ignore_err \
-              -fflags +genpts+discardcorrupt \
+              -fflags +genpts+discardcorrupt+nobuffer \
               -i "${STREAM_MPD}" \
               -map "0:v:0?" -map "0:a:0?" \
               -c:v copy \
