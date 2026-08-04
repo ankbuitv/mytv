@@ -15,7 +15,7 @@ on:
         description: Optional Bore port. Leave empty to auto-pick a free port.
         required: false
       udp_port:
-        description: Optional UDP output port. Leave empty to skip UDP output.
+        description: Optional UDP/RTP output port. Leave empty to skip.
         required: false
       udp_target:
         description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
@@ -30,9 +30,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------
-      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE (Đã fix đúng repo tailscale/github-action@v3)
-      # ----------------------------------------------------
+      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
       - name: Connect to Tailscale Network
         uses: tailscale/github-action@v3
         with:
@@ -134,10 +132,6 @@ jobs:
           done) &
           sleep 5
 
-          echo "--- 📋 BORE LOG CHECK ---"
-          cat /tmp/bore.log | tail -n 20 || true
-          echo "------------------------"
-
           echo "🌐 Cleaning existing Cloudflare DNS records..."
           FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
 
@@ -146,19 +140,15 @@ jobs:
             -H "Content-Type: application/json" | jq -r '.result[0].id')
 
           if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-            echo "🗑️ Deleting existing record ID: ${RECORD_ID}..."
             curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
               -H "Content-Type: application/json" > /dev/null
           fi
 
-          echo "✨ Creating fresh CNAME -> bore.pub..."
           CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
-
-          echo "✅ Cloudflare response: $(echo "$CREATE_RES" | jq -r '.success')"
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           HLS_DIR="/dev/shm/hls/axn"
@@ -166,12 +156,10 @@ jobs:
 
           while true; do
             echo "🔥 Starting resilient FFmpeg Engine..."
-
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
             FFMPEG_COMMON_ARGS=(
               -y -hide_banner -loglevel warning -stats
-              # --- INPUT OPTIONS (Đặt trước -i) ---
               -threads 0
               -thread_queue_size 512
               -user_agent "${USER_AGENT}"
@@ -182,7 +170,6 @@ jobs:
               -flags +low_delay
               -max_delay 500000
               -i "${STREAM_MPD}"
-              # --- OUTPUT OPTIONS (Đặt sau -i) ---
               -max_muxing_queue_size 9999
               -map 0:v:0? -map 0:a:0?
               -c:v libx264 -preset ultrafast -tune zerolatency -crf 24 -bf 0 -b:v 1600k -maxrate 2000k -bufsize 3000k -pix_fmt yuv420p -profile:v high -level 4.0 -x264-params "bframes=0:rc-lookahead=0:scenecut=0:ref=1"
@@ -205,8 +192,9 @@ jobs:
                 UDP_DEST="127.0.0.1:${UDP_PORT}"
               fi
 
-              echo "🌊 Streaming UDP to ${UDP_DEST}"
-              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" -f mpegts "udp://${UDP_DEST}" || true
+              echo "🌊 Streaming RTP to rtp://${UDP_DEST}"
+              # 🛠️ Sử dụng giao thức RTP gửi mpegts trực tiếp
+              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" -f mpegts "rtp://${UDP_DEST}?pkt_size=1316" || true
             else
               ffmpeg "${FFMPEG_COMMON_ARGS[@]}" || true
             fi
