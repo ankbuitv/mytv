@@ -18,7 +18,7 @@ on:
         description: Optional UDP output port. Leave empty to skip UDP output.
         required: false
       udp_target:
-        description: Target Tailscale IP (e.g. 100.64.X.X). Leave empty to use localhost.
+        description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
         required: false
 
 jobs:
@@ -31,15 +31,12 @@ jobs:
         uses: actions/checkout@v4
 
       # ----------------------------------------------------
-      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
+      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE (Đã fix đúng repo tailscale/github-action@v3)
       # ----------------------------------------------------
       - name: Connect to Tailscale Network
-        uses: tailscale/tailscale-action@v2
+        uses: tailscale/github-action@v3
         with:
-          oauth-client-id: "" # Không dùng OAuth
-          oauth-secret: ""
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          tags: tag:ci
 
       - name: Install dependencies
         run: |
