@@ -14,6 +14,7 @@ on:
       bore_port:
         description: 'Optional Bore port. Leave empty to auto-pick a free port.'
         required: false
+        default: '54115'
       udp_port:
         description: 'Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.'
         required: false
