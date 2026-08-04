@@ -113,24 +113,24 @@ jobs:
 
           USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-          # 4. Chạy FFmpeg Pass-Through
+          # 4. Chạy FFmpeg - Tối ưu hóa Re-encode nhẹ & Cố định GOP/HLS
           while true; do
-            echo "🚀 Starting FFmpeg Stream..."
+            echo "🚀 Starting FFmpeg Stream Optimization..."
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
               -cenc_decryption_key "${DEC_KEY}" \
-              -fflags +genpts+discardcorrupt+igndts \
+              -fflags +genpts+discardcorrupt \
               -rw_timeout 10000000 \
-              -probesize 10000000 -analyzeduration 10000000 \
               -i "${STREAM_MPD}" \
               -map 0:v:0 -map 0:a:0 \
-              -c:v copy \
-              -c:a copy \
+              -c:v libx264 -preset ultrafast -tune zerolatency \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
               -f hls \
-              -hls_time 3 \
-              -hls_list_size 6 \
+              -hls_time 2 \
+              -hls_list_size 12 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "/dev/shm/hls/axn/seg%05d.ts" \
               "/dev/shm/hls/axn/index.m3u8" || true
