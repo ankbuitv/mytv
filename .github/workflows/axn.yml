@@ -1,73 +1,167 @@
-name: axn-hls-restream
+name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore)
 
 on:
   workflow_dispatch:
     inputs:
       mpd_url:
-        description: 'DASH/CENC MPD URL'
+        description: DASH/CENC MPD URL
         required: true
       clearkey_hex:
-        description: 'ClearKey (Dạng KEY Hex 32 ký tự hoặc KID:KEY)'
-        required: true
+        description: ClearKey hex key
+        required: false
 
 jobs:
   restream:
     runs-on: ubuntu-latest
-    timeout-minutes: 1440
+    timeout-minutes: 350
 
     steps:
-      - name: Install FFmpeg
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg nginx curl tar jq
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          sudo mv bore /usr/local/bin/bore
+          sudo chmod +x /usr/local/bin/bore
 
-      - name: Prepare HLS output directory
+      - name: Configure Nginx for HLS delivery
         run: |
-          mkdir -p /dev/shm/hls/axn
-          chmod 755 /dev/shm/hls/axn
+          sudo rm -rf /dev/shm/hls/axn
+          sudo mkdir -p /dev/shm/hls/axn
+          sudo chmod -R 777 /dev/shm/hls
 
-      - name: Start resilient FFmpeg loop
+          cat <<'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
+          worker_processes auto;
+          pid /run/nginx.pid;
+
+          events {
+              worker_connections 8192;
+              multi_accept on;
+              use epoll;
+          }
+
+          http {
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+
+              sendfile off;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 30;
+              access_log off;
+              error_log /dev/null crit;
+
+              server {
+                  listen 5000 default_server;
+                  server_name _;
+
+                  location / {
+                      root /dev/shm/hls/axn;
+
+                      add_header Access-Control-Allow-Origin "*" always;
+                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
+                      add_header Access-Control-Allow-Headers "*" always;
+
+                      location ~* \.m3u8$ {
+                          add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                      }
+
+                      location ~* \.ts$ {
+                          add_header Cache-Control "public, max-age=31536000, immutable" always;
+                      }
+
+                      types {
+                          application/vnd.apple.mpegurl m3u8;
+                          video/mp2t ts;
+                      }
+                  }
+              }
+          }
+          EOF
+
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl restart nginx || true
+          else
+            sudo service nginx restart || sudo nginx
+          fi
+
+      - name: Start Restream Engine & Auto Update DNS
         env:
-          MPD_URL: ${{ github.event.inputs.mpd_url }}
-          CLEARKEY_INPUT: ${{ github.event.inputs.clearkey_hex }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
+          CLEARKEY: ${{ github.event.inputs.clearkey_hex || secrets.CLEARKEY }}
+          TARGET_PORT: "14211"
+          STREAM_MPD: ${{ github.event.inputs.mpd_url }}
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "🚀 Starting Bore tunnel on port ${TARGET_PORT}..."
+          (while true; do
+            bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1
+            sleep 2
+          done) &
+          sleep 5
+
+          echo "--- 📋 BORE LOG CHECK ---"
+          cat /tmp/bore.log | tail -n 20 || true
+          echo "------------------------"
+
+          echo "🌐 Cleaning existing Cloudflare DNS records..."
+          FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
+
+          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
+            echo "🗑️ Deleting existing record ID: ${RECORD_ID}..."
+            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" > /dev/null
+          fi
+
+          echo "✨ Creating fresh CNAME -> bore.pub..."
+          CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
+
+          echo "✅ Cloudflare response: $(echo "$CREATE_RES" | jq -r '.success')"
+
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
           HLS_DIR="/dev/shm/hls/axn"
           mkdir -p "$HLS_DIR"
 
-          # Tách tự động lấy phần KEY đằng sau nếu người dùng nhập dạng KID:KEY
-          if [[ "$CLEARKEY_INPUT" == *":"* ]]; then
-            DEC_KEY=$(echo "$CLEARKEY_INPUT" | awk -F':' '{print $NF}')
-          else
-            DEC_KEY="$CLEARKEY_INPUT"
-          fi
-
           while true; do
-            echo "[axn] Starting FFmpeg Engine at $(date -u +%FT%TZ)"
-            rm -f "$HLS_DIR"/index.m3u8 "$HLS_DIR"/*.ts
+            echo "🔥 Starting resilient FFmpeg Engine..."
+            rm -rf "$HLS_DIR"/*
 
-            ffmpeg -hide_banner -loglevel warning -stats \
-              -fflags +genpts+discardcorrupt+igndts \
-              -err_detect ignore_err \
-              -reorder_queue_size 1024 \
-              -flags +low_delay \
+            DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+
+            ffmpeg -y -hide_banner -loglevel warning -stats \
+              -user_agent "${USER_AGENT}" \
+              -cenc_decryption_key "${DEC_KEY}" \
               -analyzeduration 10M -probesize 10M \
-              -cenc_decryption_key "$DEC_KEY" \
-              -i "$MPD_URL" \
+              -err_detect ignore_err \
+              -fflags +genpts+discardcorrupt+igndts+fastseek \
+              -flags +low_delay \
+              -i "${STREAM_MPD}" \
               -map 0:v:0? -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v main -level 4.0 \
-              -b:v 2500k -maxrate 2500k -bufsize 5000k \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -c:v libx264 -preset veryfast -crf 24 -pix_fmt yuv420p -profile:v high -level 4.0 \
+              -c:a aac -b:a 128k -ar 48000 \
               -vf "fps=25,setpts=PTS-STARTPTS" \
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
               -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
               -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
-              -hls_segment_filename "$HLS_DIR/seg_%05d.ts" \
+              -hls_segment_filename "${HLS_DIR}/seg_%03d.ts" \
               -hls_flags delete_segments+omit_endlist+discont_start+append_list \
-              -f hls "$HLS_DIR/index.m3u8" || true
+              -f hls "${HLS_DIR}/index.m3u8" || true
 
-            echo "[axn] FFmpeg exited/reconnecting. Retrying in 3 seconds..."
+            echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
             sleep 3
           done
