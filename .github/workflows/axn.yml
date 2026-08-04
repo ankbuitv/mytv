@@ -1,171 +1,73 @@
-name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore)
+name: axn-hls-restream
 
 on:
   workflow_dispatch:
+    inputs:
+      mpd_url:
+        description: 'DASH/CENC MPD URL'
+        required: true
+      clearkey_hex:
+        description: 'ClearKey (Dạng KEY Hex 32 ký tự hoặc KID:KEY)'
+        required: true
 
 jobs:
   restream:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 1440
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - name: Install FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl tar jq
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          sudo mv bore /usr/local/bin/bore
+          sudo apt-get install -y ffmpeg
 
-      - name: Configure Nginx for Zero-Latency HLS
+      - name: Prepare HLS output directory
         run: |
-          sudo rm -rf /dev/shm/hls/axn
-          sudo mkdir -p /dev/shm/hls/axn
-          sudo chmod -R 777 /dev/shm/hls
+          mkdir -p /dev/shm/hls/axn
+          chmod 755 /dev/shm/hls/axn
 
-          cat << 'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
-          worker_processes auto;
-          pid /run/nginx.pid;
-
-          events {
-              worker_connections 8192;
-              multi_accept on;
-              use epoll;
-          }
-
-          http {
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
-
-              sendfile off; # Tắt sendfile để RAM /dev/shm đọc trực tiếp không qua OS cache
-              tcp_nopush on;
-              tcp_nodelay on;
-              keepalive_timeout 30;
-
-              open_file_cache max=1000 inactive=20s;
-              open_file_cache_valid 30s;
-              open_file_cache_min_uses 2;
-              open_file_cache_errors on;
-
-              access_log off;
-              error_log /dev/null crit;
-
-              server {
-                  listen 5000 default_server;
-                  server_name _;
-
-                  location / {
-                      root /dev/shm/hls/axn;
-                      
-                      # CORS Headers
-                      add_header Access-Control-Allow-Origin "*" always;
-                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
-                      add_header Access-Control-Allow-Headers "*" always;
-                      
-                      # Ép Player không cache file playlist m3u8 nhưng cache segment ts
-                      location ~* \.m3u8$ {
-                          add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
-                          add_header Access-Control-Allow-Origin "*" always;
-                      }
-                      
-                      location ~* \.ts$ {
-                          add_header Cache-Control "public, max-age=31536000, immutable" always;
-                          add_header Access-Control-Allow-Origin "*" always;
-                      }
-
-                      types {
-                          application/vnd.apple.mpegurl m3u8;
-                          video/mp2t ts;
-                      }
-                  }
-              }
-          }
-          EOF
-
-          sudo systemctl restart nginx
-
-      - name: Start Restream Engine & Auto Update DNS
+      - name: Start resilient FFmpeg loop
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
-          CLEARKEY: ${{ secrets.CLEARKEY }}
-          TARGET_PORT: "14211"
-          STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          MPD_URL: ${{ github.event.inputs.mpd_url }}
+          CLEARKEY_INPUT: ${{ github.event.inputs.clearkey_hex }}
+        shell: bash
         run: |
-          # 1. Bật Bore Tunnel
-          echo "🚀 Starting Bore Tunnel on port ${TARGET_PORT}..."
-          (while true; do bore local 5000 --to bore.pub --port "${TARGET_PORT}" >> /tmp/bore.log 2>&1; sleep 2; done) &
-          sleep 5
+          set -euo pipefail
 
-          echo "--- 📋 BORE LOG CHECK ---"
-          cat /tmp/bore.log | tail -n 10
-          echo "------------------------"
+          HLS_DIR="/dev/shm/hls/axn"
+          mkdir -p "$HLS_DIR"
 
-          # 2. Xóa sạch record Cloudflare DNS cũ
-          echo "🌐 Cleaning existing records & updating Cloudflare DNS..."
-          FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
-          
-          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" | jq -r '.result[0].id')
-
-          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-            echo "🗑️ Deleting existing record ID: ${RECORD_ID}..."
-            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" > /dev/null
+          # Tách tự động lấy phần KEY đằng sau nếu người dùng nhập dạng KID:KEY
+          if [[ "$CLEARKEY_INPUT" == *":"* ]]; then
+            DEC_KEY=$(echo "$CLEARKEY_INPUT" | awk -F':' '{print $NF}')
+          else
+            DEC_KEY="$CLEARKEY_INPUT"
           fi
 
-          # 3. Tạo CNAME mới
-          echo "✨ Creating fresh CNAME -> bore.pub..."
-          CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
-
-          echo "✅ Cloudflare Response: $(echo $CREATE_RES | jq -r '.success')"
-
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-          # 4. Chạy FFmpeg Ultra-Sync Engine
-          # 4. Chạy FFmpeg Engine - Khóa Cứng Realtime Clock & Đồng Bộ A/V 100%
-          # 4. Chạy FFmpeg Ultra-Sync Realtime Engine (Reset PTS 100%)
-          # 4. Chạy FFmpeg Engine - Khắc phục hoàn toàn lỗi Decoder H264 & Mất Segment
           while true; do
-            echo "🔥 Starting DECODER-FIXED FFmpeg Engine..."
-            
-            rm -rf /dev/shm/hls/axn/*
-            DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+            echo "[axn] Starting FFmpeg Engine at $(date -u +%FT%TZ)"
+            rm -f "$HLS_DIR"/index.m3u8 "$HLS_DIR"/*.ts
 
-            ffmpeg -y -hide_banner -loglevel warning -stats \
-              -user_agent "${USER_AGENT}" \
-              -cenc_decryption_key "${DEC_KEY}" \
-              -err_detect explode+ignore_err \
-              -fflags +genpts+discardcorrupt+igndts+fastseek \
-              -flags +low_delay \
+            ffmpeg -hide_banner -loglevel warning -stats \
+              -fflags +genpts+discardcorrupt+igndts \
+              -err_detect ignore_err \
               -reorder_queue_size 1024 \
-              -max_delay 500000 \
-              -rw_timeout 10000000 \
-              -i "${STREAM_MPD}" \
+              -flags +low_delay \
+              -analyzeduration 10M -probesize 10M \
+              -cenc_decryption_key "$DEC_KEY" \
+              -i "$MPD_URL" \
+              -map 0:v:0? -map 0:a:0? \
+              -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -profile:v main -level 4.0 \
+              -b:v 2500k -maxrate 2500k -bufsize 5000k \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
               -vf "fps=25,setpts=PTS-STARTPTS" \
               -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0,asetpts=PTS-STARTPTS" \
-              -c:v libx264 -preset ultrafast -tune zerolatency \
-              -threads 0 \
-              -b:v 2500k -maxrate 2500k -bufsize 5000k \
               -g 50 -keyint_min 50 -force_key_frames "expr:gte(t,n_forced*2)" -sc_threshold 0 \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
-              -map 0:v:0 -map 0:a:0 \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 10 \
-              -hls_delete_threshold 3 \
+              -hls_time 2 -hls_list_size 10 -hls_delete_threshold 3 \
+              -hls_segment_filename "$HLS_DIR/seg_%05d.ts" \
               -hls_flags delete_segments+omit_endlist+discont_start+append_list \
-              -hls_segment_filename "/dev/shm/hls/axn/seg%05d.ts" \
-              "/dev/shm/hls/axn/index.m3u8" || true
+              -f hls "$HLS_DIR/index.m3u8" || true
 
-            echo "⚠️ Stream restarted. Cleaning RAM & Retrying in 2s..."
-            sleep 2
+            echo "[axn] FFmpeg exited/reconnecting. Retrying in 3 seconds..."
+            sleep 3
           done
