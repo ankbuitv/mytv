@@ -74,7 +74,7 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
           CLEARKEY: ${{ secrets.CLEARKEY }}
-          TARGET_PORT: "18080"
+          TARGET_PORT: "14211"
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
         run: |
           # 1. Bật Bore Tunnel nối cổng 5000 ra Target Port 18080
