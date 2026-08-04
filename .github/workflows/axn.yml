@@ -182,20 +182,25 @@ jobs:
             fi
 
             # Chạy FFmpeg mở rộng tương thích DASH CENC MyTV
+            # FFmpeg tối ưu tương thích Card màn hình cũ & Fix Segment lệch giây
             ffmpeg -y -hide_banner -loglevel warning -stats \
               -user_agent "${USER_AGENT}" \
               -headers "${HEADERS_FFMPEG}" \
               -cenc_decryption_key "${DEC_KEY}" \
               -rw_timeout 15000000 \
-              -probesize 50M -analyzeduration 50M \
               -err_detect ignore_err \
               -fflags +genpts+discardcorrupt+nobuffer \
               -i "${STREAM_MPD}" \
               -map "0:v:0?" -map "0:a:0?" \
-              -c:v copy \
+              -c:v libx264 \
+              -preset ultrafast \
+              -tune zerolatency \
+              -profile:v main \
+              -pix_fmt yuv420p \
+              -g 50 -keyint_min 50 -sc_threshold 0 \
               -c:a copy \
               -f hls \
-              -hls_time 4 \
+              -hls_time 2 \
               -hls_list_size 6 \
               -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
               -hls_flags delete_segments+append_list+omit_endlist \
