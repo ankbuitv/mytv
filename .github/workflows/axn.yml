@@ -1,4 +1,4 @@
-name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore + Tailscale)
+name: CHRTV AXN Restream (Fixed Auto-Clean DNS + Bore + Tailscale RTP)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
         description: Optional Bore port. Leave empty to auto-pick a free port.
         required: false
       udp_port:
-        description: Optional UDP/RTP output port. Leave empty to skip.
+        description: Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.
         required: false
       udp_target:
         description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
@@ -30,7 +30,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ----------------------------------------------------
       # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
+      # ----------------------------------------------------
       - name: Connect to Tailscale Network
         uses: tailscale/github-action@v3
         with:
@@ -156,6 +158,7 @@ jobs:
 
           while true; do
             echo "🔥 Starting resilient FFmpeg Engine..."
+
             DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
 
             FFMPEG_COMMON_ARGS=(
@@ -192,9 +195,9 @@ jobs:
                 UDP_DEST="127.0.0.1:${UDP_PORT}"
               fi
 
-              echo "🌊 Streaming RTP to rtp://${UDP_DEST}"
-              # 🛠️ Sử dụng giao thức RTP gửi mpegts trực tiếp
-              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" -f mpegts "rtp://${UDP_DEST}?pkt_size=1316" || true
+              echo "🌊 Streaming RTP MPEG-TS to rtp://${UDP_DEST}"
+              # 🛠️ Bắn luồng MPEG-TS gói chuẩn trong RTP qua chuỗi tham số rtp://
+              ffmpeg "${FFMPEG_COMMON_ARGS[@]}" -f rtp_mpegts "rtp://${UDP_DEST}?pkt_size=1316" || true
             else
               ffmpeg "${FFMPEG_COMMON_ARGS[@]}" || true
             fi
