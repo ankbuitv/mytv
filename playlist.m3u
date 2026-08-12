@@ -104,10 +104,6 @@ https://devda.undo.it/Stream/index.php?id=vtvcab15&ext=.m3u8
 https://devda.undo.it/Stream/index.php?id=vtvcab19&ext=.m3u8
 
 
-#EXTINF:-1 tvg-id="style-tv" tvg-logo="https://static.wikia.nocookie.net/logopedia/images/a/a2/Style_Network_logo.png" group-title="🎬 BOX - Giải trí",STYLE TV
-https://devda.undo.it/Stream/index.php?id=style-tv&ext=.m3u8
-
-
 
 #EXTINF:-1 tvg-id="vtvcab2-phim-viet" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/1/14/VTVCab_2.svg/1024px-VTVCab_2.svg.png" group-title="TH - Truyền hình Việt",VTVCab2 Phim Việt
 https://devda.undo.it/Stream/index.php?id=vtvcab2-phim-viet&ext=.m3u8
@@ -417,6 +413,10 @@ https://live.fptplay53.net/epzhd2/outdoorfhd_vhls.smil/chunklist_b5000000.m3u8
 #EXTINF:-1 tvg-id="animalplanet" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Animal Planet
 http://198.58.104.90:8989/animalplanet/index.m3u8
 
+
+#EXTINF:-1 tvg-id="stdio" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Studio Universal
+http://138.121.15.230:9002/STUDIO-UNIVERSAL/index.m3u8
+
 #EXTINF:-1 tvg-id="americas-got-talent" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/America%27s_Got_Talent_Logo.svg/1024px-America%27s_Got_Talent_Logo.svg.png" group-title="🎬 BOX - Giải trí",America's Got Talent
 https://devda.undo.it/Stream/index.php?id=americas-got-talent&ext=.m3u8
 
@@ -434,6 +434,7 @@ https://abc-news-dmd-streams-1.akamaized.net/out/v1/701126012d044971b3fa89406a44
 
 #EXTINF:-1 tvg-id="sony-channel-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4c/Sony_Channel_2021.svg/1024px-Sony_Channel_2021.svg.png" group-title="🎬 BOX - Giải trí",Sony Channel TV
 https://devda.undo.it/Stream/index.php?id=sony-channel-tv&ext=.m3u8
+
 
 
 #EXTINF:-1 tvg-id="dw" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Deutsche_Welle_symbol_2012.svg/1024px-Deutsche_Welle_symbol_2012.svg.png" group-title="🎬 BOX - Giải trí",DW
