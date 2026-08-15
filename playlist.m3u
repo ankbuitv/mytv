@@ -317,6 +317,10 @@ https://usatv.dpdns.org/usatv/fpt_box_movie_1/index.m3u8
 #EXTINF:-1 tvg-id="boxhits" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Hits
 https://usatv.dpdns.org/usatv/fpt_box_hits/index.m3u8
 
+#EXTINF:-1 tvg-id="hollywood" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Hollywood Classics
+https://usatv.dpdns.org/usatv/Hollywood%20Classics%20HD/index.m3u8
+
+
 #EXTINF:-1 tvg-id="hbo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",HBO
 http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 
