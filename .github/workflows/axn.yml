@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
 
     env:
-      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpdL"
+      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
       CLEARKEY_KID: "9d29f87efdec3c9fab368f724a62ad0e"
       CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
