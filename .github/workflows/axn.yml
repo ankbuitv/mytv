@@ -28,22 +28,6 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: System Diagnostics
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "=========================================="
-          echo "🔍 SYSTEM DIAGNOSTICS"
-          echo "=========================================="
-          echo "MPD configured: yes"
-          echo "Bore port: 30117"
-          echo "HLS directory: /dev/shm/hls"
-          echo -n "FFmpeg version: "
-          ffmpeg -version | head -n 1
-          echo -n "Bore version: "
-          bore --version
-          echo "=========================================="
-
       - name: Prepare Shared Memory HLS Directory
         shell: bash
         run: |
@@ -64,10 +48,8 @@ jobs:
 
           if ! kill -0 "$HTTP_PID" 2>/dev/null; then
             echo "❌ HTTP Server failed to start!"
-            cat /tmp/http.log
             exit 1
           fi
-          echo "✅ HTTP Server running with PID: $HTTP_PID"
 
       - name: Start Bore Tunnel
         shell: bash
@@ -86,28 +68,21 @@ jobs:
             fi
             if ! kill -0 "$BORE_PID" 2>/dev/null; then
               echo "❌ Bore process died!"
-              cat /tmp/bore.log
               exit 1
             fi
           done
 
-          if [ "$PORT_BOUND" -eq 1 ]; then
-            echo "=================================================="
-            echo "✅ BORE TUNNEL ESTABLISHED"
-            echo "🔗 Endpoint: http://bore.pub:30117/index.m3u8"
-            echo "=================================================="
-          else
+          if [ "$PORT_BOUND" -eq 0 ]; then
             echo "❌ ERROR: Port 30117 occupied or failed."
-            cat /tmp/bore.log
             exit 1
           fi
+          echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
 
-      - name: Run Smooth Fast Remux
+      - name: Run Hybrid Fast Remux
         shell: bash
         run: |
           set -euo pipefail
           HLS_DIR="/dev/shm/hls"
-
           HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n'
 
           FFMPEG_ARGS=(
@@ -125,47 +100,33 @@ jobs:
             fi
           fi
 
-          # Tối ưu hóa mượt mà: fmp4 + independent_segments + igndts
+          # 🚀 Công thức Hybrid hoàn hảo 🚀
           FFMPEG_ARGS+=(
-            -fflags +genpts+igndts+discardcorrupt
+            -fflags +genpts+discardcorrupt
             -i "${MPD_URL}"
             -map 0:v:0?
             -map 0:a:0?
-            -c copy
+            -c:v copy                        # Giữ nguyên Video, ko tốn CPU
+            -bsf:v h264_mp4toannexb          # Sắp xếp lại luồng NAL units chống corrupt
+            -c:a aac -b:a 128k -ar 48000     # Tái tạo Audio timeline để đồng bộ A/V tuyệt đối
+            -muxdelay 0                      # Ép xả data ngay lập tức, triệt tiêu lag
             -f hls
             -hls_time 2
             -hls_list_size 6
-            -hls_flags delete_segments+omit_endlist+append_list+independent_segments
-            -hls_segment_type fmp4
+            -hls_flags delete_segments+omit_endlist+append_list
+            -hls_segment_type mpegts
             -hls_allow_cache 0
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting Optimized FFmpeg Remux Loop..."
+          echo "🔥 Starting Hybrid FFmpeg Remux Loop..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
-            if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then
-              echo "❌ Fatal: HTTP Server died!"
-              exit 1
-            fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "❌ Fatal: Bore Tunnel died!"
-              exit 1
-            fi
+            if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then exit 1; fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
 
             ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
-            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying in 3s..."
+            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying..."
             RETRY=$((RETRY+1))
             sleep 3
           done
-
-      - name: Debug Diagnostics
-        if: always()
-        shell: bash
-        run: |
-          echo "--- HTTP Log ---"
-          cat /tmp/http.log 2>/dev/null || true
-          echo "--- Bore Log ---"
-          cat /tmp/bore.log 2>/dev/null || true
-          echo "--- HLS Files ---"
-          ls -la /dev/shm/hls 2>/dev/null || true
