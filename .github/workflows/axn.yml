@@ -1,63 +1,109 @@
-name: Fast HLS Remux - Bore 30117
+name: Live DRM Decrypt Proxy - Bore 30117
 
 on:
   workflow_dispatch:
 
 jobs:
-  remux:
+  proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KID: "9d29f87efdec3c9fab368f724a62ad0e"
       CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install dependencies & High-Performance Web Server
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl lighttpd
+          sudo apt-get install -y -qq ffmpeg curl nodejs
 
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Prepare Shared Memory HLS Directory
+      - name: Create Proxy Server Script
         shell: bash
         run: |
-          set -euo pipefail
-          sudo rm -rf /dev/shm/hls
-          mkdir -p /dev/shm/hls
-          chmod 777 /dev/shm/hls
+          cat << 'EOF' > /tmp/server.js
+          const http = require('http');
+          const { spawn } = require('child_process');
 
-      - name: Start Lighttpd Web Server
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat << 'EOF' > /tmp/lighttpd.conf
-          server.document-root = "/dev/shm/hls"
-          server.port = 5000
-          server.bind = "0.0.0.0"
-          mimetype.assign = (
-            ".m3u8" => "application/vnd.apple.mpegurl",
-            ".mp4" => "video/mp4",
-            ".m4s" => "video/iso.segment"
-          )
+          const MPD_URL = process.env.MPD_URL;
+          const KEY = process.env.CLEARKEY_KEY;
+          const UA = process.env.USER_AGENT;
+          const REF = process.env.REFERER;
+
+          const server = http.createServer((req, res) => {
+            console.log(`[${new Date().toISOString()}] Incoming request: ${req.url}`);
+
+            res.writeHead(200, {
+              'Content-Type': 'video/mp2t',
+              'Connection': 'keep-alive',
+              'Access-Control-Allow-Origin': '*'
+            });
+
+            const headers = `Referer: ${REF}\r\nOrigin: https://mytvnet.vn\r\n`;
+
+            const ffmpegArgs = [
+              '-hide_banner',
+              '-loglevel', 'error',
+              '-user_agent', UA,
+              '-headers', headers,
+              '-cenc_decryption_key', KEY,
+              '-fflags', '+genpts+discardcorrupt',
+              '-i', MPD_URL,
+              '-map', '0:v:0?',
+              '-map', '0:a:0?',
+              '-c:v', 'copy',
+              '-c:a', 'copy',
+              '-bsf:v', 'h264_mp4toannexb',
+              '-f', 'mpegts',
+              'pipe:1'
+            ];
+
+            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+
+            ffmpeg.stdout.pipe(res);
+
+            ffmpeg.stderr.on('data', (data) => {
+              console.error(`FFmpeg Log: ${data}`);
+            });
+
+            req.on('close', () => {
+              console.log('Client disconnected, killing FFmpeg process...');
+              ffmpeg.kill('SIGKILL');
+            });
+          });
+
+          server.listen(5000, '0.0.0.0', () => {
+            console.log('🚀 Decrypt Proxy running on port 5000');
+          });
           EOF
-          lighttpd -f /tmp/lighttpd.conf
-          sleep 1
-          echo "✅ Lighttpd Server started on port 5000"
 
-      - name: Start Bore Tunnel
+      - name: Start Proxy Server & Bore Tunnel
         shell: bash
         run: |
           set -euo pipefail
+          
+          # Start Node Proxy Server
+          nohup node /tmp/server.js > /tmp/proxy.log 2>&1 &
+          PROXY_PID=$!
+          echo "$PROXY_PID" > /tmp/proxy.pid
+          sleep 2
+
+          if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "❌ Proxy Server failed to start!"
+            cat /tmp/proxy.log
+            exit 1
+          fi
+
+          # Start Bore Tunnel
           nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
           BORE_PID=$!
           echo "$BORE_PID" > /tmp/bore.pid
@@ -71,6 +117,7 @@ jobs:
             fi
             if ! kill -0 "$BORE_PID" 2>/dev/null; then
               echo "❌ Bore process died!"
+              cat /tmp/bore.log
               exit 1
             fi
           done
@@ -79,56 +126,15 @@ jobs:
             echo "❌ ERROR: Port 30117 occupied or failed."
             exit 1
           fi
-          echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
 
-      - name: Run Perfect Sync HLS Remux
-        shell: bash
-        run: |
-          set -euo pipefail
-          HLS_DIR="/dev/shm/hls"
-          HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n'
+          echo "=================================================="
+          echo "✅ STREAM URL CHUẨN (STREAM TRỰC TIẾP MP2T):"
+          echo "👉 http://bore.pub:30117/live.ts"
+          echo "=================================================="
 
-          FFMPEG_ARGS=(
-            -hide_banner
-            -loglevel error
-            -user_agent "${USER_AGENT}"
-            -headers "${HEADERS}"
-            -rw_timeout 15000000
-          )
-
-          if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
-            if ffmpeg -h demuxer=dash 2>&1 | grep -q "cenc_decryption_key"; then
-              FFMPEG_ARGS+=(-cenc_decryption_key "${CLEARKEY_KEY}")
-            fi
-          fi
-
-          # 🚀 Cấu hình Đồng Bộ A/V Tuyệt Đối (fMP4 + Audio Resync) 🚀
-          FFMPEG_ARGS+=(
-            -fflags +genpts+async
-            -i "${MPD_URL}"
-            -map 0:v:0?
-            -map 0:a:0?
-            -c:v copy
-            -c:a aac -b:a 128k -ar 48000
-            -af "aresample=async=1000"
-            -muxdelay 0
-            -f hls
-            -hls_time 4
-            -hls_list_size 10
-            -hls_delete_threshold 3
-            -hls_flags delete_segments+omit_endlist+append_list
-            -hls_segment_type fmp4
-            -hls_allow_cache 0
-            "${HLS_DIR}/index.m3u8"
-          )
-
-          echo "🔥 Starting Perfect Sync FFmpeg Remux..."
-          RETRY=0
-          while [ $RETRY -lt 20 ]; do
+          # Keep workflow alive
+          while true; do
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then exit 1; fi
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
-
-            ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
-            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying..."
-            RETRY=$((RETRY+1))
-            sleep 3
+            sleep 10
           done
