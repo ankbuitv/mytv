@@ -32,62 +32,62 @@ jobs:
         run: |
           cat << 'EOF' > /tmp/server.js
           const http = require('http');
-const { spawn } = require('child_process');
+          const { spawn } = require('child_process');
 
-const MPD_URL = process.env.MPD_URL;
-const KEY = process.env.CLEARKEY_KEY;
-const UA = process.env.USER_AGENT;
-const REF = process.env.REFERER;
+          const MPD_URL = process.env.MPD_URL;
+          const KEY = process.env.CLEARKEY_KEY;
+          const UA = process.env.USER_AGENT;
+          const REF = process.env.REFERER;
 
-const server = http.createServer((req, res) => {
-  console.log(`[${new Date().toISOString()}] Incoming request: ${req.url}`);
+          const server = http.createServer((req, res) => {
+            console.log(`[${new Date().toISOString()}] Incoming request: ${req.url}`);
 
-  res.writeHead(200, {
-    'Content-Type': 'video/mp2t',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*'
-  });
+            res.writeHead(200, {
+              'Content-Type': 'video/mp2t',
+              'Connection': 'keep-alive',
+              'Access-Control-Allow-Origin': '*'
+            });
 
-  const headers = `Referer: ${REF}\r\nOrigin: https://mytvnet.vn\r\n`;
+            const customHeaders = `Referer: ${REF}\r\nOrigin: https://mytvnet.vn\r\n`;
 
-  const ffmpegArgs = [
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-user_agent', UA,
-    '-headers', headers,
-    '-cenc_decryption_key', KEY,
-    '-fflags', '+genpts+discardcorrupt',
-    '-i', MPD_URL,
-    '-map', '0:v:0?',
-    '-map', '0:a:0?',
-    '-c:v', 'copy',                           // Giữ nguyên Video (decode cực nhanh, nhẹ CPU)
-    '-bsf:v', 'h264_mp4toannexb',
-    '-c:a', 'aac',                            // Encode lại Audio để dựng lại PTS timestamp chuẩn
-    '-b:a', '128k',
-    '-ar', '48000',
-    '-af', 'aresample=async=1:min_hard_comp=0.100000', // Khóa cứng Audio Sync với Video
-    '-muxdelay', '0',
-    '-f', 'mpegts',
-    'pipe:1'
-  ];
+            const ffmpegArgs = [
+              '-hide_banner',
+              '-loglevel', 'error',
+              '-user_agent', UA,
+              '-headers', customHeaders,
+              '-cenc_decryption_key', KEY,
+              '-fflags', '+genpts+discardcorrupt',
+              '-i', MPD_URL,
+              '-map', '0:v:0?',
+              '-map', '0:a:0?',
+              '-c:v', 'copy',
+              '-bsf:v', 'h264_mp4toannexb',
+              '-c:a', 'aac',
+              '-b:a', '128k',
+              '-ar', '48000',
+              '-af', 'aresample=async=1:min_hard_comp=0.100000',
+              '-muxdelay', '0',
+              '-f', 'mpegts',
+              'pipe:1'
+            ];
 
-  const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
 
-  ffmpeg.stdout.pipe(res);
+            ffmpeg.stdout.pipe(res);
 
-  ffmpeg.stderr.on('data', (data) => {
-    console.error(`FFmpeg Log: ${data}`);
-  });
+            ffmpeg.stderr.on('data', (data) => {
+              console.error(`FFmpeg Log: ${data}`);
+            });
 
-  req.on('close', () => {
-    console.log('Client disconnected, killing FFmpeg process...');
-    ffmpeg.kill('SIGKILL');
-  });
-});
+            req.on('close', () => {
+              console.log('Client disconnected, killing FFmpeg process...');
+              ffmpeg.kill('SIGKILL');
+            });
+          });
 
-server.listen(5000, '0.0.0.0', () => {
-  console.log('🚀 Decrypt Proxy running on port 5000');
-});
+          server.listen(5000, '0.0.0.0', () => {
+            console.log('🚀 Decrypt Proxy running on port 5000');
+          });
           EOF
 
       - name: Start Proxy Server & Bore Tunnel
