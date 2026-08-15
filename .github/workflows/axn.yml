@@ -28,7 +28,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Diagnostics & DRM Validation
+      - name: System Diagnostics
         shell: bash
         run: |
           set -euo pipefail
@@ -42,15 +42,9 @@ jobs:
           ffmpeg -version | head -n 1
           echo -n "Bore version: "
           bore --version
-
-          if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
-            echo "ClearKey Key configured: YES"
-          else
-            echo "ClearKey Key configured: NO (Unencrypted mode)"
-          fi
           echo "=========================================="
 
-      - name: Prepare HLS Directory
+      - name: Prepare Shared Memory HLS Directory
         shell: bash
         run: |
           set -euo pipefail
@@ -108,19 +102,14 @@ jobs:
             exit 1
           fi
 
-      - name: Run Fast Remux
+      - name: Run Smooth Fast Remux
         shell: bash
         run: |
           set -euo pipefail
           HLS_DIR="/dev/shm/hls"
 
-          echo "📡 Verifying CDN connection..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -A "${USER_AGENT}" -e "${REFERER}" "${MPD_URL}")
-          echo "HTTP Response Status Code: ${HTTP_CODE}"
-
           HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n'
 
-          # Khởi tạo tham số chuẩn cho FFmpeg
           FFMPEG_ARGS=(
             -hide_banner
             -loglevel warning
@@ -130,19 +119,15 @@ jobs:
             -rw_timeout 15000000
           )
 
-          # Kiểm tra hỗ trợ cenc_decryption_key trên FFmpeg demuxer
           if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
             if ffmpeg -h demuxer=dash 2>&1 | grep -q "cenc_decryption_key"; then
-              echo "🔑 Applying CENC Decryption Key..."
               FFMPEG_ARGS+=(-cenc_decryption_key "${CLEARKEY_KEY}")
-            else
-              echo "⚠️ WARNING: Current FFmpeg build does not support -cenc_decryption_key via CLI."
-              echo "Attempting standard DASH remux..."
             fi
           fi
 
+          # Tối ưu hóa mượt mà: fmp4 + independent_segments + igndts
           FFMPEG_ARGS+=(
-            -fflags +genpts+discardcorrupt
+            -fflags +genpts+igndts+discardcorrupt
             -i "${MPD_URL}"
             -map 0:v:0?
             -map 0:a:0?
@@ -150,34 +135,31 @@ jobs:
             -f hls
             -hls_time 2
             -hls_list_size 6
-            -hls_flags delete_segments+omit_endlist+append_list
-            -hls_segment_type mpegts
+            -hls_flags delete_segments+omit_endlist+append_list+independent_segments
+            -hls_segment_type fmp4
             -hls_allow_cache 0
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting FFmpeg fast remux loop..."
+          echo "🔥 Starting Optimized FFmpeg Remux Loop..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
-            # Health check background services
             if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then
               echo "❌ Fatal: HTTP Server died!"
-              cat /tmp/http.log
               exit 1
             fi
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
               echo "❌ Fatal: Bore Tunnel died!"
-              cat /tmp/bore.log
               exit 1
             fi
 
             ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
-            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying in 3s... (Attempt $((RETRY+1))/20)"
+            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying in 3s..."
             RETRY=$((RETRY+1))
             sleep 3
           done
 
-      - name: Post-Run Diagnostics
+      - name: Debug Diagnostics
         if: always()
         shell: bash
         run: |
