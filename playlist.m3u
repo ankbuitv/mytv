@@ -324,17 +324,17 @@ http://chrtv.duckdns.org:4000/hls/hbo/master.m3u8
 #EXTINF:-1 tvg-id="cg_hbofam" tvg-name="HBO Family" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/62F1A4ED-EB56-49DF-912D-0A2388131772/0-16x9.jpg?width=1980" tvg-chno="31" group-title="🎬 BOX - Giải trí",HBO Family
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
 #EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
-http://chrtv.duckdns.org:30112/stream/cg_hbofam/index.m3u8
+http://chrtv.duckdns.org:18483/stream/cg_hbofam/index.m3u8
 
 #EXTINF:-1 tvg-id="cg_hbohits" tvg-name="HBO Hits" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/CEE83EE5-D870-4B3C-9339-ACA7FF4020D0/0-16x9.jpg?width=1980" tvg-chno="32" group-title="🎬 BOX - Giải trí",HBO Hits
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
 #EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
-http://chrtv.duckdns.org:30112/stream/cg_hbohits/index.m3u8
+http://chrtv.duckdns.org:18483/stream/cg_hbohits/index.m3u8
 
 #EXTINF:-1 tvg-id="cg_hbosign" tvg-name="HBO Signature" tvg-logo="https://qp-pldt-image-resizer-cloud-prod.akamaized.net/image/D5127959-34E4-41B2-AA80-CE74DDC2C3C4/0-16x9.jpg?width=1980" tvg-chno="33" group-title="🎬 BOX - Giải trí",HBO Signature
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
 #EXTVLCOPT:http-referrer=https://thinkkast.dpdns.org/
-http://chrtv.duckdns.org:30112/stream/cg_hbosign/index.m3u8
+http://chrtv.duckdns.org:18483/stream/cg_hbosign/index.m3u8
 
 
 #EXTINF:-1 tvg-id="axn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/AXN_logo.svg/1024px-AXN_logo.svg.png" group-title="🎬 BOX - Giải trí",AXN HD
@@ -343,7 +343,7 @@ http://amg01982-tqg-vnmytk.ankb.qzz.io:14211/index.m3u8
 
 
 #EXTINF:-1 tvg-id="warner" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",Warner TV
-http://chrtv.duckdns.org:30112/stream/warner
+http://chrtv.duckdns.org:18483/stream/warner
 
 #EXTINF:-1 tvg-id="cinemax" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Cinemax_logo.svg/1024px-Cinemax_logo.svg.png" group-title="🎬 BOX - Giải trí",Cinemax USA
 https://thinkkast.dpdns.org/thinkkast/cg_cinemax/versiglia/main/index.m3u8
@@ -353,13 +353,13 @@ https://thinkkast.dpdns.org/thinkkast/cg_cinemax/versiglia/main/index.m3u8
 http://nmk.ioapk.com:5050/4gtv-live069/index.m3u8
 
 #EXTINF:-1 tvg-id="Paramount" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Paramount_Network_logo.svg/1024px-Paramount_Network_logo.svg.png" group-title="🎬 BOX - Giải trí",Paramount TV
-http://chrtv.duckdns.org:30112/stream/paramount
+http://chrtv.duckdns.org:18483/stream/paramount
 
 #EXTINF:-1 tvg-id="discovery" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Channel
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_DISCOVERY/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_DISCOVERY/index.m3u8
 
 #EXTINF:-1 tvg-id="discovery-vn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Việt Nam (UNSTABLE)
 http://amg01982-tqg-vnmytk.ankb.qzz.io:54115/index.m3u8
@@ -374,7 +374,7 @@ http://206.212.244.63/55/index.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_NAT_GEO/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_NAT_GEO/index.m3u8
 
 #EXTINF:-1 tvg-id="rakuten-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Rakuten_TV_logo.svg/1024px-Rakuten_TV_logo.svg.png" group-title="🎬 BOX - Giải trí",Rakuten TV
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
@@ -394,7 +394,7 @@ https://liveh12.vtvprime.vn/hls/KBS/03.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_MTV/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_MTV/index.m3u8
 
 
 #EXTINF:-1 tvg-id="clubbing-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/MTV_Logo_2021.svg/1024px-MTV_Logo_2021.svg.png" group-title="🎬 BOX - Giải trí",Clubbing TV
@@ -404,7 +404,7 @@ https://a-cdn.klowdtv.com/live3/clubbingtv_720p/playlist.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_CRIME_INVESTIGATION/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_CRIME_INVESTIGATION/index.m3u8
 
 #EXTINF:-1 tvg-id="outdoor" group-title="🎬 BOX - Giải trí" tvg-logo="https://images.fptplay53.net/media/channels/icon_channel_outdoor-channel_165649323545.png", Outdoor Channel
 #EXTVLCOPT:http-user-agent=VThanhTivi
@@ -475,13 +475,13 @@ https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_CARTOON_NETWORK/index.m3u8?token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
+http://chrtv.duckdns.org:18483/stream/USA_CARTOON_NETWORK/index.m3u8?token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 
 #EXTINF:-1 tvg-id="boomerang" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Boomerang_2014_logo.svg/1024px-Boomerang_2014_logo.svg.png" group-title="🎬 BOX - Giải trí",Boomerang
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_BOOMERANG/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_BOOMERANG/index.m3u8
 #EXTINF:-1 tvg-id="cartoonito" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4OEJ40DibjTsUKlLhJ-fPrTML-xdE4caJlgEZvhJ8zw&s" group-title="🎬 BOX - Giải trí",Cartoonito
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
@@ -492,7 +492,7 @@ http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/147.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/USA_NICKELODEON/index.m3u8
+http://chrtv.duckdns.org:18483/stream/USA_NICKELODEON/index.m3u8
 
 #EXTINF:-1 tvg-id="dreamworks" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/DreamWorks_Animation_2016.svg/1024px-DreamWorks_Animation_2016.svg.png" group-title="🎬 BOX - Giải trí",Dreamworks HD
 http://200.7.99.59:8000/play/a0mq/index.m3u8
@@ -540,7 +540,7 @@ https://devda.undo.it/Stream/index.php?id=world-poker-tour&ext=.m3u8
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30112/stream/studioc
+http://chrtv.duckdns.org:18483/stream/studioc
 
 #EXTINF:-1 tvg-id="tv360-9" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 9
 http://chrtv.duckdns.org:30106/hls/tv360_9/1080p.m3u8
