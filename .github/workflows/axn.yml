@@ -16,12 +16,12 @@ jobs:
       REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install dependencies
+      - name: Install dependencies & High-Performance Web Server
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl
+          sudo apt-get install -y -qq ffmpeg curl lighttpd
 
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
@@ -34,22 +34,24 @@ jobs:
           set -euo pipefail
           sudo rm -rf /dev/shm/hls
           mkdir -p /dev/shm/hls
-          chmod 755 /dev/shm/hls
+          chmod 777 /dev/shm/hls
 
-      - name: Start Background HTTP Server
+      - name: Start Lighttpd Web Server
         shell: bash
         run: |
           set -euo pipefail
-          cd /dev/shm/hls
-          nohup python3 -m http.server 5000 --bind 0.0.0.0 > /tmp/http.log 2>&1 &
-          HTTP_PID=$!
-          echo "$HTTP_PID" > /tmp/http.pid
+          cat << 'EOF' > /tmp/lighttpd.conf
+          server.document-root = "/dev/shm/hls"
+          server.port = 5000
+          server.bind = "0.0.0.0"
+          mimetype.assign = (
+            ".m3u8" => "application/vnd.apple.mpegurl",
+            ".ts" => "video/mp2t"
+          )
+          EOF
+          lighttpd -f /tmp/lighttpd.conf
           sleep 1
-
-          if ! kill -0 "$HTTP_PID" 2>/dev/null; then
-            echo "❌ HTTP Server failed to start!"
-            exit 1
-          fi
+          echo "✅ Lighttpd Server started on port 5000"
 
       - name: Start Bore Tunnel
         shell: bash
@@ -72,13 +74,13 @@ jobs:
             fi
           done
 
-          if [ "$PORT_BOUND" -eq 0 ]; then
+          if [ "$PORT_BOUND" -eq 0 ]; me
             echo "❌ ERROR: Port 30117 occupied or failed."
             exit 1
           fi
           echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
 
-      - name: Run Pure Stream Copy HLS Remux
+      - name: Run Stable HLS Remux
         shell: bash
         run: |
           set -euo pipefail
@@ -99,7 +101,7 @@ jobs:
             fi
           fi
 
-          # 🚀 Cấu hình Stream Copy tối ưu tuyệt đối cho Live HLS 🚀
+          # 🚀 Cấu hình Fix Lag & Lệch Tiếng 🚀
           FFMPEG_ARGS+=(
             -fflags +genpts+discardcorrupt
             -i "${MPD_URL}"
@@ -108,20 +110,19 @@ jobs:
             -c:v copy
             -c:a copy
             -bsf:v h264_mp4toannexb
-            -muxdelay 0
             -f hls
-            -hls_time 2
-            -hls_list_size 6
+            -hls_time 3
+            -hls_list_size 15
+            -hls_delete_threshold 5
             -hls_flags delete_segments+omit_endlist+append_list
             -hls_segment_type mpegts
             -hls_allow_cache 0
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting Pure Stream Copy FFmpeg Loop..."
+          echo "🔥 Starting High Performance FFmpeg Remux..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
-            if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then exit 1; fi
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
 
             ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
