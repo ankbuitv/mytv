@@ -28,7 +28,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Diagnostics & DRM Setup
+      - name: Diagnostics & DRM Validation
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,7 @@ jobs:
           if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
             echo "ClearKey Key configured: YES"
           else
-            echo "ClearKey Key configured: NO (Using unencrypted or default stream)"
+            echo "ClearKey Key configured: NO (Unencrypted mode)"
           fi
           echo "=========================================="
 
@@ -108,25 +108,19 @@ jobs:
             exit 1
           fi
 
-      - name: Verify CDN Access & Run FFmpeg
+      - name: Run Fast Remux
         shell: bash
         run: |
           set -euo pipefail
           HLS_DIR="/dev/shm/hls"
 
-          echo "📡 Verifying CDN connection from GitHub Runner IP..."
+          echo "📡 Verifying CDN connection..."
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -A "${USER_AGENT}" -e "${REFERER}" "${MPD_URL}")
           echo "HTTP Response Status Code: ${HTTP_CODE}"
 
-          if [ "$HTTP_CODE" -eq 404 ] || [ "$HTTP_CODE" -eq 403 ]; then
-            echo "❌ CDN returned HTTP ${HTTP_CODE}!"
-            echo "⚠️ Nguyên nhân: CDN MyTVNet chặn IP của GitHub Actions Runner (Geo-blocking VN) hoặc yêu cầu Token."
-            echo "👉 Hãy đảm bảo bạn điền đúng CLEARKEY_KEY và kiểm tra nếu link MPD cần kèm Token (ví dụ ?token=...)"
-          fi
-
-          # Xây dựng mảng biến FFmpeg
           HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n'
 
+          # Khởi tạo tham số chuẩn cho FFmpeg
           FFMPEG_ARGS=(
             -hide_banner
             -loglevel warning
@@ -136,9 +130,15 @@ jobs:
             -rw_timeout 15000000
           )
 
-          # Thêm decryption_key nếu được cấu hình
+          # Kiểm tra hỗ trợ cenc_decryption_key trên FFmpeg demuxer
           if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
-            FFMPEG_ARGS+=(-decryption_key "${CLEARKEY_KEY}")
+            if ffmpeg -h demuxer=dash 2>&1 | grep -q "cenc_decryption_key"; then
+              echo "🔑 Applying CENC Decryption Key..."
+              FFMPEG_ARGS+=(-cenc_decryption_key "${CLEARKEY_KEY}")
+            else
+              echo "⚠️ WARNING: Current FFmpeg build does not support -cenc_decryption_key via CLI."
+              echo "Attempting standard DASH remux..."
+            fi
           fi
 
           FFMPEG_ARGS+=(
@@ -159,13 +159,25 @@ jobs:
           echo "🔥 Starting FFmpeg fast remux loop..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
+            # Health check background services
+            if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then
+              echo "❌ Fatal: HTTP Server died!"
+              cat /tmp/http.log
+              exit 1
+            fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
+              echo "❌ Fatal: Bore Tunnel died!"
+              cat /tmp/bore.log
+              exit 1
+            fi
+
             ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
             echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying in 3s... (Attempt $((RETRY+1))/20)"
             RETRY=$((RETRY+1))
             sleep 3
           done
 
-      - name: Debug Diagnostics
+      - name: Post-Run Diagnostics
         if: always()
         shell: bash
         run: |
