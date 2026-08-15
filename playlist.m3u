@@ -311,6 +311,9 @@ https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
 # Cập nhật ngày: 07/24
 # ==========================================
 
+#EXTINF:-1 tvg-id="boxmovies" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Movies 1
+https://usatv.dpdns.org/usatv/fpt_box_movie_1/index.m3u8
+
 #EXTINF:-1 tvg-id="hbo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",HBO
 http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 
