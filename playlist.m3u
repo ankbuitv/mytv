@@ -314,6 +314,9 @@ https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
 #EXTINF:-1 tvg-id="boxmovies" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Movies 1
 https://usatv.dpdns.org/usatv/fpt_box_movie_1/index.m3u8
 
+#EXTINF:-1 tvg-id="boxhits" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Hits
+https://usatv.dpdns.org/usatv/fpt_box_hits/index.m3u8
+
 #EXTINF:-1 tvg-id="hbo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",HBO
 http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 
@@ -413,7 +416,7 @@ http://198.58.104.90:8989/animalplanet/index.m3u8
 
 
 #EXTINF:-1 tvg-id="stdio" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Studio Universal
-http://138.121.15.230:9002/STUDIO-UNIVERSAL/index.m3u8
+https://usatv.dpdns.org/usatv/Studio%20Universal/index.m3u8
 
 #EXTINF:-1 tvg-id="americas-got-talent" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/America%27s_Got_Talent_Logo.svg/1024px-America%27s_Got_Talent_Logo.svg.png" group-title="🎬 BOX - Giải trí",America's Got Talent
 https://devda.undo.it/Stream/index.php?id=americas-got-talent&ext=.m3u8
@@ -544,7 +547,7 @@ http://chrtv.duckdns.org:30114/stream/studioc
 http://chrtv.duckdns.org:30106/hls/tv360_9/1080p.m3u8
 
 #EXTINF:-1 tvg-id="tv360-10" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 10
-http://chrtv.duckdns.org:5888/stream/tv360-10
+http://chrtv.duckdns.org:30207/hls/tv360-10/1080p.m3u8
 
 #EXTINF:-1 tvg-id="tv360-11" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://toiyeuvietnam.dpdns.org/Logo/tv360-9/KenhCoBan.png",TV360+ 11
 #EXTVLCOPT:http-user-agent=Dalvik/2.1.0
