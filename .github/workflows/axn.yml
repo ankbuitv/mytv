@@ -104,7 +104,7 @@ jobs:
         shell: bash
         env:
           STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          BORE_PORT: "30114"
+          BORE_PORT: "30115"
 
           # ========================================================
           # CLEARKEY:
