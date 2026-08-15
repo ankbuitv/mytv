@@ -344,16 +344,10 @@ http://nmk.ioapk.com:5050/4gtv-live069/index.m3u8
 http://chrtv.duckdns.org:30114/stream/paramount
 
 #EXTINF:-1 tvg-id="discovery" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Channel
-#KODIPROP:inputstreamaddon=inputstream.adaptive
-#KODIPROP:inputstream.adaptive.manifest_type=hls
-#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://chrtv.duckdns.org:30114/stream/USA_DISCOVERY/index.m3u8
+http://chrtv.duckdns.org:30114/stream/dsc
 
-#EXTINF:-1 tvg-id="discovery-family" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Family
-http://40.160.24.52/DISCOVERY_FAMILY/index.m3u8
-
-#EXTINF:-1 tvg-id="discovery-science" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Science
-http://206.212.244.63/55/index.m3u8
+#EXTINF:-1 tvg-id="discovery-asia" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Asia
+http://chrtv.duckdns.org:30114/stream/asia
 
 #EXTINF:-1 tvg-id="natgeo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/fc/Nat_Geo_Channel_logo.svg/1024px-Nat_Geo_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",National Geographic
 #KODIPROP:inputstreamaddon=inputstream.adaptive
