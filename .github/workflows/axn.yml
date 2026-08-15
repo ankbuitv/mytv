@@ -1,217 +1,66 @@
-name: CHRTV AXN Fast DASH to HLS
+name: AXN Fast Remux → HLS
 
 on:
   workflow_dispatch:
 
 jobs:
-  restream:
+  remux:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
     steps:
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # ============================================================
-      # 2. INSTALL
-      # ============================================================
-      - name: Install dependencies
-        shell: bash
+      - name: Install FFmpeg + Bore
         run: |
-          set -e
-
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            nginx \
-            curl \
-            jq
+          sudo apt-get install -y ffmpeg curl
 
-          ffmpeg -version
+          curl -fsSL \
+            https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz
 
-      # ============================================================
-      # 3. CONFIG HLS RAM DISK + NGINX
-      # ============================================================
-      - name: Configure Nginx
-        shell: bash
+          sudo install -m 755 bore /usr/local/bin/bore
+
+      - name: Prepare HLS
         run: |
-          set -e
+          sudo mkdir -p /dev/shm/hls
+          sudo chmod 777 /dev/shm/hls
 
-          sudo rm -rf /dev/shm/hls
-          sudo mkdir -p /dev/shm/hls/axn
-          sudo chmod -R 777 /dev/shm/hls
-
-          sudo tee /etc/nginx/nginx.conf > /dev/null <<'EOF'
-          worker_processes auto;
-          pid /run/nginx.pid;
-
-          events {
-              worker_connections 8192;
-              multi_accept on;
-              use epoll;
-          }
-
-          http {
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
-
-              sendfile off;
-              tcp_nopush on;
-              tcp_nodelay on;
-
-              keepalive_timeout 15;
-
-              access_log off;
-              error_log /dev/null crit;
-
-              server {
-                  listen 5000 default_server;
-                  server_name _;
-
-                  root /dev/shm/hls/axn;
-
-                  add_header Access-Control-Allow-Origin "*" always;
-                  add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
-                  add_header Access-Control-Allow-Headers "*" always;
-
-                  location ~* \.m3u8$ {
-                      add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
-                  }
-
-                  location ~* \.(m4s|mp4|ts)$ {
-                      add_header Cache-Control "no-cache, max-age=2" always;
-                  }
-
-                  types {
-                      application/vnd.apple.mpegurl m3u8;
-                      video/mp4 mp4;
-                      video/mp2t ts;
-                  }
-              }
-          }
-          EOF
-
-          sudo nginx -t
-          sudo systemctl restart nginx
-
-      # ============================================================
-      # 4. START BORE + FAST REMUX
-      # ============================================================
-      - name: Start Restream Engine
-        shell: bash
-        env:
-          STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-          BORE_PORT: "30115"
-
-          # ========================================================
-          # CLEARKEY:
-          #
-          # Nếu đây là nguồn bạn có quyền giải mã, phần credential/
-          # key phải được quản lý riêng (ví dụ GitHub Secrets).
-          #
-          # Không đặt khóa DRM trực tiếp vào source code.
-          # ========================================================
-          CLEARKEY: ${{ secrets.CLEARKEY }}
-
+      - name: Start HLS server
         run: |
-          set -euo pipefail
+          cd /dev/shm/hls
 
-          HLS_DIR="/dev/shm/hls/axn"
+          python3 -m http.server 5000 \
+            > /tmp/http.log 2>&1 &
 
-          rm -rf "${HLS_DIR:?}"/*
-          mkdir -p "$HLS_DIR"
-
-          echo "================================================"
-          echo "🚀 CHRTV FAST DASH → HLS"
-          echo "================================================"
-          echo "MPD:"
-          echo "${STREAM_MPD}"
-          echo
-          echo "Local HLS:"
-          echo "http://127.0.0.1:5000/index.m3u8"
-          echo
-          echo "Bore port:"
-          echo "${BORE_PORT}"
-          echo "================================================"
-
-          # ==========================================================
-          # BORE
-          # ==========================================================
-
-          echo "🌐 Starting Bore..."
-
-          bore local 5000 \
-            --to bore.pub \
-            --port "${BORE_PORT}" \
+          bore local 5000 --to bore.pub --port 30117 \
             > /tmp/bore.log 2>&1 &
-
-          BORE_PID=$!
 
           sleep 5
 
-          echo
-          echo "========== BORE =========="
-          cat /tmp/bore.log || true
-          echo "=========================="
-          echo
+          echo "===== Bore ====="
+          cat /tmp/bore.log
 
-          # ==========================================================
-          # REMUX LOOP
-          # ==========================================================
+      - name: Fast Remux
+        env:
+          INPUT_MPD: ${{ secrets.INPUT_MPD }}
+        run: |
+          set -e
 
-          while true; do
+          rm -rf /dev/shm/hls/*
 
-            echo "=============================================="
-            echo "🔥 Starting FFmpeg"
-            echo "=============================================="
-
-            rm -f "${HLS_DIR}"/*.m3u8
-            rm -f "${HLS_DIR}"/*.m4s
-            rm -f "${HLS_DIR}"/*.mp4
-            rm -f "${HLS_DIR}"/*.ts
-
-            # ========================================================
-            # FAST REMUX
-            #
-            # Nguồn clear/đã được cấp quyền:
-            #
-            # VIDEO -> copy
-            # AUDIO -> copy
-            #
-            # Không libx264
-            # Không re-encode
-            # ========================================================
-
-            ffmpeg \
-              -hide_banner \
-              -loglevel warning \
-              -stats \
-              -rw_timeout 15000000 \
-              -i "${STREAM_MPD}" \
-              -map 0:v:0? \
-              -map 0:a:0? \
-              -c:v copy \
-              -c:a copy \
-              -f hls \
-              -hls_segment_type fmp4 \
-              -hls_time 2 \
-              -hls_list_size 5 \
-              -hls_delete_threshold 2 \
-              -hls_flags delete_segments+independent_segments+omit_endlist+program_date_time \
-              -hls_fmp4_init_filename "init.mp4" \
-              -hls_segment_filename "${HLS_DIR}/seg_%06d.m4s" \
-              "${HLS_DIR}/index.m3u8"
-
-            EXIT_CODE=$?
-
-            echo
-            echo "⚠️ FFmpeg exited: ${EXIT_CODE}"
-            echo "🔄 Restarting in 3 seconds..."
-            echo
-
-            sleep 3
-
-          done
+          ffmpeg \
+            -hide_banner \
+            -loglevel warning \
+            -user_agent "Dalvik/2.1.0" \
+            -rw_timeout 15000000 \
+            -fflags +genpts+discardcorrupt \
+            -i "$INPUT_MPD" \
+            -map 0:v:0? \
+            -map 0:a:0? \
+            -c copy \
+            -f hls \
+            -hls_time 2 \
+            -hls_list_size 6 \
+            -hls_flags delete_segments+append_list+omit_endlist \
+            -hls_segment_type mpegts \
+            /dev/shm/hls/index.m3u8
