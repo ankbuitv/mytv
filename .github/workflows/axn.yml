@@ -1,25 +1,7 @@
-name: CHRTV AXN Restream (Final Fixed Engine)
+name: CHRTV AXN Fast DASH to HLS
 
 on:
   workflow_dispatch:
-    inputs:
-      mpd_url:
-        description: DASH/CENC MPD URL
-        required: true
-        default: https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd
-      clearkey_hex:
-        description: ClearKey hex key (Format KID:KEY)
-        required: false
-        default: "9d29f87efdec3c9fab368f724a62ad0e:6f1c09c035eab36323d60d1454db3d20"
-      bore_port:
-        description: Optional Bore port. Leave empty to auto-pick a free port.
-        required: false
-      udp_port:
-        description: Optional RTP output port (e.g. 14212). Leave empty to skip RTP output.
-        required: false
-      udp_target:
-        description: Target Tailscale IP (e.g. 100.101.202.77). Leave empty to use localhost.
-        required: false
 
 jobs:
   restream:
@@ -27,35 +9,42 @@ jobs:
     timeout-minutes: 350
 
     steps:
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------
-      # 🚀 KẾT NỐI MẠNG LAN ẢO TAILSCALE
-      # ----------------------------------------------------
-      - name: Connect to Tailscale Network
-        uses: tailscale/github-action@v3
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-
-      - name: Install dependencies & Stream Tools
+      # ============================================================
+      # 2. INSTALL
+      # ============================================================
+      - name: Install dependencies
+        shell: bash
         run: |
+          set -e
+
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx curl tar jq python3-pip
-          pip3 install --break-system-packages yt-dlp streamlink
-          
-          # Install Bore Tunnel
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          sudo mv bore /usr/local/bin/bore
-          sudo chmod +x /usr/local/bin/bore
+          sudo apt-get install -y \
+            ffmpeg \
+            nginx \
+            curl \
+            jq
 
-      - name: Configure Nginx for HLS delivery
+          ffmpeg -version
+
+      # ============================================================
+      # 3. CONFIG HLS RAM DISK + NGINX
+      # ============================================================
+      - name: Configure Nginx
+        shell: bash
         run: |
-          sudo rm -rf /dev/shm/hls/axn
+          set -e
+
+          sudo rm -rf /dev/shm/hls
           sudo mkdir -p /dev/shm/hls/axn
           sudo chmod -R 777 /dev/shm/hls
 
-          cat <<'EOF' | sudo tee /etc/nginx/nginx.conf > /dev/null
+          sudo tee /etc/nginx/nginx.conf > /dev/null <<'EOF'
           worker_processes auto;
           pid /run/nginx.pid;
 
@@ -72,7 +61,9 @@ jobs:
               sendfile off;
               tcp_nopush on;
               tcp_nodelay on;
-              keepalive_timeout 30;
+
+              keepalive_timeout 15;
+
               access_log off;
               error_log /dev/null crit;
 
@@ -80,133 +71,147 @@ jobs:
                   listen 5000 default_server;
                   server_name _;
 
-                  location / {
-                      root /dev/shm/hls/axn;
+                  root /dev/shm/hls/axn;
 
-                      add_header Access-Control-Allow-Origin "*" always;
-                      add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
-                      add_header Access-Control-Allow-Headers "*" always;
+                  add_header Access-Control-Allow-Origin "*" always;
+                  add_header Access-Control-Allow-Methods "GET, OPTIONS, HEAD" always;
+                  add_header Access-Control-Allow-Headers "*" always;
 
-                      location ~* \.m3u8$ {
-                          add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
-                      }
+                  location ~* \.m3u8$ {
+                      add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                  }
 
-                      location ~* \.ts$ {
-                          add_header Cache-Control "public, max-age=31536000, immutable" always;
-                      }
+                  location ~* \.(m4s|mp4|ts)$ {
+                      add_header Cache-Control "no-cache, max-age=2" always;
+                  }
 
-                      types {
-                          application/vnd.apple.mpegurl m3u8;
-                          video/mp2t ts;
-                      }
+                  types {
+                      application/vnd.apple.mpegurl m3u8;
+                      video/mp4 mp4;
+                      video/mp2t ts;
                   }
               }
           }
           EOF
 
-          if command -v systemctl >/dev/null 2>&1; then
-            sudo systemctl restart nginx || true
-          else
-            sudo service nginx restart || sudo nginx
-          fi
+          sudo nginx -t
+          sudo systemctl restart nginx
 
-      - name: Start Restream Engine & Auto Update DNS
-        env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          CF_SUBDOMAIN: ${{ secrets.CF_SUBDOMAIN }}
-          CLEARKEY: ${{ github.event.inputs.clearkey_hex || secrets.CLEARKEY }}
-          TARGET_PORT: ${{ github.event.inputs.bore_port }}
-          UDP_PORT: ${{ github.event.inputs.udp_port }}
-          UDP_TARGET: ${{ github.event.inputs.udp_target }}
-          STREAM_MPD: ${{ github.event.inputs.mpd_url }}
+      # ============================================================
+      # 4. START BORE + FAST REMUX
+      # ============================================================
+      - name: Start Restream Engine
         shell: bash
+        env:
+          STREAM_MPD: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          BORE_PORT: "30114"
+
+          # ========================================================
+          # CLEARKEY:
+          #
+          # Nếu đây là nguồn bạn có quyền giải mã, phần credential/
+          # key phải được quản lý riêng (ví dụ GitHub Secrets).
+          #
+          # Không đặt khóa DRM trực tiếp vào source code.
+          # ========================================================
+          CLEARKEY: ${{ secrets.CLEARKEY }}
+
         run: |
           set -euo pipefail
 
-          if [ -n "${TARGET_PORT}" ]; then
-            BORE_PORT="${TARGET_PORT}"
-          else
-            BORE_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0", 0)); print(s.getsockname()[1]); s.close()')"
-          fi
-
-          echo "🚀 Starting Bore tunnel on port ${BORE_PORT}..."
-          (while true; do
-            bore local 5000 --to bore.pub --port "${BORE_PORT}" >> /tmp/bore.log 2>&1
-            sleep 2
-          done) &
-          sleep 5
-
-          echo "🌐 Cleaning existing Cloudflare DNS records..."
-          FULL_DOMAIN="${CF_SUBDOMAIN}.ankb.qzz.io"
-
-          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FULL_DOMAIN}" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" | jq -r '.result[0].id')
-
-          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
-            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-              -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" > /dev/null
-          fi
-
-          CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"CNAME\",\"name\":\"${CF_SUBDOMAIN}\",\"content\":\"bore.pub\",\"ttl\":120,\"proxied\":false}")
-
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-          HEADERS_FFMPEG=$'Referer: https://mytvnet.vn/\r\nOrigin: https://mytvnet.vn\r\n'
           HLS_DIR="/dev/shm/hls/axn"
+
+          rm -rf "${HLS_DIR:?}"/*
           mkdir -p "$HLS_DIR"
 
-          # Tách Key Hex từ cặp KID:KEY
-          DEC_KEY="$(echo "${CLEARKEY}" | awk -F':' '{print $NF}')"
+          echo "================================================"
+          echo "🚀 CHRTV FAST DASH → HLS"
+          echo "================================================"
+          echo "MPD:"
+          echo "${STREAM_MPD}"
+          echo
+          echo "Local HLS:"
+          echo "http://127.0.0.1:5000/index.m3u8"
+          echo
+          echo "Bore port:"
+          echo "${BORE_PORT}"
+          echo "================================================"
+
+          # ==========================================================
+          # BORE
+          # ==========================================================
+
+          echo "🌐 Starting Bore..."
+
+          bore local 5000 \
+            --to bore.pub \
+            --port "${BORE_PORT}" \
+            > /tmp/bore.log 2>&1 &
+
+          BORE_PID=$!
+
+          sleep 5
+
+          echo
+          echo "========== BORE =========="
+          cat /tmp/bore.log || true
+          echo "=========================="
+          echo
+
+          # ==========================================================
+          # REMUX LOOP
+          # ==========================================================
 
           while true; do
-            echo "🔥 Starting High-Efficiency FFmpeg Engine..."
 
-            UDP_ARGS=()
-            if [ -n "${UDP_PORT}" ]; then
-              if [ -n "${UDP_TARGET}" ]; then
-                UDP_DEST="${UDP_TARGET}:${UDP_PORT}"
-              else
-                UDP_DEST="127.0.0.1:${UDP_PORT}"
-              fi
-              echo "🌊 Setting up parallel RTP MPEG-TS stream to rtp://${UDP_DEST}"
-              UDP_ARGS=(
-                -map "0:v:0?" -map "0:a:0?"
-                -c copy
-                -f rtp_mpegts "rtp://${UDP_DEST}?pkt_size=1316"
-              )
-            fi
+            echo "=============================================="
+            echo "🔥 Starting FFmpeg"
+            echo "=============================================="
 
-            # Chạy FFmpeg mở rộng tương thích DASH CENC MyTV
-            # FFmpeg tối ưu tương thích Card màn hình cũ & Fix Segment lệch giây
-            ffmpeg -y -hide_banner -loglevel warning -stats \
-              -user_agent "${USER_AGENT}" \
-              -headers "${HEADERS_FFMPEG}" \
-              -cenc_decryption_key "${DEC_KEY}" \
+            rm -f "${HLS_DIR}"/*.m3u8
+            rm -f "${HLS_DIR}"/*.m4s
+            rm -f "${HLS_DIR}"/*.mp4
+            rm -f "${HLS_DIR}"/*.ts
+
+            # ========================================================
+            # FAST REMUX
+            #
+            # Nguồn clear/đã được cấp quyền:
+            #
+            # VIDEO -> copy
+            # AUDIO -> copy
+            #
+            # Không libx264
+            # Không re-encode
+            # ========================================================
+
+            ffmpeg \
+              -hide_banner \
+              -loglevel warning \
+              -stats \
               -rw_timeout 15000000 \
-              -err_detect ignore_err \
-              -fflags +genpts+discardcorrupt+nobuffer \
               -i "${STREAM_MPD}" \
-              -map "0:v:0?" -map "0:a:0?" \
-              -c:v libx264 \
-              -preset ultrafast \
-              -tune zerolatency \
-              -profile:v main \
-              -pix_fmt yuv420p \
-              -g 50 -keyint_min 50 -sc_threshold 0 \
+              -map 0:v:0? \
+              -map 0:a:0? \
+              -c:v copy \
               -c:a copy \
               -f hls \
+              -hls_segment_type fmp4 \
               -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_segment_filename "${HLS_DIR}/seg_%06d.ts" \
-              -hls_flags delete_segments+append_list+omit_endlist \
-              "${HLS_DIR}/index.m3u8" \
-              "${UDP_ARGS[@]}" || true
+              -hls_list_size 5 \
+              -hls_delete_threshold 2 \
+              -hls_flags delete_segments+independent_segments+omit_endlist+program_date_time \
+              -hls_fmp4_init_filename "init.mp4" \
+              -hls_segment_filename "${HLS_DIR}/seg_%06d.m4s" \
+              "${HLS_DIR}/index.m3u8"
 
-            echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
+            EXIT_CODE=$?
+
+            echo
+            echo "⚠️ FFmpeg exited: ${EXIT_CODE}"
+            echo "🔄 Restarting in 3 seconds..."
+            echo
+
             sleep 3
+
           done
