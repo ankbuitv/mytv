@@ -1,0 +1,207 @@
+name: CHRTV - Loop MP4 to HLS
+
+on:
+  workflow_dispatch:
+
+  # Tự khởi động lại workflow định kỳ nếu cần.
+  # Lưu ý: GitHub Actions runner không phải VPS chạy 24/7.
+  schedule:
+    - cron: "0 */5 * * *"
+
+concurrency:
+  group: chrtv-stream
+  cancel-in-progress: true
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 355
+
+    steps:
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # INSTALL FFMPEG
+      # ==========================================================
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+          echo "FFmpeg version:"
+          ffmpeg -version | head -n 1
+
+      # ==========================================================
+      # CHECK VIDEO
+      # ==========================================================
+
+      - name: Check Source Video
+        run: |
+          VIDEO="./video.mp4"
+
+          if [ ! -f "$VIDEO" ]; then
+            echo "❌ Không tìm thấy file:"
+            echo "$VIDEO"
+            echo
+            echo "Hãy đặt video.mp4 ở root repository."
+            exit 1
+          fi
+
+          echo "✅ Source:"
+          ls -lh "$VIDEO"
+
+          echo
+          echo "📺 Media information:"
+          ffprobe \
+            -v error \
+            -show_entries format=duration,size \
+            -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate \
+            -of default=noprint_wrappers=1 \
+            "$VIDEO"
+
+      # ==========================================================
+      # CREATE HLS DIRECTORY
+      # ==========================================================
+
+      - name: Prepare HLS
+        run: |
+          rm -rf hls
+          mkdir -p hls
+
+          touch hls/index.m3u8
+
+          echo "📁 HLS directory:"
+          ls -la hls
+
+      # ==========================================================
+      # START HTTP SERVER
+      # ==========================================================
+
+      - name: Start HLS HTTP Server
+        run: |
+          cat > server.py <<'PY'
+          from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+          import os
+
+          PORT = 30113
+
+          class HLSHandler(SimpleHTTPRequestHandler):
+
+              def end_headers(self):
+                  self.send_header(
+                      "Access-Control-Allow-Origin",
+                      "*"
+                  )
+
+                  self.send_header(
+                      "Access-Control-Allow-Methods",
+                      "GET, HEAD, OPTIONS"
+                  )
+
+                  self.send_header(
+                      "Access-Control-Allow-Headers",
+                      "*"
+                  )
+
+                  self.send_header(
+                      "Cache-Control",
+                      "no-cache, no-store, must-revalidate"
+                  )
+
+                  self.send_header(
+                      "Pragma",
+                      "no-cache"
+                  )
+
+                  super().end_headers()
+
+              def do_OPTIONS(self):
+                  self.send_response(204)
+                  self.end_headers()
+
+              def log_message(self, format, *args):
+                  print(
+                      "[HTTP]",
+                      self.address_string(),
+                      "-",
+                      format % args
+                  )
+
+          os.chdir("hls")
+
+          server = ThreadingHTTPServer(
+              ("0.0.0.0", PORT),
+              HLSHandler
+          )
+
+          print(f"🚀 CHRTV HLS server listening on :{PORT}")
+          print(f"📺 Playlist: http://0.0.0.0:{PORT}/index.m3u8")
+
+          server.serve_forever()
+          PY
+
+          nohup python3 server.py > server.log 2>&1 &
+
+          echo $! > server.pid
+
+          sleep 2
+
+          echo "HTTP server:"
+          cat server.log
+
+      # ==========================================================
+      # START FFMPEG
+      # ==========================================================
+
+      - name: Start CHRTV Stream
+        run: |
+          VIDEO="./video.mp4"
+
+          echo "=================================================="
+          echo "🚀 CHRTV STREAM STARTING"
+          echo "=================================================="
+          echo "🎬 Source      : $VIDEO"
+          echo "🌐 HTTP Port   : 30113"
+          echo "📺 HLS         : /index.m3u8"
+          echo "🔁 Loop        : INFINITE"
+          echo "⏱️ Segment     : 6 seconds"
+          echo "📦 Playlist    : 10 segments"
+          echo "=================================================="
+
+          ffmpeg \
+            -hide_banner \
+            -loglevel info \
+            -re \
+            -stream_loop -1 \
+            -i "$VIDEO" \
+            \
+            -map 0:v:0 \
+            -map 0:a:0? \
+            \
+            -c:v libx264 \
+            -preset veryfast \
+            -tune zerolatency \
+            -profile:v main \
+            -pix_fmt yuv420p \
+            \
+            -c:a aac \
+            -b:a 128k \
+            -ar 48000 \
+            \
+            -g 60 \
+            -keyint_min 60 \
+            -sc_threshold 0 \
+            \
+            -f hls \
+            -hls_time 6 \
+            -hls_list_size 10 \
+            -hls_flags delete_segments+append_list+independent_segments \
+            -hls_segment_filename "hls/segment_%05d.ts" \
+            "hls/index.m3u8"
