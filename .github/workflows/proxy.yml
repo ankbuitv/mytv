@@ -80,6 +80,28 @@ jobs:
               "https://vmttv.dpdns.org/tv360/?id=tv360-10"
           )
 
+          # ============================================================
+          # NEW: SKYGO SOURCES
+          # ============================================================
+
+          DISCOVERY_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "Discovery_Asia/HLSv3-FTA/Discovery_Asia.m3u8"
+          )
+
+          SOUTHEAST_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
+          )
+
+          # SkyGo requires a browser-like User-Agent.
+          # This is intentionally used only for the two SkyGo routes.
+          UA_CHROME = (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/151.0.0.0 Safari/537.36"
+          )
+
           HEADERS_DEFAULT = {
               "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
               "Accept": "*/*",
@@ -144,7 +166,11 @@ jobs:
           #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
           {public_url}/stream/180.m3u8
           #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
-          {public_url}/stream/191.m3u8"""
+          {public_url}/stream/191.m3u8
+          #EXTINF:-1 tvg-id="DiscoveryAsia" group-title="Asia",Discovery Asia HD
+          {public_url}/stream/asia
+          #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
+          {public_url}/stream/dsc"""
 
               response = Response(
                   m3u_content.strip(),
@@ -154,7 +180,11 @@ jobs:
               return add_cors_headers(response)
 
 
-          def handle_hls_proxy(default_target_url, endpoint_path):
+          def handle_hls_proxy(
+              default_target_url,
+              endpoint_path,
+              custom_user_agent=None,
+          ):
               if request.method == "OPTIONS":
                   return add_cors_headers(
                       Response(status=204)
@@ -168,6 +198,15 @@ jobs:
               target_url = unquote(target_url)
 
               req_headers = HEADERS_DEFAULT.copy()
+
+              # ========================================================
+              # Custom User-Agent
+              # Only the new SkyGo routes use Chrome UA.
+              # Existing routes remain unchanged.
+              # ========================================================
+
+              if custom_user_agent:
+                  req_headers["User-Agent"] = custom_user_agent
 
               if "tv360" in target_url or "vmttv" in target_url:
                   req_headers["User-Agent"] = UA_DALVIK
@@ -343,6 +382,40 @@ jobs:
               )
 
 
+          # ============================================================
+          # NEW: DISCOVERY ASIA
+          # /stream/asia
+          # ============================================================
+
+          @app.route(
+              "/stream/asia",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_asia():
+              return handle_hls_proxy(
+                  DISCOVERY_ASIA,
+                  "/stream/asia",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
+          # ============================================================
+          # NEW: SOUTHEAST ASIA
+          # /stream/dsc
+          # ============================================================
+
+          @app.route(
+              "/stream/dsc",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_dsc():
+              return handle_hls_proxy(
+                  SOUTHEAST_ASIA,
+                  "/stream/dsc",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
           @app.route(
               "/stream/<channel_id>/<path:subpath>",
               methods=["GET", "OPTIONS"],
@@ -475,6 +548,12 @@ jobs:
           echo ""
           echo "📺 TV360+10:"
           echo "${PUBLIC_URL}/stream/tv360-10"
+          echo ""
+          echo "📺 Discovery Asia:"
+          echo "${PUBLIC_URL}/stream/asia"
+          echo ""
+          echo "📺 Southeast Asia:"
+          echo "${PUBLIC_URL}/stream/dsc"
           echo "===================================================="
           echo ""
 
