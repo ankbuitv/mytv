@@ -41,8 +41,7 @@ jobs:
           cat /tmp/bore.log
 
       - name: Fast Remux
-        env:
-          INPUT_MPD: ${{ secrets.INPUT_MPD }}
+        INPUT_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
         run: |
           set -e
 
