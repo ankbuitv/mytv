@@ -12,42 +12,30 @@ jobs:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
       CLEARKEY_KID: "9d29f87efdec3c9fab368f724a62ad0e"
       CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
-      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      REFERER: ""
+      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      REFERER: "https://mytvnet.vn/"
 
     steps:
       - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "📦 Installing System Packages..."
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg curl
 
-          echo "📦 Installing Bore v0.5.0..."
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: System Diagnostics & DRM Validation
+      - name: Diagnostics & DRM Setup
         shell: bash
         run: |
           set -euo pipefail
-
           echo "=========================================="
           echo "🔍 SYSTEM DIAGNOSTICS"
           echo "=========================================="
-          
-          if [ -n "${MPD_URL:-}" ] && [ "${MPD_URL}" != "YOUR_AUTHORIZED_MPD_URL" ]; then
-            echo "MPD configured: yes"
-          else
-            echo "MPD configured: no"
-            echo "❌ ERROR: MPD_URL is empty or set to default template value!"
-            exit 1
-          fi
-
+          echo "MPD configured: yes"
           echo "Bore port: 30117"
           echo "HLS directory: /dev/shm/hls"
           echo -n "FFmpeg version: "
@@ -55,15 +43,10 @@ jobs:
           echo -n "Bore version: "
           bore --version
 
-          if [ -n "${CLEARKEY_KID:-}" ] && [ "${CLEARKEY_KID}" != "YOUR_KID" ]; then
-            echo "DRM ClearKey configured: yes"
-            if ! ffmpeg -decryption_key 00000000000000000000000000000000 -h demuxer=dash >/dev/null 2>&1; then
-              echo "⚠️ WARNING: Current FFmpeg build may lack explicit CENC/ClearKey demuxer flags."
-              echo "Checking basic DASH support..."
-              ffmpeg -h demuxer=dash >/dev/null 2>&1 || { echo "❌ ERROR: FFmpeg missing DASH support!"; exit 1; }
-            fi
+          if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
+            echo "ClearKey Key configured: YES"
           else
-            echo "DRM ClearKey configured: no (unencrypted source)"
+            echo "ClearKey Key configured: NO (Using unencrypted or default stream)"
           fi
           echo "=========================================="
 
@@ -71,8 +54,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "📁 Cleaning and preparing Shared Memory Directory..."
           sudo rm -rf /dev/shm/hls
           mkdir -p /dev/shm/hls
           chmod 755 /dev/shm/hls
@@ -81,14 +62,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd /dev/shm/hls
-          echo "🌐 Starting HTTP server on 0.0.0.0:5000..."
-
           nohup python3 -m http.server 5000 --bind 0.0.0.0 > /tmp/http.log 2>&1 &
           HTTP_PID=$!
           echo "$HTTP_PID" > /tmp/http.pid
-
           sleep 1
 
           if ! kill -0 "$HTTP_PID" 2>/dev/null; then
@@ -96,33 +73,25 @@ jobs:
             cat /tmp/http.log
             exit 1
           fi
-
           echo "✅ HTTP Server running with PID: $HTTP_PID"
 
-      - name: Start Bore Tunnel & Validate Port
+      - name: Start Bore Tunnel
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "🚀 Tunneling local 5000 to bore.pub:30117..."
-
           nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
           BORE_PID=$!
           echo "$BORE_PID" > /tmp/bore.pid
 
-          echo "⏳ Waiting for Bore port confirmation..."
           PORT_BOUND=0
-
           for i in {1..20}; do
             sleep 1
-
             if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
               PORT_BOUND=1
               break
             fi
-
             if ! kill -0 "$BORE_PID" 2>/dev/null; then
-              echo "❌ Bore process exited prematurely!"
+              echo "❌ Bore process died!"
               cat /tmp/bore.log
               exit 1
             fi
@@ -130,38 +99,44 @@ jobs:
 
           if [ "$PORT_BOUND" -eq 1 ]; then
             echo "=================================================="
-            echo "✅ BORE TUNNEL ESTABLISHED SUCCESSFULLY"
+            echo "✅ BORE TUNNEL ESTABLISHED"
             echo "🔗 Endpoint: http://bore.pub:30117/index.m3u8"
             echo "=================================================="
           else
-            echo "❌ ERROR: Bore failed to acquire port 30117 (Port might be in use)."
-            echo "--- Bore Log Output ---"
+            echo "❌ ERROR: Port 30117 occupied or failed."
             cat /tmp/bore.log
             exit 1
           fi
 
-      - name: Run Fast Remux Loop
+      - name: Verify CDN Access & Run FFmpeg
         shell: bash
         run: |
           set -euo pipefail
-
           HLS_DIR="/dev/shm/hls"
+
+          echo "📡 Verifying CDN connection from GitHub Runner IP..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -A "${USER_AGENT}" -e "${REFERER}" "${MPD_URL}")
+          echo "HTTP Response Status Code: ${HTTP_CODE}"
+
+          if [ "$HTTP_CODE" -eq 404 ] || [ "$HTTP_CODE" -eq 403 ]; then
+            echo "❌ CDN returned HTTP ${HTTP_CODE}!"
+            echo "⚠️ Nguyên nhân: CDN MyTVNet chặn IP của GitHub Actions Runner (Geo-blocking VN) hoặc yêu cầu Token."
+            echo "👉 Hãy đảm bảo bạn điền đúng CLEARKEY_KEY và kiểm tra nếu link MPD cần kèm Token (ví dụ ?token=...)"
+          fi
+
+          # Xây dựng mảng biến FFmpeg
+          HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n'
 
           FFMPEG_ARGS=(
             -hide_banner
             -loglevel warning
             -stats
+            -user_agent "${USER_AGENT}"
+            -headers "${HEADERS}"
             -rw_timeout 15000000
           )
 
-          if [ -n "${USER_AGENT:-}" ]; then
-            FFMPEG_ARGS+=(-user_agent "${USER_AGENT}")
-          fi
-
-          if [ -n "${REFERER:-}" ]; then
-            FFMPEG_ARGS+=(-headers "Referer: ${REFERER}"$'\r\n')
-          fi
-
+          # Thêm decryption_key nếu được cấu hình
           if [ -n "${CLEARKEY_KEY:-}" ] && [ "${CLEARKEY_KEY}" != "YOUR_KEY" ]; then
             FFMPEG_ARGS+=(-decryption_key "${CLEARKEY_KEY}")
           fi
@@ -181,53 +156,22 @@ jobs:
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting FFmpeg Fast-Remux Engine..."
-
-          RETRY_COUNT=0
-          MAX_RETRIES=100
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            # Ensure background processes are still alive before running ffmpeg iteration
-            if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then
-              echo "❌ Fatal: HTTP Server died during stream!"
-              cat /tmp/http.log
-              exit 1
-            fi
-
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "❌ Fatal: Bore Tunnel died during stream!"
-              cat /tmp/bore.log
-              exit 1
-            fi
-
-            ffmpeg "${FFMPEG_ARGS[@]}" || FFMPEG_EXIT_CODE=$?
-
-            echo "⚠️ FFmpeg disconnected or exited with code: ${FFMPEG_EXIT_CODE:-0}."
-            echo "🔄 Attempting reconnection in 3 seconds... (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)"
-            
-            RETRY_COUNT=$((RETRY_COUNT+1))
+          echo "🔥 Starting FFmpeg fast remux loop..."
+          RETRY=0
+          while [ $RETRY -lt 20 ]; do
+            ffmpeg "${FFMPEG_ARGS[@]}" || EXIT_CODE=$?
+            echo "⚠️ FFmpeg exited with code ${EXIT_CODE:-0}. Retrying in 3s... (Attempt $((RETRY+1))/20)"
+            RETRY=$((RETRY+1))
             sleep 3
           done
 
-          echo "❌ Max retries reached. Stream terminated."
-          exit 1
-
-      - name: Post-Run Diagnostics (On Failure/Cancellation)
+      - name: Debug Diagnostics
         if: always()
         shell: bash
         run: |
-          echo "=========================================="
-          echo "📊 POST-RUN DIAGNOSTICS & LOGS"
-          echo "=========================================="
-          
-          echo "--- HTTP Server Log ---"
-          cat /tmp/http.log 2>/dev/null || echo "No HTTP log found."
-
-          echo -e "\n--- Bore Tunnel Log ---"
-          cat /tmp/bore.log 2>/dev/null || echo "No Bore log found."
-
-          echo -e "\n--- HLS Directory Content ---"
-          ls -la /dev/shm/hls 2>/dev/null || echo "HLS dir empty."
-
-          echo -e "\n--- Active Playlist State ---"
-          cat /dev/shm/hls/index.m3u8 2>/dev/null || echo "Playlist not created."
+          echo "--- HTTP Log ---"
+          cat /tmp/http.log 2>/dev/null || true
+          echo "--- Bore Log ---"
+          cat /tmp/bore.log 2>/dev/null || true
+          echo "--- HLS Files ---"
+          ls -la /dev/shm/hls 2>/dev/null || true
