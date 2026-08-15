@@ -46,7 +46,8 @@ jobs:
           server.bind = "0.0.0.0"
           mimetype.assign = (
             ".m3u8" => "application/vnd.apple.mpegurl",
-            ".ts" => "video/mp2t"
+            ".mp4" => "video/mp4",
+            ".m4s" => "video/iso.segment"
           )
           EOF
           lighttpd -f /tmp/lighttpd.conf
@@ -80,7 +81,7 @@ jobs:
           fi
           echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
 
-      - name: Run Stable HLS Remux
+      - name: Run Perfect Sync HLS Remux
         shell: bash
         run: |
           set -euo pipefail
@@ -101,25 +102,27 @@ jobs:
             fi
           fi
 
+          # 🚀 Cấu hình Đồng Bộ A/V Tuyệt Đối (fMP4 + Audio Resync) 🚀
           FFMPEG_ARGS+=(
-            -fflags +genpts+discardcorrupt
+            -fflags +genpts+async
             -i "${MPD_URL}"
             -map 0:v:0?
             -map 0:a:0?
             -c:v copy
-            -c:a copy
-            -bsf:v h264_mp4toannexb
+            -c:a aac -b:a 128k -ar 48000
+            -af "aresample=async=1000"
+            -muxdelay 0
             -f hls
-            -hls_time 3
-            -hls_list_size 15
-            -hls_delete_threshold 5
+            -hls_time 4
+            -hls_list_size 10
+            -hls_delete_threshold 3
             -hls_flags delete_segments+omit_endlist+append_list
-            -hls_segment_type mpegts
+            -hls_segment_type fmp4
             -hls_allow_cache 0
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting High Performance FFmpeg Remux..."
+          echo "🔥 Starting Perfect Sync FFmpeg Remux..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
