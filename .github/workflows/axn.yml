@@ -74,7 +74,7 @@ jobs:
             fi
           done
 
-          if [ "$PORT_BOUND" -eq 0 ]; me
+          if [ "$PORT_BOUND" -eq 0 ]; then
             echo "❌ ERROR: Port 30117 occupied or failed."
             exit 1
           fi
@@ -101,7 +101,6 @@ jobs:
             fi
           fi
 
-          # 🚀 Cấu hình Fix Lag & Lệch Tiếng 🚀
           FFMPEG_ARGS+=(
             -fflags +genpts+discardcorrupt
             -i "${MPD_URL}"
