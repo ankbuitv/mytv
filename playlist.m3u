@@ -434,7 +434,7 @@ https://live.france24.com/hls/live/2037218-b/F24_EN_HI_HLS/master_500.m3u8
 
 
 #EXTINF:-1 tvg-id="bbc-earth" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/France_24.svg/1024px-France_24.svg.png" group-title="🎬 BOX - Giải trí",BBC Earth
-http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/158.m3u8
+https://aegis-cloudfront-1.tubi.video/bb1fc6ad-9948-42ea-aaf3-20acfcdeecac/playlist.m3u8
 
 #EXTINF:-1 tvg-id="fashion" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Fashion_TV_Logo.svg/1024px-Fashion_TV_Logo.svg.png" group-title="🎬 BOX - Giải trí",Fashion TV
 https://edge-fast3.evrideo.tv/bfdbb576-83f7-11f0-9f89-0200170e3e04_1000028043_HLS/video_10801920_p_0.m3u8
@@ -461,11 +461,7 @@ http://chrtv.duckdns.org:30114/stream/USA_CARTOON_NETWORK/index.m3u8?token=5d3f7
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 http://chrtv.duckdns.org:30114/stream/USA_BOOMERANG/index.m3u8
-#EXTINF:-1 tvg-id="cartoonito" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4OEJ40DibjTsUKlLhJ-fPrTML-xdE4caJlgEZvhJ8zw&s" group-title="🎬 BOX - Giải trí",Cartoonito
-#KODIPROP:inputstreamaddon=inputstream.adaptive
-#KODIPROP:inputstream.adaptive.manifest_type=hls
-#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
-http://103.152.216.26:8443/live/DUC3mlZ3O2Z0i4May6u1cA/1785547208/147.m3u8
+
 
 #EXTINF:-1 tvg-id="nick" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Nickelodeon_2023_logo.svg/1024px-Nickelodeon_2023_logo.svg.png" group-title="🎬 BOX - Giải trí",Nickelodeon
 #KODIPROP:inputstreamaddon=inputstream.adaptive
