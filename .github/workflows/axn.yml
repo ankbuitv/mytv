@@ -78,7 +78,7 @@ jobs:
           fi
           echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
 
-      - name: Run Hybrid Fast Remux
+      - name: Run Pure Stream Copy HLS Remux
         shell: bash
         run: |
           set -euo pipefail
@@ -87,8 +87,7 @@ jobs:
 
           FFMPEG_ARGS=(
             -hide_banner
-            -loglevel warning
-            -stats
+            -loglevel error
             -user_agent "${USER_AGENT}"
             -headers "${HEADERS}"
             -rw_timeout 15000000
@@ -100,16 +99,16 @@ jobs:
             fi
           fi
 
-          # 🚀 Công thức Hybrid hoàn hảo 🚀
+          # 🚀 Cấu hình Stream Copy tối ưu tuyệt đối cho Live HLS 🚀
           FFMPEG_ARGS+=(
             -fflags +genpts+discardcorrupt
             -i "${MPD_URL}"
             -map 0:v:0?
             -map 0:a:0?
-            -c:v copy                        # Giữ nguyên Video, ko tốn CPU
-            -bsf:v h264_mp4toannexb          # Sắp xếp lại luồng NAL units chống corrupt
-            -c:a aac -b:a 128k -ar 48000     # Tái tạo Audio timeline để đồng bộ A/V tuyệt đối
-            -muxdelay 0                      # Ép xả data ngay lập tức, triệt tiêu lag
+            -c:v copy
+            -c:a copy
+            -bsf:v h264_mp4toannexb
+            -muxdelay 0
             -f hls
             -hls_time 2
             -hls_list_size 6
@@ -119,7 +118,7 @@ jobs:
             "${HLS_DIR}/index.m3u8"
           )
 
-          echo "🔥 Starting Hybrid FFmpeg Remux Loop..."
+          echo "🔥 Starting Pure Stream Copy FFmpeg Loop..."
           RETRY=0
           while [ $RETRY -lt 20 ]; do
             if ! kill -0 $(cat /tmp/http.pid) 2>/dev/null; then exit 1; fi
