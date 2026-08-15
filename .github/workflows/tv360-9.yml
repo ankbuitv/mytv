@@ -127,7 +127,7 @@ jobs:
               "X-Forwarded-For": "116.109.123.45"
           }
           try:
-              r = requests.get("https://vmttv.dpdns.org/tv360/?id=tv360-9", headers=headers, timeout=10)
+              r = requests.get("https://pop25-ec3-ateme.tv360.vn/tok_eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJleHAiOiIxNzg2ODI0OTYyIiwic2lwIjoiIiwicGF0aCI6Ii9saXZlL2Vkcy8zNzk5L0hMU19DbGVhbl9NSExfMnMvIiwic2Vzc2lvbl9jZG5faWQiOiJkYjhiODU1OTY3ZDZjMmJmIiwic2Vzc2lvbl9pZCI6IiIsImNsaWVudF9pZCI6IiIsImRldmljZV9pZCI6IiIsIm1heF9zZXNzaW9ucyI6MCwic2Vzc2lvbl9kdXJhdGlvbiI6MCwidXJsIjoiaHR0cHM6Ly8xNzIuMjQuMTczLjE5NiIsInNlc3Npb25fdGltZW91dCI6MCwiYXVkIjoiOTAiLCJzb3VyY2VzIjpbMzUzLDQ5MCw0OTMsNDk1XX0=.9rtyRPrjjSnkO-vYH2CbZAZ8EC_zxTJ7RflbNUzXZGAnuS7KKIPOIFpVsNWDgVFP0inHPuqwzCf9-QZkRExVbQ==/live/eds/3799/HLS_Clean_MHL_2s/3799-avc1_5099968=10003-mp4a_206000_eng=20000.m3u8", headers=headers, timeout=10)
               url = r.url
               url = re.sub(r"/bpk-tv/\d+/", "/bpk-tv/379/", url)
               url = re.sub(r"/live/eds/\d+/", "/live/eds/379/", url)
