@@ -1,4 +1,4 @@
-name: AXN Fast Remux → HLS
+name: Fast HLS Remux - Bore 30117
 
 on:
   workflow_dispatch:
@@ -9,51 +9,171 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Install FFmpeg + Bore
+      # ============================================================
+      # 1. Install dependencies
+      # ============================================================
+      - name: Install FFmpeg and Bore
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl
 
+          echo "📦 Installing Bore..."
+
           curl -fsSL \
             https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
-            | tar -xz
+            -o /tmp/bore.tar.gz
 
-          sudo install -m 755 bore /usr/local/bin/bore
+          tar -xzf /tmp/bore.tar.gz -C /tmp
 
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
+
+          echo "✅ FFmpeg:"
+          ffmpeg -version | head -n 1
+
+          echo "✅ Bore:"
+          bore --version
+
+      # ============================================================
+      # 2. Prepare HLS directory
+      # ============================================================
       - name: Prepare HLS
+        shell: bash
         run: |
-          sudo mkdir -p /dev/shm/hls
-          sudo chmod 777 /dev/shm/hls
+          set -euo pipefail
 
-      - name: Start HLS server
+          sudo rm -rf /dev/shm/hls
+          sudo mkdir -p /dev/shm/hls
+          sudo chmod -R 777 /dev/shm/hls
+
+          echo "📁 HLS directory:"
+          ls -la /dev/shm/hls
+
+      # ============================================================
+      # 3. Start HTTP server
+      # ============================================================
+      - name: Start HTTP server
+        shell: bash
         run: |
+          set -euo pipefail
+
           cd /dev/shm/hls
 
-          python3 -m http.server 5000 \
+          echo "🌐 Starting HTTP server on port 5000..."
+
+          nohup python3 -m http.server 5000 \
+            --bind 0.0.0.0 \
             > /tmp/http.log 2>&1 &
 
-          bore local 5000 --to bore.pub --port 30117 \
+          HTTP_PID=$!
+          echo "$HTTP_PID" > /tmp/http.pid
+
+          sleep 2
+
+          if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+            echo "❌ HTTP server failed"
+            cat /tmp/http.log
+            exit 1
+          fi
+
+          echo "✅ HTTP server PID: $HTTP_PID"
+
+      # ============================================================
+      # 4. Start Bore fixed port 30117
+      # ============================================================
+      - name: Start Bore Tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🚀 Starting Bore..."
+          echo "Local : 5000"
+          echo "Remote: bore.pub:30117"
+
+          nohup bore local 5000 \
+            --to bore.pub \
+            --port 30117 \
             > /tmp/bore.log 2>&1 &
 
-          sleep 5
+          BORE_PID=$!
+          echo "$BORE_PID" > /tmp/bore.pid
 
-          echo "===== Bore ====="
-          cat /tmp/bore.log
+          echo "⏳ Waiting for Bore..."
 
-      - name: Fast Remux
-        INPUT_MPD="https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+          for i in {1..15}; do
+            sleep 1
+
+            if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
+              echo "================================================"
+              echo "✅ BORE ACTIVE"
+              echo "🌐 http://bore.pub:30117/"
+              echo "🌐 http://bore.pub:30117/index.m3u8"
+              echo "================================================"
+              break
+            fi
+
+            if ! kill -0 "$BORE_PID" 2>/dev/null; then
+              echo "❌ Bore process exited"
+              cat /tmp/bore.log
+              exit 1
+            fi
+          done
+
+          if ! grep -q "listening at bore.pub:30117" /tmp/bore.log; then
+            echo "❌ Bore did not open port 30117"
+            cat /tmp/bore.log
+            exit 1
+          fi
+
+      # ============================================================
+      # 5. Fast Remux
+      #
+      # INPUT_MPD:
+      #   GitHub → Settings → Secrets and variables → Actions
+      #   tạo secret:
+      #
+      #   INPUT_MPD
+      #
+      # ============================================================
+      - name: Fast Remux to HLS
+        env:
+          INPUT_MPD: ${{ secrets.INPUT_MPD }}
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          rm -rf /dev/shm/hls/*
+          echo "🔎 Checking MPD..."
+
+          if [ -z "${INPUT_MPD:-}" ]; then
+            echo "❌ INPUT_MPD is empty!"
+            echo
+            echo "Add GitHub Actions Secret:"
+            echo "INPUT_MPD"
+            exit 1
+          fi
+
+          echo "✅ MPD configured"
+          echo "MPD: ${INPUT_MPD}"
+
+          HLS_DIR="/dev/shm/hls"
+
+          rm -f "${HLS_DIR}"/*.m3u8
+          rm -f "${HLS_DIR}"/*.ts
+          rm -f "${HLS_DIR}"/*.m4s
+          rm -f "${HLS_DIR}"/*.mp4
+
+          echo "🔥 Starting FFmpeg fast remux..."
 
           ffmpeg \
             -hide_banner \
             -loglevel warning \
+            -stats \
             -user_agent "Dalvik/2.1.0" \
             -rw_timeout 15000000 \
             -fflags +genpts+discardcorrupt \
-            -i "$INPUT_MPD" \
+            -i "${INPUT_MPD}" \
             -map 0:v:0? \
             -map 0:a:0? \
             -c copy \
@@ -62,4 +182,39 @@ jobs:
             -hls_list_size 6 \
             -hls_flags delete_segments+append_list+omit_endlist \
             -hls_segment_type mpegts \
-            /dev/shm/hls/index.m3u8
+            -hls_allow_cache 0 \
+            "${HLS_DIR}/index.m3u8"
+
+      # ============================================================
+      # 6. Diagnostics
+      # ============================================================
+      - name: Show output
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================="
+          echo "Bore log"
+          echo "=============================="
+
+          cat /tmp/bore.log 2>/dev/null || true
+
+          echo
+          echo "=============================="
+          echo "HTTP log"
+          echo "=============================="
+
+          cat /tmp/http.log 2>/dev/null || true
+
+          echo
+          echo "=============================="
+          echo "HLS files"
+          echo "=============================="
+
+          ls -lah /dev/shm/hls 2>/dev/null || true
+
+          echo
+          echo "=============================="
+          echo "Playlist"
+          echo "=============================="
+
+          cat /dev/shm/hls/index.m3u8 2>/dev/null || true
