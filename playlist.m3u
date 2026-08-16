@@ -312,10 +312,10 @@ https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
 # ==========================================
 
 #EXTINF:-1 tvg-id="boxmovies" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Movies 1
-https://usatv.dpdns.org/usatv/fpt_box_movie_1/index.m3u8
+https://usatv.dpdns.org/usatv/Box%20Movie%201%20HD/index.m3u8
 
 #EXTINF:-1 tvg-id="boxhits" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Hits
-https://usatv.dpdns.org/usatv/fpt_box_hits/index.m3u8
+https://usatv.dpdns.org/usatv/Box%20Hits%20HD/index.m3u8
 
 #EXTINF:-1 tvg-id="hollywood" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Hollywood Classics
 https://usatv.dpdns.org/usatv/Hollywood%20Classics%20HD/index.m3u8
@@ -340,9 +340,6 @@ http://chrtv.duckdns.org:30114/stream/USA_CINEMAX/index.m3u8
 #EXTINF:-1 tvg-id="cinemaworld" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Cinemax_logo.svg/1024px-Cinemax_logo.svg.png" group-title="🎬 BOX - Giải trí",Cinemaworld
 http://nmk.ioapk.com:5050/4gtv-live069/index.m3u8
 
-#EXTINF:-1 tvg-id="Paramount" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Paramount_Network_logo.svg/1024px-Paramount_Network_logo.svg.png" group-title="🎬 BOX - Giải trí",Paramount TV
-http://chrtv.duckdns.org:30114/stream/paramount
-
 #EXTINF:-1 tvg-id="discovery" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Discovery_Channel_logo.svg/1024px-Discovery_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",Discovery Channel
 http://chrtv.duckdns.org:30114/stream/dsc
 
@@ -365,9 +362,8 @@ https://freem3u.xyz/api/live/play.m3u8?vid=9856
 #EXTINF:-1 tvg-id="davinci-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/11/DaVinci_logo_2013.svg/1024px-DaVinci_logo_2013.svg.png" group-title="🎬 BOX - Giải trí",DaVinci TV
 https://devda.undo.it/Stream/index.php?id=davinci-tv&ext=.m3u8
 
-
 #EXTINF:-1 tvg-id="kbs-world" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/HISTORY_logo_2021.svg/1024px-HISTORY_logo_2021.svg.png" group-title="🎬 BOX - Giải trí",KBS World
-https://liveh12.vtvprime.vn/hls/KBS/03.m3u8
+https://world.gscdn.kbs.co.kr/world-02/world-02_sd.m3u8?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly93b3JsZC5nc2Nkbi5rYnMuY28ua3Ivd29ybGQtMDIvKiIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc4NzAxNDI2OX19fV19&Key-Pair-Id=APKAICDSGT3Y7IXGJ3TA&Signature=ICH7P4xKvCVGymcCm7TCdoyLOlstC~6KcHouAsSMgbXWp3xxG-gFxb~v33Qp-IJ0O-Nw8Opi7rlVN1yamRLQvD4xH3b2Q9m-~5x5iNqsolvHbJrRX1kC~n2WQ~jaV~XS6nraMw-u6UqyyOclBGkg6gJgTTMRIINf4A1Aat2CsCMbm0UcTUp2dbrgidlhQKvU2AV3wiZwNGVYynGbwps0Afz4My1Dj9q2EXg5UF62Y12v1zrso5baN1OS7F4g8i-quxKyB1QxhizrFMM4amIgzUSzOE~Lh6FXEjy0ej3MZMb2YWSnY1lM0qtlYKDcippF1knevpVI~RPLLhiakyq4RQ__
 
 #EXTINF:-1 tvg-id="MTV" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/MTV_Logo_2021.svg/1024px-MTV_Logo_2021.svg.png" group-title="🎬 BOX - Giải trí",MTV
 #KODIPROP:inputstreamaddon=inputstream.adaptive
@@ -395,9 +391,6 @@ http://198.58.104.90:8989/animalplanet/index.m3u8
 
 #EXTINF:-1 tvg-id="stdio" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/2/20/2018_Animal_Planet_logo.svg/1024px-2018_Animal_Planet_logo.svg.png" group-title="🎬 BOX - Giải trí",Studio Universal
 https://usatv.dpdns.org/usatv/Studio%20Universal/index.m3u8
-
-#EXTINF:-1 tvg-id="americas-got-talent" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/America%27s_Got_Talent_Logo.svg/1024px-America%27s_Got_Talent_Logo.svg.png" group-title="🎬 BOX - Giải trí",America's Got Talent
-https://devda.undo.it/Stream/index.php?id=americas-got-talent&ext=.m3u8
 
 #EXTINF:-1 tvg-id="afn-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/AFN_logo.svg/1024px-AFN_logo.svg.png" group-title="🎬 BOX - Giải trí",AFN TV
 https://live.fptplay53.net/fnxhd2/afchd_vhls.smil/chunklist.m3u8
@@ -450,7 +443,7 @@ https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8
 
 
 
-#EXTINF:-1 tvg-id="CNHD" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Cartoon_Network_2010_logo.svg/1024px-Cartoon_Network_2010_logo.svg.png" group-title="🎬 BOX - Giải trí",Cartoon Network HD
+#EXTINF:-1 tvg-id="cartoonnetwork" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Cartoon_Network_2010_logo.svg/1024px-Cartoon_Network_2010_logo.svg.png" group-title="🎬 BOX - Giải trí",Cartoon Network HD
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
@@ -470,7 +463,7 @@ http://chrtv.duckdns.org:30114/stream/USA_BOOMERANG/index.m3u8
 http://chrtv.duckdns.org:30114/stream/USA_NICKELODEON/index.m3u8
 
 #EXTINF:-1 tvg-id="dreamworks" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/DreamWorks_Animation_2016.svg/1024px-DreamWorks_Animation_2016.svg.png" group-title="🎬 BOX - Giải trí",Dreamworks HD
-http://200.7.99.59:8000/play/a0mq/index.m3u8
+http://chrtv.duckdns.org:30114/stream/dreamworks
 
 #EXTINF:-1 tvg-id="disney-xd" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/Disney_XD_-_2015.svg/1024px-Disney_XD_-_2015.svg.png" group-title="🎬 BOX - Giải trí",Disney XD
 https://devda.undo.it/Stream/index.php?id=disney-xd&ext=.m3u8
