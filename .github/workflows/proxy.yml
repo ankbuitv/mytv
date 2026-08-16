@@ -80,8 +80,12 @@ jobs:
               "https://vmttv.dpdns.org/tv360/?id=tv360-10"
           )
 
+          DREAMWORKS = (
+              "https://cdn12.178.indevs.in/163189/dreamworks"
+          )
+
           # ============================================================
-          # NEW: SKYGO SOURCES
+          # SKYGO SOURCES
           # ============================================================
 
           DISCOVERY_ASIA = (
@@ -94,8 +98,6 @@ jobs:
               "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
           )
 
-          # SkyGo requires a browser-like User-Agent.
-          # This is intentionally used only for the two SkyGo routes.
           UA_CHROME = (
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -153,6 +155,8 @@ jobs:
           {public_url}/stream/tv360-9
           #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
           {public_url}/stream/tv360-10
+          #EXTINF:-1 tvg-id="DreamWorks" group-title="Kids",DreamWorks HD
+          {public_url}/stream/dreamworks
           #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
           {public_url}/stream/USA_HBO_ZONE/index.m3u8
           #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
@@ -198,12 +202,6 @@ jobs:
               target_url = unquote(target_url)
 
               req_headers = HEADERS_DEFAULT.copy()
-
-              # ========================================================
-              # Custom User-Agent
-              # Only the new SkyGo routes use Chrome UA.
-              # Existing routes remain unchanged.
-              # ========================================================
 
               if custom_user_agent:
                   req_headers["User-Agent"] = custom_user_agent
@@ -328,6 +326,17 @@ jobs:
 
 
           @app.route(
+              "/stream/dreamworks",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_dreamworks():
+              return handle_hls_proxy(
+                  DREAMWORKS,
+                  "/stream/dreamworks",
+              )
+
+
+          @app.route(
               "/stream/studioc",
               methods=["GET", "OPTIONS"],
           )
@@ -382,11 +391,6 @@ jobs:
               )
 
 
-          # ============================================================
-          # NEW: DISCOVERY ASIA
-          # /stream/asia
-          # ============================================================
-
           @app.route(
               "/stream/asia",
               methods=["GET", "OPTIONS"],
@@ -398,11 +402,6 @@ jobs:
                   custom_user_agent=UA_CHROME,
               )
 
-
-          # ============================================================
-          # NEW: SOUTHEAST ASIA
-          # /stream/dsc
-          # ============================================================
 
           @app.route(
               "/stream/dsc",
@@ -535,13 +534,16 @@ jobs:
           echo "===================================================="
           echo "🚀 IPTV PROXY ACTIVE"
           echo "===================================================="
-          echo "🌐 Bore       : bore.pub"
-          echo "🔌 Port       : ${BORE_PORT}"
+          echo "🌐 Bore        : bore.pub"
+          echo "🔌 Port        : ${BORE_PORT}"
           echo "🌍 Public URL : ${PUBLIC_URL}"
-          echo "🔑 SSHX       : ${SSHX_URL}"
+          echo "🔑 SSHX        : ${SSHX_URL}"
           echo ""
           echo "📺 Playlist:"
           echo "${PUBLIC_URL}/playlist.m3u"
+          echo ""
+          echo "📺 DreamWorks:"
+          echo "${PUBLIC_URL}/stream/dreamworks"
           echo ""
           echo "📺 TV360+9:"
           echo "${PUBLIC_URL}/stream/tv360-9"
