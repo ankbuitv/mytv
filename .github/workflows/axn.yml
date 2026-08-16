@@ -19,13 +19,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
-
+          
+          # Tải FFmpeg 6.x static build (bắt buộc để có setts BSF)
+          echo "Installing FFmpeg 6.x static..."
+          curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+          sudo cp /tmp/ffmpeg-6.*-amd64-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo cp /tmp/ffmpeg-6.*-amd64-static/ffprobe /usr/local/bin/ffprobe
+          sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
           ffmpeg -version | head -n 1
 
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl nodejs
+
           # Cài đặt Bore Tunnel
+          echo "Installing Bore..."
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
@@ -44,7 +52,6 @@ jobs:
           const REFERER = process.env.REFERER || "https://mytvnet.vn/";
 
           const CHANNELS = new Map();
-          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Ring buffer 6MB cho client mới join
 
           function buildFFmpegArgs(mpdUrl, key) {
             const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://mytvnet.vn\r\n`;
@@ -77,9 +84,9 @@ jobs:
             ];
           }
 
-          function spawnFFmpegProcess(id, mpdUrl, key, entry) {
+          function spawnFFmpegProcess(id, entry) {
             console.log(`[FFmpeg] Spawning process for channel: ${id}`);
-            const proc = spawn('ffmpeg', buildFFmpegArgs(mpdUrl, key), {
+            const proc = spawn('ffmpeg', buildFFmpegArgs(MPD_URL, CLEARKEY_KEY), {
               stdio: ['ignore', 'pipe', 'pipe']
             });
 
@@ -88,27 +95,29 @@ jobs:
             proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString().trim()));
 
             proc.stdout.on('data', (chunk) => {
-              entry.ringBuffer.push(chunk);
-              let size = entry.ringBuffer.reduce((s, b) => s + b.length, 0);
-              while (size > RING_BUFFER_MAX) {
-                size -= entry.ringBuffer.shift().length;
-              }
-
+              const slowClients = [];
+              
               for (const res of entry.clients) {
                 const ok = res.write(chunk);
                 if (!ok) {
-                  console.warn(`[Proxy] Client network slow, destroying socket.`);
-                  res.socket.destroy();
-                  entry.clients.delete(res);
+                  slowClients.push(res);
                 }
+              }
+
+              // Xử lý client chậm SAU KHI đã loop xong để tránh mutate Set trong lúc Iterate
+              for (const res of slowClients) {
+                console.warn(`[Proxy] Client network slow, destroying socket.`);
+                res.socket.destroy();
+                entry.clients.delete(res);
               }
             });
 
             proc.on('exit', (code, signal) => {
               console.warn(`[FFmpeg] Exited code=${code}, signal=${signal}`);
+              // Nếu vẫn còn client và không phải bị kill thủ công, restart FFmpeg
               if (entry.clients.size > 0 && !entry.manualKill) {
                 console.log(`[FFmpeg] Auto-restarting in 1.5s...`);
-                setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
+                setTimeout(() => spawnFFmpegProcess(id, entry), 1500);
               } else {
                 CHANNELS.delete(id);
               }
@@ -123,11 +132,10 @@ jobs:
             const entry = {
               proc: null,
               clients: new Set(),
-              ringBuffer: [],
               manualKill: false
             };
             
-            spawnFFmpegProcess(id, MPD_URL, CLEARKEY_KEY, entry);
+            spawnFFmpegProcess(id, entry);
             CHANNELS.set(id, entry);
             return entry;
           }
@@ -138,6 +146,7 @@ jobs:
             res.writeHead(200, {
               'Content-Type': 'video/mp2t',
               'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Connection': 'close', // Bắt buộc cho Live Stream
               'Access-Control-Allow-Origin': '*',
               'X-Accel-Buffering': 'no'
             });
@@ -146,12 +155,8 @@ jobs:
               req.socket.setNoDelay(true);
             }
 
+            // Join thẳng vào live edge, không dùng Ring Buffer
             const channelEntry = getOrCreateChannel('axn');
-
-            for (const buf of channelEntry.ringBuffer) {
-              res.write(buf);
-            }
-
             channelEntry.clients.add(res);
 
             req.on('close', () => {
