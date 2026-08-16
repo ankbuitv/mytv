@@ -38,7 +38,6 @@ jobs:
           cat > app.py <<'PYTHON'
           import os
           import requests
-
           from urllib.parse import urljoin, quote, unquote
           from flask import Flask, Response, request, stream_with_context
 
@@ -48,66 +47,41 @@ jobs:
           DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
           TARGET_SERVER = "http://23.237.104.106:8080"
-          BOX1_SERVER = "http://23.237.104.106:30117"
-          BHITS_SERVER = "http://23.237.104.106:30119"
+          
+          # Các server nguồn từ bore.pub
+          BHITS_SERVER = "http://bore.pub:30119/index.m3u8"
+          BOX1_SERVER = "http://bore.pub:30117/index.m3u8"
+          WO_URL = "http://bore.pub:30120/index.m3u8"
+          HC_URL = "http://bore.pub:30128/index.m3u8"
 
           AMAGI_STUDIO_C = (
               "https://amg12058-c15studio-amg12058c1-lg-us-5787."
               "playouts.now.amagi.tv/playlist.m3u8"
           )
 
-          WARNER_TV = (
-              "http://190.61.90.17:40000/play/a0ho/index.m3u8"
-          )
-
-          PARAMOUNT = (
-              "http://206.212.244.63/137/index.m3u8"
-          )
+          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
 
           KENSCOM_180 = (
               "http://103.152.216.26:8443/live/"
               "DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
           )
-
           KENSCOM_191 = (
               "http://103.152.216.26:8443/live/"
               "DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
           )
 
-          TV360_9 = (
-              "https://vmttv.dpdns.org/tv360/?id=tv360-9"
-          )
-
-          TV360_10 = (
-              "https://vmttv.dpdns.org/tv360/?id=tv360-10"
-          )
-
-          DREAMWORKS = (
-              "https://cdn12.178.indevs.in/163189/dreamworks"
-          )
-
-          # ============================================================
-          # SKYGO & NEW SOURCES
-          # ============================================================
+          TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
+          DREAMWORKS = "https://cdn12.178.indevs.in/163189/dreamworks"
 
           DISCOVERY_ASIA = (
               "http://cdn4.skygo.mn/live/disk1/"
               "Discovery_Asia/HLSv3-FTA/Discovery_Asia.m3u8"
           )
-
           SOUTHEAST_ASIA = (
               "http://cdn4.skygo.mn/live/disk1/"
               "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
-          )
-
-          HC_URL = (
-              "http://cdn4.skygo.mn/live/disk1/"
-              "HitsCinema/HLSv3-FTA/HitsCinema.m3u8"
-          )
-
-          WO_URL = (
-              "http://cdn4.skygo.mn/live/disk1/"
-              "WarnerTV/HLSv3-FTA/WarnerTV.m3u8"
           )
 
           UA_CHROME = (
@@ -119,14 +93,11 @@ jobs:
           HEADERS_DEFAULT = {
               "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
               "Accept": "*/*",
-              "Accept-Language": (
-                  "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
-              ),
+              "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
               "Connection": "keep-alive",
           }
 
           UA_DALVIK = "Dalvik/2.1.0"
-
 
           def get_public_base_url():
               return os.environ.get(
@@ -134,31 +105,20 @@ jobs:
                   "http://chrtv.duckdns.org:30114",
               )
 
-
           def add_cors_headers(response):
               response.headers["Access-Control-Allow-Origin"] = "*"
-              response.headers["Access-Control-Allow-Methods"] = (
-                  "GET, OPTIONS, HEAD"
-              )
+              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
               response.headers["Access-Control-Allow-Headers"] = "*"
               return response
 
-
           @app.route("/")
           def home():
-              return (
-                  f"IPTV Engine Active! "
-                  f"Base URL: {get_public_base_url()}",
-                  200,
-              )
-
+              return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
 
           @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
           def get_playlist():
               if request.method == "OPTIONS":
-                  return add_cors_headers(
-                      Response(status=204)
-                  )
+                  return add_cors_headers(Response(status=204))
 
               public_url = get_public_base_url()
 
@@ -187,42 +147,26 @@ jobs:
           {public_url}/stream/asia
           #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
           {public_url}/stream/dsc
-          #EXTINF:-1 tvg-id="HitsCinema" group-title="Cinema",Hits Cinema HD
+          #EXTINF:-1 tvg-id="Hollywood" group-title="Cinema",Hollywood HD
           {public_url}/stream/hc
-          #EXTINF:-1 tvg-id="WarnerTV_WO" group-title="US Live",Warner TV WO HD
+          #EXTINF:-1 tvg-id="Women" group-title="Cinema",Women HD
           {public_url}/stream/wo
           #EXTINF:-1 tvg-id="BoxMovie1" group-title="Box TV",Box Movie 1 HD
           {public_url}/stream/box1
           #EXTINF:-1 tvg-id="BoxHits" group-title="Box TV",Box Hits HD
           {public_url}/stream/bhits"""
 
-              response = Response(
-                  m3u_content.strip(),
-                  mimetype="application/x-mpegurl",
-              )
-
+              response = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
               return add_cors_headers(response)
 
-
-          def handle_hls_proxy(
-              default_target_url,
-              endpoint_path,
-              custom_user_agent=None,
-          ):
+          def handle_hls_proxy(default_target_url, endpoint_path, custom_user_agent=None):
               if request.method == "OPTIONS":
-                  return add_cors_headers(
-                      Response(status=204)
-                  )
+                  return add_cors_headers(Response(status=204))
 
-              target_url = (
-                  request.args.get("url")
-                  or default_target_url
-              )
-
+              target_url = request.args.get("url") or default_target_url
               target_url = unquote(target_url)
 
               req_headers = HEADERS_DEFAULT.copy()
-
               if custom_user_agent:
                   req_headers["User-Agent"] = custom_user_agent
 
@@ -243,17 +187,11 @@ jobs:
 
                   if resp.status_code != 200:
                       return add_cors_headers(
-                          Response(
-                              f"Upstream Error: HTTP {resp.status_code}",
-                              status=resp.status_code,
-                          )
+                          Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code)
                       )
 
                   final_url = resp.url
-
-                  content_type = (
-                      resp.headers.get("Content-Type", "")
-                  )
+                  content_type = resp.headers.get("Content-Type", "")
 
                   is_m3u8 = (
                       ".m3u8" in target_url
@@ -262,283 +200,109 @@ jobs:
                   )
 
                   if is_m3u8:
-                      raw_text = resp.text
-                      lines = raw_text.splitlines()
+                      lines = resp.text.splitlines()
                       rewritten_lines = []
 
                       for line in lines:
                           line_str = line.strip()
-
-                          if (
-                              not line_str
-                              or line_str.startswith("#")
-                          ):
+                          if not line_str or line_str.startswith("#"):
                               rewritten_lines.append(line_str)
                           else:
-                              full_url = urljoin(
-                                  final_url,
-                                  line_str,
-                              )
-
-                              rewritten_lines.append(
-                                  f"{endpoint_path}"
-                                  f"?url={quote(full_url)}"
-                              )
+                              full_url = urljoin(final_url, line_str)
+                              rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
 
                       response = Response(
-                          "\n".join(
-                              rewritten_lines
-                          ).strip(),
+                          "\n".join(rewritten_lines).strip(),
                           status=200,
                           mimetype="application/x-mpegurl",
                       )
-
-                      response.headers["Cache-Control"] = (
-                          "no-cache, no-store, must-revalidate"
-                      )
-
+                      response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                       return add_cors_headers(response)
 
                   def generate():
-                      for chunk in resp.iter_content(
-                          chunk_size=16384
-                      ):
+                      for chunk in resp.iter_content(chunk_size=16384):
                           if chunk:
                               yield chunk
 
-                  response = Response(
-                      stream_with_context(generate()),
-                      status=200,
-                      mimetype="video/mp2t",
-                  )
-
+                  response = Response(stream_with_context(generate()), status=200, mimetype="video/mp2t")
                   return add_cors_headers(response)
 
               except Exception as exc:
-                  return add_cors_headers(
-                      Response(
-                          f"Proxy Exception: {str(exc)}",
-                          status=502,
-                      )
-                  )
+                  return add_cors_headers(Response(f"Proxy Exception: {str(exc)}", status=502))
 
-
-          @app.route(
-              "/stream/tv360-9",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
           def proxy_tv360_9():
-              return handle_hls_proxy(
-                  TV360_9,
-                  "/stream/tv360-9",
-              )
+              return handle_hls_proxy(TV360_9, "/stream/tv360-9")
 
-
-          @app.route(
-              "/stream/tv360-10",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
           def proxy_tv360_10():
-              return handle_hls_proxy(
-                  TV360_10,
-                  "/stream/tv360-10",
-              )
+              return handle_hls_proxy(TV360_10, "/stream/tv360-10")
 
-
-          @app.route(
-              "/stream/dreamworks",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/dreamworks", methods=["GET", "OPTIONS"])
           def proxy_dreamworks():
-              return handle_hls_proxy(
-                  DREAMWORKS,
-                  "/stream/dreamworks",
-              )
+              return handle_hls_proxy(DREAMWORKS, "/stream/dreamworks")
 
-
-          @app.route(
-              "/stream/studioc",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
           def proxy_studioc():
-              return handle_hls_proxy(
-                  AMAGI_STUDIO_C,
-                  "/stream/studioc",
-              )
+              return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
 
-
-          @app.route(
-              "/stream/warner",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
           def proxy_warner():
-              return handle_hls_proxy(
-                  WARNER_TV,
-                  "/stream/warner",
-              )
+              return handle_hls_proxy(WARNER_TV, "/stream/warner")
 
-
-          @app.route(
-              "/stream/paramount",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
           def proxy_paramount():
-              return handle_hls_proxy(
-                  PARAMOUNT,
-                  "/stream/paramount",
-              )
+              return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
 
-
-          @app.route(
-              "/stream/180.m3u8",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
           def proxy_180():
-              return handle_hls_proxy(
-                  KENSCOM_180,
-                  "/stream/180.m3u8",
-              )
+              return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
 
-
-          @app.route(
-              "/stream/191.m3u8",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
           def proxy_191():
-              return handle_hls_proxy(
-                  KENSCOM_191,
-                  "/stream/191.m3u8",
-              )
+              return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
 
-
-          @app.route(
-              "/stream/asia",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/asia", methods=["GET", "OPTIONS"])
           def proxy_asia():
-              return handle_hls_proxy(
-                  DISCOVERY_ASIA,
-                  "/stream/asia",
-                  custom_user_agent=UA_CHROME,
-              )
+              return handle_hls_proxy(DISCOVERY_ASIA, "/stream/asia", custom_user_agent=UA_CHROME)
 
-
-          @app.route(
-              "/stream/dsc",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/dsc", methods=["GET", "OPTIONS"])
           def proxy_dsc():
-              return handle_hls_proxy(
-                  SOUTHEAST_ASIA,
-                  "/stream/dsc",
-                  custom_user_agent=UA_CHROME,
-              )
+              return handle_hls_proxy(SOUTHEAST_ASIA, "/stream/dsc", custom_user_agent=UA_CHROME)
 
-
-          @app.route(
-              "/stream/hc",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/hc", methods=["GET", "OPTIONS"])
           def proxy_hc():
-              return handle_hls_proxy(
-                  HC_URL,
-                  "/stream/hc",
-                  custom_user_agent=UA_CHROME,
-              )
+              return handle_hls_proxy(HC_URL, "/stream/hc")
 
-
-          @app.route(
-              "/stream/wo",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/wo", methods=["GET", "OPTIONS"])
           def proxy_wo():
-              return handle_hls_proxy(
-                  WO_URL,
-                  "/stream/wo",
-                  custom_user_agent=UA_CHROME,
-              )
+              return handle_hls_proxy(WO_URL, "/stream/wo")
 
+          @app.route("/stream/box1", methods=["GET", "OPTIONS"])
+          def proxy_box1():
+              return handle_hls_proxy(BOX1_SERVER, "/stream/box1")
 
-          @app.route(
-              "/stream/box1",
-              methods=["GET", "OPTIONS"],
-          )
-          @app.route(
-              "/stream/box1/<path:subpath>",
-              methods=["GET", "OPTIONS"],
-          )
-          def proxy_box1(subpath=None):
-              target_url = (
-                  f"{BOX1_SERVER}/{subpath}"
-                  if subpath
-                  else BOX1_SERVER
-              )
-              endpoint = (
-                  f"/stream/box1/{subpath}"
-                  if subpath
-                  else "/stream/box1"
-              )
-              return handle_hls_proxy(target_url, endpoint)
+          @app.route("/stream/bhits", methods=["GET", "OPTIONS"])
+          def proxy_bhits():
+              return handle_hls_proxy(BHITS_SERVER, "/stream/bhits")
 
-
-          @app.route(
-              "/stream/bhits",
-              methods=["GET", "OPTIONS"],
-          )
-          @app.route(
-              "/stream/bhits/<path:subpath>",
-              methods=["GET", "OPTIONS"],
-          )
-          def proxy_bhits(subpath=None):
-              target_url = (
-                  f"{BHITS_SERVER}/{subpath}"
-                  if subpath
-                  else BHITS_SERVER
-              )
-              endpoint = (
-                  f"/stream/bhits/{subpath}"
-                  if subpath
-                  else "/stream/bhits"
-              )
-              return handle_hls_proxy(target_url, endpoint)
-
-
-          @app.route(
-              "/stream/<channel_id>/<path:subpath>",
-              methods=["GET", "OPTIONS"],
-          )
+          @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
           def proxy_dynamic_23_237(channel_id, subpath):
               if request.method == "OPTIONS":
-                  return add_cors_headers(
-                      Response(status=204)
-                  )
+                  return add_cors_headers(Response(status=204))
 
               if request.args.get("url"):
-                  target_url = unquote(
-                      request.args.get("url")
-                  )
+                  target_url = unquote(request.args.get("url"))
               else:
-                  target_url = (
-                      f"{TARGET_SERVER}/"
-                      f"{channel_id}/{subpath}"
-                  )
+                  target_url = f"{TARGET_SERVER}/{channel_id}/{subpath}"
 
-              return handle_hls_proxy(
-                  target_url,
-                  f"/stream/{channel_id}/{subpath}",
-              )
-
+              return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
 
           if __name__ == "__main__":
-              app.run(
-                  host="0.0.0.0",
-                  port=5000,
-                  threaded=True,
-              )
+              app.run(host="0.0.0.0", port=5000, threaded=True)
           PYTHON
 
           python3 -m py_compile app.py
-
           echo "✅ app.py syntax OK"
 
       - name: Start Proxy Server & Tunnel
@@ -550,42 +314,25 @@ jobs:
 
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-
           BORE_PORT="30114"
 
           echo "💻 Starting SSHX Web Terminal..."
-
           sshx > sshx.log 2>&1 &
           SSHX_PID=$!
-
           sleep 4
 
-          SSHX_URL="$(
-            grep "https://sshx.io/s/" sshx.log |
-            head -n1 |
-            xargs || true
-          )"
+          SSHX_URL="$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs || true)"
 
           echo "🌐 Starting Bore Tunnel..."
-
-          bore local 5000 \
-            --to bore.pub \
-            --port "${BORE_PORT}" \
-            > bore.log 2>&1 &
-
+          bore local 5000 --to bore.pub --port "${BORE_PORT}" > bore.log 2>&1 &
           BORE_PID=$!
 
           echo "⏳ Waiting for Bore..."
-
           for i in $(seq 1 30); do
               sleep 1
-
-              if grep -q \
-                  "bore.pub:${BORE_PORT}" \
-                  bore.log 2>/dev/null; then
+              if grep -q "bore.pub:${BORE_PORT}" bore.log 2>/dev/null; then
                   break
               fi
-
               if ! kill -0 "${BORE_PID}" 2>/dev/null; then
                   echo "❌ Bore exited unexpectedly"
                   cat bore.log
@@ -599,69 +346,34 @@ jobs:
               exit 1
           fi
 
-          echo "✅ Bore active:"
-          echo "   bore.pub:${BORE_PORT}"
-
+          echo "✅ Bore active: bore.pub:${BORE_PORT}"
           BORE_IP="$(dig +short bore.pub | tail -n1 || true)"
 
           if [ -n "${BORE_IP}" ]; then
               echo "📡 bore.pub IP: ${BORE_IP}"
-
-              curl -fsS \
-                "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" \
-                || true
-          else
-              echo "⚠️ Could not resolve bore.pub"
+              curl -fsS "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" || true
           fi
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
-
           export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
           echo ""
           echo "===================================================="
           echo "🚀 IPTV PROXY ACTIVE"
           echo "===================================================="
-          echo "🌐 Bore         : bore.pub"
-          echo "🔌 Port         : ${BORE_PORT}"
-          echo "🌍 Public URL : ${PUBLIC_URL}"
-          echo "🔑 SSHX         : ${SSHX_URL}"
-          echo ""
-          echo "📺 Playlist:"
-          echo "${PUBLIC_URL}/playlist.m3u"
-          echo ""
-          echo "📺 HC:"
-          echo "${PUBLIC_URL}/stream/hc"
-          echo ""
-          echo "📺 WO:"
-          echo "${PUBLIC_URL}/stream/wo"
-          echo ""
-          echo "📺 Box Movie 1:"
-          echo "${PUBLIC_URL}/stream/box1"
-          echo ""
-          echo "📺 Box Hits:"
-          echo "${PUBLIC_URL}/stream/bhits"
+          echo "📺 Playlist    : ${PUBLIC_URL}/playlist.m3u"
+          echo "📺 Hollywood   : ${PUBLIC_URL}/stream/hc"
+          echo "📺 Women       : ${PUBLIC_URL}/stream/wo"
+          echo "📺 Box Movie 1 : ${PUBLIC_URL}/stream/box1"
+          echo "📺 Box Hits    : ${PUBLIC_URL}/stream/bhits"
           echo "===================================================="
           echo ""
 
-          echo "🔥 Starting Gunicorn..."
-
-          exec gunicorn \
-            -w 12 \
-            --threads 8 \
-            --access-logfile - \
-            --error-logfile - \
-            --keep-alive 15 \
-            --bind 0.0.0.0:5000 \
-            app:app
+          exec gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 --bind 0.0.0.0:5000 app:app
           BASH
 
           chmod +x start_proxy.sh
-
-          echo "🔍 Checking shell syntax..."
-
           bash -n start_proxy.sh
-
           echo "✅ start_proxy.sh syntax OK"
 
           ./start_proxy.sh
