@@ -1,4 +1,4 @@
-name: AXN DASH ClearKey -> HLS (Bore 30117) - High Performance
+name: AXN DASH ClearKey -> HLS fMP4 (Bore 30117)
 
 on:
   workflow_dispatch:
@@ -75,7 +75,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Create Node HLS proxy server
+      - name: Create Node HLS proxy server (fMP4 Format)
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -89,10 +89,10 @@ jobs:
           const USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0';
           const REFERER = process.env.REFERER || 'https://mytvnet.vn/';
 
-          // Tối ưu I/O: Lưu HLS trực tiếp vào RAM Disk
           const HLS_DIR = '/dev/shm/hls';
           const PLAYLIST_FILE = path.join(HLS_DIR, 'stream.m3u8');
-          const SEGMENT_PATTERN = path.join(HLS_DIR, 'segment_%05d.ts');
+          const SEGMENT_PATTERN = path.join(HLS_DIR, 'segment_%05d.m4s');
+          const INIT_PATTERN = path.join(HLS_DIR, 'init.mp4');
           const FFMPEG_LOG = '/tmp/ffmpeg.log';
 
           const LISTEN_HOST = '0.0.0.0';
@@ -132,7 +132,6 @@ jobs:
               '-hide_banner',
               '-loglevel', 'warning',
 
-              // Reconnect tối ưu
               '-reconnect', '1',
               '-reconnect_streamed', '1',
               '-reconnect_on_network_error', '1',
@@ -142,21 +141,15 @@ jobs:
               '-headers', headers,
               '-cenc_decryption_key', CLEARKEY_KEY,
 
-              // Sửa lỗi Timestamp hỏng từ luồng gốc
-              '-fflags', '+genpts+discardcorrupt+igndts',
               '-i', MPD_URL,
 
-              // 1. VIDEO: Copy nguyên bản, không tốn CPU
-              '-c:v', 'copy',
+              // STREAM COPY TOÀN BỘ (Không tốn CPU)
+              '-c', 'copy',
 
-              // 2. AUDIO: Transcode nhẹ sang AAC & Ép đồng bộ từng ms với Video
-              '-c:a', 'aac',
-              '-b:a', '128k',
-              '-ac', '2',
-              '-af', 'aresample=async=1000',
-
-              // 3. HLS OUTPUT (Segment 4s để chứa đủ Keyframe)
+              // CẤU HÌNH HLS fMP4
               '-f', 'hls',
+              '-hls_segment_type', 'fmp4',            // Sử dụng định dạng fMP4
+              '-hls_fmp4_init_filename', 'init.mp4',   // File khởi tạo Header MP4
               '-hls_time', '4',
               '-hls_list_size', '5',
               '-hls_flags', 'delete_segments+omit_endlist+independent_segments',
@@ -170,7 +163,7 @@ jobs:
             cleanHlsState();
 
             const args = buildFfmpegArgs();
-            log('[FFmpeg] Đang khởi chạy với chế độ Sync Timestamp...');
+            log('[FFmpeg] Đang khởi chạy với định dạng HLS fMP4...');
 
             ffmpegProc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
 
@@ -183,12 +176,6 @@ jobs:
               ffmpegProc = null;
               scheduleRestart();
             });
-          }
-
-          function stopFfmpeg() {
-            if (!ffmpegProc) return;
-            try { ffmpegProc.kill('SIGKILL'); } catch {}
-            ffmpegProc = null;
           }
 
           function scheduleRestart() {
@@ -234,8 +221,13 @@ jobs:
               return;
             }
 
-            if (/^\/segment_\d+\.ts$/.test(pathname)) {
-              serveFile(res, path.join(HLS_DIR, path.basename(pathname)), 'video/mp2t');
+            if (pathname === '/init.mp4') {
+              serveFile(res, INIT_PATTERN, 'video/mp4');
+              return;
+            }
+
+            if (/^\/segment_\d+\.m4s$/.test(pathname)) {
+              serveFile(res, path.join(HLS_DIR, path.basename(pathname)), 'video/iso.segment');
               return;
             }
 
@@ -246,7 +238,7 @@ jobs:
           startFfmpeg();
 
           server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-            log(`HLS Server: http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`);
+            log(`HLS fMP4 Server: http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`);
           });
           EOF
 
@@ -268,7 +260,7 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "❌ HLS không sẵn sàng"
+            echo "❌ HLS fMP4 không sẵn sàng"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
@@ -283,7 +275,7 @@ jobs:
           sleep 3
 
           echo "=================================================="
-          echo "HLS STREAM READY (Tối ưu Sync Video + RAM Disk)"
+          echo "HLS fMP4 STREAM READY"
           echo "http://bore.pub:30117/stream.m3u8"
           echo "=================================================="
 
