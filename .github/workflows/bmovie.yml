@@ -1,18 +1,21 @@
-name: HLS AXN - Full HD 1080p Perfect Sync (Port 30117)
+name: HLS Restream - True 1080p V3 (Cron Auto Restart)
 
 on:
   workflow_dispatch:
+  schedule:
+    # Tự khởi chạy lại sau mỗi 5 giờ để nối luồng liên tục
+    - cron: '59 5,11,17,23 * * *'
 
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 350 # Tự ngắt sau 5h 50m nhường cho job cron mới
 
     env:
-      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
+      MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
+      CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
-      REFERER: "https://mytv.com.vn/"
+      REFERER: "https://vtvprime.vn/"
 
     steps:
       - name: Install System Dependencies
@@ -29,7 +32,7 @@ jobs:
 
           mkdir -p /dev/shm/hls/boxhits
 
-      - name: Create Static HLS Web Server
+      - name: Create HLS Server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -43,6 +46,7 @@ jobs:
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Connection', 'keep-alive');
 
             if (req.method === 'OPTIONS') {
               res.writeHead(204);
@@ -65,24 +69,29 @@ jobs:
               res.setHeader('Content-Type', 'video/mp2t');
             }
 
-            fs.createReadStream(filePath).pipe(res);
+            const stream = fs.createReadStream(filePath);
+            stream.pipe(res);
+            stream.on('error', () => {
+              if (!res.headersSent) res.writeHead(500);
+              res.end();
+            });
           });
 
           server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 HLS 1080p Web Server running on port 5000...');
+            console.log('🚀 Server started on port 5000...');
           });
           EOF
 
-      - name: Start Services & FFmpeg HLS 1080p Transcoder
+      - name: Start Services & FFmpeg (Map Stream 0:3 - 1080p Gốc)
         shell: bash
         run: |
           set -euo pipefail
 
-          # 1. Start Web Server
+          # 1. Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. Start FFmpeg Full Transcode 1080p (Scale 1080 + CRF 22 cho độ nét cao)
+          # 2. FFmpeg: Ép map 0:3 (Stream V3 1080p) và 0:4 (Audio A0)
           CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
           
           nohup ffmpeg -hide_banner -loglevel warning \
@@ -91,41 +100,53 @@ jobs:
             -cenc_decryption_key "$CLEARKEY_KEY" \
             -fflags +genpts+discardcorrupt+nobuffer \
             -i "$MPD_URL" \
-            -map 0:v:0? -map 0:a:0? \
-            -vf "scale=-2:1080" \
+            -map 0:3 -map 0:4 \
             -c:v libx264 -preset ultrafast -tune zerolatency \
-            -crf 22 -maxrate 4000k -bufsize 8000k \
+            -crf 18 -maxrate 6000k -bufsize 12000k \
             -g 50 -r 25 -pix_fmt yuv420p \
-            -c:a aac -b:a 128k -ar 44100 -ac 2 -af "aresample=async=1000" \
+            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
             -f hls \
             -hls_time 2 \
-            -hls_list_size 5 \
-            -hls_flags delete_segments+omit_endlist+append_list \
+            -hls_list_size 10 \
+            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
             -hls_segment_filename "/dev/shm/hls/boxhits/segment_%03d.ts" \
             /dev/shm/hls/boxhits/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Start Tunnel (Port 30117)
+          # 3. Bore Tunnel
           nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
           echo $! > /tmp/bore.pid
 
-          echo "Waiting for HLS 1080p Playlist generation..."
+          echo "Waiting for HLS 1080p Stream..."
           for i in {1..30}; do
-            if [ -f /dev/shm/hls/axn/index.m3u8 ]; then
-              echo "✅ HLS 1080p Playlist Created!"
+            if [ -f /dev/shm/hls/boxhits/index.m3u8 ]; then
+              echo "✅ HLS Stream Ready!"
               break
             fi
             sleep 1
           done
 
           echo "=================================================="
-          echo "✅ LINK HLS PLAYLIST FULL HD 1080p:"
+          echo "✅ LINK STREAM HLS 1080P CHUẨN NÉT GỐC (V3):"
           echo "👉 http://bore.pub:30117/index.m3u8"
           echo "=================================================="
 
+          # 4. Timer 5h 50m (21000s)
+          START_TIME=$(date +%s)
+          LIMIT_SECONDS=21000
+
           while true; do
+            NOW=$(date +%s)
+            ELAPSED=$(( NOW - START_TIME ))
+
+            if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
+              echo "⏰ Đã chạy 5h 50m, tự thoát nhường cho Cron Job mới..."
+              exit 0
+            fi
+
             if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then exit 1; fi
             if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then exit 1; fi
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
+            
             sleep 10
           done
