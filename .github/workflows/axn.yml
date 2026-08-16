@@ -15,24 +15,17 @@ jobs:
       REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install Dependencies & Static FFmpeg 6.x
+      - name: Install System Dependencies
         shell: bash
         run: |
           set -euo pipefail
-          
-          # Tải FFmpeg 6.x static build chuẩn để có BSF setts mới nhất
-          curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
-          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
-          sudo cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg
-          sudo cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe
-          sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
-          rm -rf /tmp/ffmpeg*
-          ffmpeg -version | head -n 1
 
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs
+          sudo apt-get install -y -qq curl nodejs ffmpeg
 
-          # Install Bore Tunnel
+          ffmpeg -version | head -n 1
+
+          # Cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
@@ -51,7 +44,7 @@ jobs:
           const REFERER = process.env.REFERER || "https://mytvnet.vn/";
 
           const CHANNELS = new Map();
-          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Buffer ~6MB dữ liệu cho client mới join
+          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Ring buffer 6MB cho client mới join
 
           function buildFFmpegArgs(mpdUrl, key) {
             const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://mytvnet.vn\r\n`;
@@ -60,18 +53,15 @@ jobs:
               '-user_agent', USER_AGENT,
               '-headers', customHeaders,
               '-cenc_decryption_key', key,
-              // Đã bỏ igndts để bảo vệ thứ tự B-frame chống xé hình
               '-fflags', '+genpts+discardcorrupt+nobuffer',
               '-i', mpdUrl,
               '-map', '0:v:0?', '-map', '0:a:0?',
               
-              // Reset PTS/DTS độc lập về 0 cho cả 2 luồng (0% CPU)
               '-c:v', 'copy',
               '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
               '-c:a', 'copy',
               '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
               
-              // Chống phình queue & tối ưu MPEG-TS Live Output
               '-max_muxing_queue_size', '4096',
               '-max_interleave_delta', '0',
               '-muxdelay', '0', '-muxpreload', '0', '-max_delay', '0',
@@ -98,20 +88,16 @@ jobs:
             proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString().trim()));
 
             proc.stdout.on('data', (chunk) => {
-              // Lưu vào Ring Buffer cho client join sau
               entry.ringBuffer.push(chunk);
               let size = entry.ringBuffer.reduce((s, b) => s + b.length, 0);
               while (size > RING_BUFFER_MAX) {
                 size -= entry.ringBuffer.shift().length;
               }
 
-              // Broadcast cho các client đang xem
               for (const res of entry.clients) {
                 const ok = res.write(chunk);
                 if (!ok) {
-                  // Tránh pause FFmpeg gây lag cho client khác.
-                  // Kênh mạng của client này quá chậm -> Hủy socket client đó.
-                  console.warn(`[Proxy] Client network slow, destroying socket to prevent backpressure.`);
+                  console.warn(`[Proxy] Client network slow, destroying socket.`);
                   res.socket.destroy();
                   entry.clients.delete(res);
                 }
@@ -119,9 +105,9 @@ jobs:
             });
 
             proc.on('exit', (code, signal) => {
-              console.warn(`[FFmpeg] Exited with code=${code}, signal=${signal}`);
+              console.warn(`[FFmpeg] Exited code=${code}, signal=${signal}`);
               if (entry.clients.size > 0 && !entry.manualKill) {
-                console.log(`[FFmpeg] Auto-restarting in 1.5s (${entry.clients.size} clients connected)...`);
+                console.log(`[FFmpeg] Auto-restarting in 1.5s...`);
                 setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
               } else {
                 CHANNELS.delete(id);
@@ -149,7 +135,6 @@ jobs:
           const server = http.createServer((req, res) => {
             console.log(`[Client Connected] ${req.url}`);
 
-            // HTTP Streaming Header chuẩn (Hỗ trợ HTTP/1.1 Chunked)
             res.writeHead(200, {
               'Content-Type': 'video/mp2t',
               'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -163,7 +148,6 @@ jobs:
 
             const channelEntry = getOrCreateChannel('axn');
 
-            // Flush Ring Buffer ngay cho client mới nhận keyframe phát liền
             for (const buf of channelEntry.ringBuffer) {
               res.write(buf);
             }
@@ -174,7 +158,7 @@ jobs:
               console.log(`[Client Disconnected]`);
               channelEntry.clients.delete(res);
               if (channelEntry.clients.size === 0) {
-                console.log(`[FFmpeg] No active clients left. Stopping FFmpeg process...`);
+                console.log(`[FFmpeg] No active clients. Stopping process...`);
                 channelEntry.manualKill = true;
                 if (channelEntry.proc) channelEntry.proc.kill('SIGKILL');
                 CHANNELS.delete('axn');
@@ -219,7 +203,7 @@ jobs:
           fi
 
           echo "=================================================="
-          echo "✅ LINK STREAM MPEG-TS ĐÃ ĐƯỢC FIX HOÀN HẢO:"
+          echo "✅ LINK STREAM MPEG-TS ĐÃ SẴN SÀNG:"
           echo "👉 http://bore.pub:30117/stream.ts"
           echo "=================================================="
 
