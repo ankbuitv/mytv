@@ -1,4 +1,4 @@
-name: Restream Box Hits (Audio Transcode) - Bore 30118
+name: Restream Box Hits - Audio Transcode Only (Port 30118)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Create Audio Transcode Proxy Script (V6)
+      - name: Create Audio Transcode Proxy Script
         shell: bash
         run: |
           cat << 'EOF' > /tmp/server.js
@@ -59,17 +59,15 @@ jobs:
               '-i', mpdUrl,
               '-map', '0:v:0?', '-map', '0:a:0?',
               
-              // VIDEO: Giữ nguyên bản gốc 100% (Pass-through, 0% CPU)
+              // VIDEO: Copy nguyên bản 100%
               '-c:v', 'copy',
               '-bsf:v', 'h264_mp4toannexb',
               
-              // AUDIO: Transcode sang AAC chuẩn, tạo lại timeline mới tinh
+              // AUDIO: Transcode AAC fix lệch tiếng
               '-c:a', 'aac',
               '-b:a', '128k',
               '-ar', '44100',
               '-ac', '2',
-              
-              // Dynamic resync audio theo video stream nếu có trôi frame
               '-af', 'aresample=async=1000',
 
               '-avoid_negative_ts', 'make_zero',
@@ -115,7 +113,7 @@ jobs:
                 res.write(chunk);
 
                 if (res.socket && res.socket.writableLength > MAX_BACKPRESSURE_BYTES) {
-                  console.warn(`[Proxy] Client overloaded (${res.socket.writableLength} bytes). Disconnecting.`);
+                  console.warn(`[Proxy] Client overloaded. Disconnecting.`);
                   res.destroy();
                   entry.clients.delete(res);
                 }
@@ -191,7 +189,7 @@ jobs:
           server.timeout = 0;
 
           server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Audio Transcode Proxy V6 running on 5000...');
+            console.log('🚀 Audio Transcode Proxy running on 5000...');
           });
           EOF
 
@@ -223,20 +221,12 @@ jobs:
           fi
 
           echo "=================================================="
-          echo "✅ MPEG-TS AUDIO TRANSCODE PERFECT SYNC:"
+          echo "✅ STREAM AUDIO TRANSCODE PORT 30118:"
           echo "👉 http://bore.pub:30118/stream.ts"
           echo "=================================================="
 
           while true; do
-            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then 
-              echo "Proxy died!"
-              cat /tmp/proxy.log
-              exit 1
-            fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then 
-              echo "Bore died!"
-              cat /tmp/bore.log
-              exit 1
-            fi
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then exit 1; fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
             sleep 10
           done
