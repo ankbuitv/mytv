@@ -1,4 +1,4 @@
-name: AXN DASH ClearKey -> HLS fMP4 (Bore 30117)
+name: AXN DASH ClearKey -> HLS Perfect Sync (Bore 30117)
 
 on:
   workflow_dispatch:
@@ -75,7 +75,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Create Node HLS proxy server (fMP4 Format)
+      - name: Create Node HLS proxy server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -91,8 +91,7 @@ jobs:
 
           const HLS_DIR = '/dev/shm/hls';
           const PLAYLIST_FILE = path.join(HLS_DIR, 'stream.m3u8');
-          const SEGMENT_PATTERN = path.join(HLS_DIR, 'segment_%05d.m4s');
-          const INIT_PATTERN = path.join(HLS_DIR, 'init.mp4');
+          const SEGMENT_PATTERN = path.join(HLS_DIR, 'segment_%05d.ts');
           const FFMPEG_LOG = '/tmp/ffmpeg.log';
 
           const LISTEN_HOST = '0.0.0.0';
@@ -141,17 +140,29 @@ jobs:
               '-headers', headers,
               '-cenc_decryption_key', CLEARKEY_KEY,
 
+              // Sửa Timestamp hỏng
+              '-fflags', '+genpts+discardcorrupt+igndts',
               '-i', MPD_URL,
 
-              // STREAM COPY TOÀN BỘ (Không tốn CPU)
-              '-c', 'copy',
+              // Chỉ định rõ ràng lấy Video tốt nhất (v:0) và Audio đầu tiên (a:0)
+              '-map', '0:v:0',
+              '-map', '0:a:0?',
 
-              // CẤU HÌNH HLS fMP4
+              // VIDEO: Copy nguyên gốc + BSF để sửa Header tương thích với TS
+              '-c:v', 'copy',
+              '-bsf:v', 'h264_mp4toannexb',
+
+              // AUDIO: Mã hóa lại AAC chuẩn (Nhẹ CPU nhưng sửa 100% lỗi mất tiếng và lệch sync)
+              '-c:a', 'aac',
+              '-b:a', '128k',
+              '-ac', '2',
+              '-ar', '44100',
+              '-af', 'aresample=async=1000',
+
+              // HLS Output
               '-f', 'hls',
-              '-hls_segment_type', 'fmp4',            // Sử dụng định dạng fMP4
-              '-hls_fmp4_init_filename', 'init.mp4',   // File khởi tạo Header MP4
               '-hls_time', '4',
-              '-hls_list_size', '5',
+              '-hls_list_size', '6',
               '-hls_flags', 'delete_segments+omit_endlist+independent_segments',
               '-hls_segment_filename', SEGMENT_PATTERN,
               PLAYLIST_FILE
@@ -163,7 +174,7 @@ jobs:
             cleanHlsState();
 
             const args = buildFfmpegArgs();
-            log('[FFmpeg] Đang khởi chạy với định dạng HLS fMP4...');
+            log('[FFmpeg] Đang chạy chế độ BSF Video Copy + AAC Transcode...');
 
             ffmpegProc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
 
@@ -221,13 +232,8 @@ jobs:
               return;
             }
 
-            if (pathname === '/init.mp4') {
-              serveFile(res, INIT_PATTERN, 'video/mp4');
-              return;
-            }
-
-            if (/^\/segment_\d+\.m4s$/.test(pathname)) {
-              serveFile(res, path.join(HLS_DIR, path.basename(pathname)), 'video/iso.segment');
+            if (/^\/segment_\d+\.ts$/.test(pathname)) {
+              serveFile(res, path.join(HLS_DIR, path.basename(pathname)), 'video/mp2t');
               return;
             }
 
@@ -238,7 +244,7 @@ jobs:
           startFfmpeg();
 
           server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-            log(`HLS fMP4 Server: http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`);
+            log(`HLS Server: http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`);
           });
           EOF
 
@@ -260,7 +266,7 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "❌ HLS fMP4 không sẵn sàng"
+            echo "❌ HLS không sẵn sàng"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
@@ -275,7 +281,7 @@ jobs:
           sleep 3
 
           echo "=================================================="
-          echo "HLS fMP4 STREAM READY"
+          echo "HLS STREAM READY (Hfix Sound + Smooth Video)"
           echo "http://bore.pub:30117/stream.m3u8"
           echo "=================================================="
 
