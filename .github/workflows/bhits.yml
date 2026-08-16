@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Tự khởi chạy lại sau mỗi 5 giờ để nối luồng liên tục
-    - cron: '0 */5 * * *'
+    - cron: '59 5,11,17,23 * * *'
 
 jobs:
   hls-proxy:
