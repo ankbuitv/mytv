@@ -1,10 +1,10 @@
-name: The Perfect HLS Remux - Bore 30117
+name: Ultimate DASH Zero-PTS Proxy - Bore 30117
 
 on:
   workflow_dispatch:
 
 jobs:
-  remux:
+  proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -15,85 +15,120 @@ jobs:
       REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install dependencies & High-Performance Web Server
+      - name: Install dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl lighttpd
+          sudo apt-get install -y -qq ffmpeg curl nodejs
 
-          # Cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Prepare HLS Ramdisk (Chạy trên RAM siêu tốc)
+      - name: Create Proxy Server (Reset Audio & Video PTS to 0)
         shell: bash
         run: |
-          set -euo pipefail
-          sudo rm -rf /dev/shm/hls
-          mkdir -p /dev/shm/hls
-          chmod 777 /dev/shm/hls
+          cat << 'EOF' > /tmp/server.js
+          const http = require('http');
+          const { spawn } = require('child_process');
 
-      - name: Configure and Start Lighttpd Web Server
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat << 'EOF' > /tmp/lighttpd.conf
-          server.document-root = "/dev/shm/hls"
-          server.port = 5000
-          server.bind = "0.0.0.0"
-          mimetype.assign = (
-            ".m3u8" => "application/vnd.apple.mpegurl",
-            ".m4s"  => "video/iso.segment",
-            ".mp4"  => "video/mp4"
-          )
+          const MPD_URL = process.env.MPD_URL;
+          const KEY = process.env.CLEARKEY_KEY;
+          const UA = process.env.USER_AGENT;
+          const REF = process.env.REFERER;
+
+          const server = http.createServer((req, res) => {
+            console.log(`[${new Date().toISOString()}] Client connected: ${req.url}`);
+
+            res.writeHead(200, {
+              'Content-Type': 'video/mp2t',
+              'Connection': 'keep-alive',
+              'Access-Control-Allow-Origin': '*'
+            });
+
+            const customHeaders = `Referer: ${REF}\r\nOrigin: https://mytvnet.vn\r\n`;
+
+            const ffmpegArgs = [
+              '-hide_banner',
+              '-loglevel', 'error',
+              '-user_agent', UA,
+              '-headers', customHeaders,
+              '-cenc_decryption_key', KEY,
+              '-i', MPD_URL,
+              '-map', '0:v:0?',
+              '-map', '0:a:0?',
+              // 1. Giữ nguyên Video codec (0% CPU), ép PTS Video bắt đầu từ 0
+              '-c:v', 'copy',
+              '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTPTS',
+              // 2. Re-encode nhẹ Audio & ép PTS Audio bắt đầu từ 0 (Triệt hạ hoàn toàn lỗi lệch 8.9s)
+              '-c:a', 'aac',
+              '-b:a', '128k',
+              '-ar', '48000',
+              '-ac', '2',
+              '-af', 'asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.100000',
+              // 3. Đóng gói MPEG-TS mượt mà
+              '-muxdelay', '0',
+              '-muxpreload', '0',
+              '-f', 'mpegts',
+              'pipe:1'
+            ];
+
+            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+
+            ffmpeg.stdout.pipe(res);
+
+            ffmpeg.stderr.on('data', (data) => {
+              console.error(`FFmpeg Log: ${data}`);
+            });
+
+            req.on('close', () => {
+              console.log('Client disconnect -> Killing FFmpeg...');
+              ffmpeg.kill('SIGKILL');
+            });
+          });
+
+          server.keepAliveTimeout = 60000;
+          server.listen(5000, '0.0.0.0', () => {
+            console.log('🚀 Server running on port 5000');
+          });
           EOF
-          lighttpd -f /tmp/lighttpd.conf
-          echo "✅ Lighttpd Web Server running on port 5000"
 
-      - name: Start Bore Tunnel
+      - name: Start Services
         shell: bash
         run: |
           set -euo pipefail
+          
+          nohup node /tmp/server.js > /tmp/proxy.log 2>&1 &
+          echo $! > /tmp/proxy.pid
+          sleep 2
+
           nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
           echo $! > /tmp/bore.pid
 
-          sleep 3
-          if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
-            echo "✅ BORE TUNNEL ESTABLISHED: http://bore.pub:30117/index.m3u8"
-          else
-            echo "❌ BORE FAILED. Log:"
+          PORT_BOUND=0
+          for i in {1..20}; do
+            sleep 1
+            if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
+              PORT_BOUND=1
+              break
+            fi
+          done
+
+          if [ "$PORT_BOUND" -eq 0 ]; then
+            echo "❌ ERROR: Bore failed."
             cat /tmp/bore.log
             exit 1
           fi
 
-      - name: Start FFmpeg Remux (fMP4 - Giải quyết triệt để lỗi Sync)
-        shell: bash
-        run: |
-          set -euo pipefail
-          
-          echo "🔥 Bắt đầu kéo luồng với định dạng fMP4 (Cam kết không rớt Audio)..."
-          
-          # Vòng lặp giữ FFmpeg sống mãi
+          echo "=================================================="
+          echo "✅ LINK TEST CHUẨN XEM TRÊN VLC KHOÔNG CÒN MẤT TIẾNG:"
+          echo "👉 http://bore.pub:30117/stream.ts"
+          echo "=================================================="
+
           while true; do
-            ffmpeg -hide_banner -loglevel warning -stats \
-              -user_agent "${USER_AGENT}" \
-              -headers "Referer: ${REFERER}"$'\r\n'"Origin: https://mytvnet.vn"$'\r\n' \
-              -cenc_decryption_key "${CLEARKEY_KEY}" \
-              -i "${MPD_URL}" \
-              -map 0:v:0? -map 0:a:0? \
-              -c:v copy -c:a copy \
-              -f hls \
-              -hls_time 4 \
-              -hls_list_size 12 \
-              -hls_flags delete_segments+temp_file \
-              -hls_segment_type fmp4 \
-              -hls_fmp4_init_filename "init.mp4" \
-              -hls_segment_filename "/dev/shm/hls/seg_%d.m4s" \
-              "/dev/shm/hls/index.m3u8" || true
-              
-            echo "⚠️ Luồng bị gián đoạn. FFmpeg đang tự động khởi động lại sau 3s..."
-            sleep 3
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then exit 1; fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
+            sleep 10
           done
