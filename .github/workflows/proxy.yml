@@ -48,6 +48,8 @@ jobs:
           DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
           TARGET_SERVER = "http://23.237.104.106:8080"
+          BOX1_SERVER = "http://23.237.104.106:30117"
+          BHITS_SERVER = "http://23.237.104.106:30119"
 
           AMAGI_STUDIO_C = (
               "https://amg12058-c15studio-amg12058c1-lg-us-5787."
@@ -85,7 +87,7 @@ jobs:
           )
 
           # ============================================================
-          # SKYGO SOURCES
+          # SKYGO & NEW SOURCES
           # ============================================================
 
           DISCOVERY_ASIA = (
@@ -96,6 +98,16 @@ jobs:
           SOUTHEAST_ASIA = (
               "http://cdn4.skygo.mn/live/disk1/"
               "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
+          )
+
+          HC_URL = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "HitsCinema/HLSv3-FTA/HitsCinema.m3u8"
+          )
+
+          WO_URL = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "WarnerTV/HLSv3-FTA/WarnerTV.m3u8"
           )
 
           UA_CHROME = (
@@ -174,7 +186,15 @@ jobs:
           #EXTINF:-1 tvg-id="DiscoveryAsia" group-title="Asia",Discovery Asia HD
           {public_url}/stream/asia
           #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
-          {public_url}/stream/dsc"""
+          {public_url}/stream/dsc
+          #EXTINF:-1 tvg-id="HitsCinema" group-title="Cinema",Hits Cinema HD
+          {public_url}/stream/hc
+          #EXTINF:-1 tvg-id="WarnerTV_WO" group-title="US Live",Warner TV WO HD
+          {public_url}/stream/wo
+          #EXTINF:-1 tvg-id="BoxMovie1" group-title="Box TV",Box Movie 1 HD
+          {public_url}/stream/box1
+          #EXTINF:-1 tvg-id="BoxHits" group-title="Box TV",Box Hits HD
+          {public_url}/stream/bhits"""
 
               response = Response(
                   m3u_content.strip(),
@@ -416,6 +436,74 @@ jobs:
 
 
           @app.route(
+              "/stream/hc",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_hc():
+              return handle_hls_proxy(
+                  HC_URL,
+                  "/stream/hc",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
+          @app.route(
+              "/stream/wo",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_wo():
+              return handle_hls_proxy(
+                  WO_URL,
+                  "/stream/wo",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
+          @app.route(
+              "/stream/box1",
+              methods=["GET", "OPTIONS"],
+          )
+          @app.route(
+              "/stream/box1/<path:subpath>",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_box1(subpath=None):
+              target_url = (
+                  f"{BOX1_SERVER}/{subpath}"
+                  if subpath
+                  else BOX1_SERVER
+              )
+              endpoint = (
+                  f"/stream/box1/{subpath}"
+                  if subpath
+                  else "/stream/box1"
+              )
+              return handle_hls_proxy(target_url, endpoint)
+
+
+          @app.route(
+              "/stream/bhits",
+              methods=["GET", "OPTIONS"],
+          )
+          @app.route(
+              "/stream/bhits/<path:subpath>",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_bhits(subpath=None):
+              target_url = (
+                  f"{BHITS_SERVER}/{subpath}"
+                  if subpath
+                  else BHITS_SERVER
+              )
+              endpoint = (
+                  f"/stream/bhits/{subpath}"
+                  if subpath
+                  else "/stream/bhits"
+              )
+              return handle_hls_proxy(target_url, endpoint)
+
+
+          @app.route(
               "/stream/<channel_id>/<path:subpath>",
               methods=["GET", "OPTIONS"],
           )
@@ -534,28 +622,25 @@ jobs:
           echo "===================================================="
           echo "🚀 IPTV PROXY ACTIVE"
           echo "===================================================="
-          echo "🌐 Bore        : bore.pub"
-          echo "🔌 Port        : ${BORE_PORT}"
+          echo "🌐 Bore         : bore.pub"
+          echo "🔌 Port         : ${BORE_PORT}"
           echo "🌍 Public URL : ${PUBLIC_URL}"
-          echo "🔑 SSHX        : ${SSHX_URL}"
+          echo "🔑 SSHX         : ${SSHX_URL}"
           echo ""
           echo "📺 Playlist:"
           echo "${PUBLIC_URL}/playlist.m3u"
           echo ""
-          echo "📺 DreamWorks:"
-          echo "${PUBLIC_URL}/stream/dreamworks"
+          echo "📺 HC:"
+          echo "${PUBLIC_URL}/stream/hc"
           echo ""
-          echo "📺 TV360+9:"
-          echo "${PUBLIC_URL}/stream/tv360-9"
+          echo "📺 WO:"
+          echo "${PUBLIC_URL}/stream/wo"
           echo ""
-          echo "📺 TV360+10:"
-          echo "${PUBLIC_URL}/stream/tv360-10"
+          echo "📺 Box Movie 1:"
+          echo "${PUBLIC_URL}/stream/box1"
           echo ""
-          echo "📺 Discovery Asia:"
-          echo "${PUBLIC_URL}/stream/asia"
-          echo ""
-          echo "📺 Southeast Asia:"
-          echo "${PUBLIC_URL}/stream/dsc"
+          echo "📺 Box Hits:"
+          echo "${PUBLIC_URL}/stream/bhits"
           echo "===================================================="
           echo ""
 
