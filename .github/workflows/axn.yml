@@ -27,16 +27,12 @@ jobs:
 
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
+      # Put your key in GitHub Actions Secrets as CLEARKEY_KEY.
+      CLEARKEY_KEY: ${{ secrets.CLEARKEY_KEY }}
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       REFERER: "https://mytvnet.vn/"
 
     steps:
-
-      # ==========================================================
-      # RESOLVE RUNTIME ENV
-      # ==========================================================
-
       - name: Resolve runtime env from workflow inputs
         shell: bash
         run: |
@@ -47,1035 +43,294 @@ jobs:
           UA_EFFECTIVE="${{ github.event.inputs.user_agent }}"
           REF_EFFECTIVE="${{ github.event.inputs.referer }}"
 
-          if [ -z "$MPD_EFFECTIVE" ]; then
-            MPD_EFFECTIVE="$MPD_URL"
-          fi
+          if [ -z "${MPD_EFFECTIVE}" ]; then MPD_EFFECTIVE="${MPD_URL}"; fi
+          if [ -z "${KEY_EFFECTIVE}" ]; then KEY_EFFECTIVE="${CLEARKEY_KEY:-}"; fi
+          if [ -z "${UA_EFFECTIVE}" ]; then UA_EFFECTIVE="${USER_AGENT}"; fi
+          if [ -z "${REF_EFFECTIVE}" ]; then REF_EFFECTIVE="${REFERER}"; fi
 
-          if [ -z "$KEY_EFFECTIVE" ]; then
-            KEY_EFFECTIVE="$CLEARKEY_KEY"
-          fi
-
-          if [ -z "$UA_EFFECTIVE" ]; then
-            UA_EFFECTIVE="$USER_AGENT"
-          fi
-
-          if [ -z "$REF_EFFECTIVE" ]; then
-            REF_EFFECTIVE="$REFERER"
-          fi
-
-          if [ -z "$MPD_EFFECTIVE" ] || [ -z "$KEY_EFFECTIVE" ]; then
+          if [ -z "${MPD_EFFECTIVE}" ] || [ -z "${KEY_EFFECTIVE}" ]; then
             echo "❌ MPD URL hoặc ClearKey bị rỗng"
             exit 1
           fi
 
           {
-            echo "MPD_URL=$MPD_EFFECTIVE"
-            echo "CLEARKEY_KEY=$KEY_EFFECTIVE"
-            echo "USER_AGENT=$UA_EFFECTIVE"
-            echo "REFERER=$REF_EFFECTIVE"
+            echo "MPD_URL=${MPD_EFFECTIVE}"
+            echo "CLEARKEY_KEY=${KEY_EFFECTIVE}"
+            echo "USER_AGENT=${UA_EFFECTIVE}"
+            echo "REFERER=${REF_EFFECTIVE}"
           } >> "$GITHUB_ENV"
-
-      # ==========================================================
-      # DEPENDENCIES
-      # ==========================================================
 
       - name: Install system dependencies
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update -qq
-
           sudo apt-get install -y -qq \
-            curl \
-            ca-certificates \
-            nodejs \
-            ffmpeg \
-            jq
+            curl ca-certificates ffmpeg jq nginx dnsutils
 
-          echo "Node:"
-          node -v
-
-          echo "FFmpeg:"
           ffmpeg -version | head -n 1
-
-          echo "FFprobe:"
           ffprobe -version | head -n 1
-
-      # ==========================================================
-      # BORE
-      # ==========================================================
+          nginx -v
 
       - name: Install Bore
         shell: bash
         run: |
           set -euo pipefail
-
           curl -fsSL \
             https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
             -o /tmp/bore.tar.gz
 
           tar -xzf /tmp/bore.tar.gz -C /tmp
-
-          sudo install -m 755 \
-            /tmp/bore \
-            /usr/local/bin/bore
-
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
           bore --version
 
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      # ==========================================================
-      # HLS FLAGS
-      # ==========================================================
-
-      - name: Detect supported HLS flags
+      - name: Prepare RAM HLS storage
         shell: bash
         run: |
           set -euo pipefail
 
-          ffmpeg -hide_banner -h muxer=hls \
-            > /tmp/hls_muxer_help.txt 2>&1
+          sudo rm -rf /dev/shm/hls
+          sudo mkdir -p /dev/shm/hls/axn
+          sudo chmod -R 777 /dev/shm/hls
 
-          if grep -q 'temp_file' /tmp/hls_muxer_help.txt; then
-            echo 'HLS_FLAGS=delete_segments+independent_segments+omit_endlist+temp_file' >> "$GITHUB_ENV"
-          else
-            echo 'HLS_FLAGS=delete_segments+independent_segments+omit_endlist' >> "$GITHUB_ENV"
-          fi
-
-      # ==========================================================
-      # NODE HLS SERVER
-      # ==========================================================
-
-      - name: Create Node HLS proxy server
+      - name: Configure nginx HLS server
         shell: bash
         run: |
-          cat << 'EOF' > /tmp/hls_server.js
+          set -euo pipefail
 
-          const http = require('http');
-          const fs = require('fs');
-          const path = require('path');
-          const { spawn } = require('child_process');
+          sudo tee /etc/nginx/nginx.conf >/dev/null <<'NGINX'
+          worker_processes auto;
+          pid /run/nginx.pid;
 
-          const MPD_URL = process.env.MPD_URL;
-          const CLEARKEY_KEY = process.env.CLEARKEY_KEY;
-
-          const USER_AGENT =
-            process.env.USER_AGENT ||
-            'Mozilla/5.0';
-
-          const REFERER =
-            process.env.REFERER ||
-            'https://mytvnet.vn/';
-
-          const HLS_FLAGS =
-            process.env.HLS_FLAGS ||
-            'delete_segments+independent_segments+omit_endlist+temp_file';
-
-          const HLS_DIR = '/tmp/hls';
-
-          const PLAYLIST_FILE =
-            path.join(HLS_DIR, 'stream.m3u8');
-
-          const SEGMENT_PATTERN =
-            path.join(HLS_DIR, 'segment_%05d.ts');
-
-          const FFMPEG_LOG =
-            '/tmp/ffmpeg.log';
-
-          const LISTEN_HOST = '0.0.0.0';
-          const LISTEN_PORT = 5000;
-
-          const RESTART_DELAY_MS = 1500;
-
-          let ffmpegProc = null;
-          let restarting = false;
-
-          let restartCount = 0;
-          let ffmpegStartedAt = 0;
-
-          function log(...args) {
-            console.log(
-              new Date().toISOString(),
-              ...args
-            );
+          events {
+              worker_connections 2048;
+              multi_accept on;
           }
 
-          function noCacheHeaders() {
-            return {
-              'Cache-Control':
-                'no-cache, no-store, must-revalidate',
-
-              'Pragma': 'no-cache',
-
-              'Expires': '0',
-
-              'Access-Control-Allow-Origin': '*',
-
-              'Access-Control-Allow-Headers': '*'
-            };
-          }
-
-          function safeOrigin(referer) {
-            try {
-              return new URL(referer).origin;
-            } catch {
-              return 'https://mytvnet.vn';
-            }
-          }
-
-          function cleanHlsState() {
-            fs.mkdirSync(
-              HLS_DIR,
-              { recursive: true }
-            );
-
-            const names =
-              fs.readdirSync(HLS_DIR);
-
-            for (const name of names) {
-
-              if (
-                /\.m3u8$/.test(name) ||
-                /\.ts$/.test(name) ||
-                /\.tmp$/.test(name)
-              ) {
-                try {
-                  fs.rmSync(
-                    path.join(HLS_DIR, name),
-                    { force: true }
-                  );
-                } catch {}
-              }
-            }
-          }
-
-          // ======================================================
-          // FFMPEG
-          // ======================================================
-
-          function buildFfmpegArgs() {
-
-            const headers =
-              `Referer: ${REFERER}\r\n` +
-              `Origin: ${safeOrigin(REFERER)}\r\n`;
-
-            return [
-
-              '-hide_banner',
-
-              '-loglevel',
-              'warning',
-
-              // --------------------------------------------------
-              // Network reconnect
-              // --------------------------------------------------
-
-              '-reconnect',
-              '1',
-
-              '-reconnect_streamed',
-              '1',
-
-              '-reconnect_on_network_error',
-              '1',
-
-              '-reconnect_delay_max',
-              '2',
-
-              // --------------------------------------------------
-              // HTTP
-              // --------------------------------------------------
-
-              '-user_agent',
-              USER_AGENT,
-
-              '-headers',
-              headers,
-
-              // --------------------------------------------------
-              // ClearKey
-              // --------------------------------------------------
-
-              '-cenc_decryption_key',
-              CLEARKEY_KEY,
-
-              // --------------------------------------------------
-              // Input timestamp handling
-              //
-              // The source can contain discontinuous timestamps.
-              // Do NOT blindly preserve them.
-              // --------------------------------------------------
-
-              '-fflags',
-              '+genpts',
-
-              '-i',
-              MPD_URL,
-
-              // --------------------------------------------------
-              // Streams
-              // --------------------------------------------------
-
-              '-map',
-              '0:v:0?',
-
-              '-map',
-              '0:a:0?',
-
-              // ==================================================
-              // VIDEO
-              // ==================================================
-
-              '-vf',
-              'setpts=N/(25*TB),scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
-
-              '-c:v',
-              'libx264',
-
-              // GitHub Actions CPU friendly
-              '-preset',
-              'veryfast',
-
-              // Stable quality
-              '-crf',
-              '23',
-
-              // Explicit 25fps
-              '-r',
-              '25',
-
-              // 2 second GOP
-              // 25 fps × 2 sec = 50 frames
-              '-g',
-              '50',
-
-              '-keyint_min',
-              '50',
-
-              '-sc_threshold',
-              '0',
-
-              // Streaming bitrate control
-              '-maxrate',
-              '5000k',
-
-              '-bufsize',
-              '10000k',
-
-              // Reduce encoder latency
-              '-tune',
-              'zerolatency',
-
-              // ==================================================
-              // AUDIO
-              // ==================================================
-
-              '-c:a',
-              'aac',
-
-              '-b:a',
-              '128k',
-
-              '-ar',
-              '48000',
-
-              '-ac',
-              '2',
-
-              '-af',
-              'aresample=async=1:first_pts=0',
-
-              // ==================================================
-              // TIMESTAMP / MUX
-              // ==================================================
-
-              '-fps_mode',
-              'cfr',
-
-              '-avoid_negative_ts',
-              'make_zero',
-
-              '-max_muxing_queue_size',
-              '4096',
-
-              // ==================================================
-              // HLS
-              // ==================================================
-
-              '-f',
-              'hls',
-
-              '-hls_time',
-              '2',
-
-              '-hls_list_size',
-              '6',
-
-              '-hls_delete_threshold',
-              '2',
-
-              '-hls_flags',
-              HLS_FLAGS,
-
-              '-hls_segment_type',
-              'mpegts',
-
-              '-hls_start_number_source',
-              'epoch',
-
-              '-hls_segment_filename',
-              SEGMENT_PATTERN,
-
-              PLAYLIST_FILE
-            ];
-          }
-
-          function startFfmpeg() {
-
-            if (ffmpegProc) {
-              return;
-            }
-
-            cleanHlsState();
-
-            try {
-              fs.writeFileSync(
-                FFMPEG_LOG,
-                ''
-              );
-            } catch {}
-
-            const args =
-              buildFfmpegArgs();
-
-            log(
-              '[FFmpeg] starting video transcode'
-            );
-
-            log(
-              '[FFmpeg] pid will be assigned after spawn'
-            );
-
-            const proc =
-              spawn(
-                'ffmpeg',
-                args,
-                {
-                  stdio: [
-                    'ignore',
-                    'ignore',
-                    'pipe'
-                  ]
-                }
-              );
-
-            ffmpegProc = proc;
-
-            ffmpegStartedAt =
-              Date.now();
-
-            log(
-              `[FFmpeg] pid=${proc.pid}`
-            );
-
-            proc.stderr.on(
-              'data',
-              (chunk) => {
-
-                try {
-
-                  fs.appendFileSync(
-                    FFMPEG_LOG,
-                    chunk.toString()
-                  );
-
-                } catch {}
-              }
-            );
-
-            proc.on(
-              'exit',
-              (code, signal) => {
-
-                log(
-                  `[FFmpeg] exited code=${code} signal=${signal}`
-                );
-
-                ffmpegProc = null;
-
-                restartCount++;
-
-                scheduleRestart();
-              }
-            );
-
-            proc.on(
-              'error',
-              (err) => {
-
-                log(
-                  '[FFmpeg] process error:',
-                  err.message
-                );
-              }
-            );
-          }
-
-          function stopFfmpeg() {
-
-            if (!ffmpegProc) {
-              return;
-            }
-
-            try {
-              ffmpegProc.kill(
-                'SIGKILL'
-              );
-            } catch {}
-
-            ffmpegProc = null;
-          }
-
-          function scheduleRestart() {
-
-            if (restarting) {
-              return;
-            }
-
-            restarting = true;
-
-            setTimeout(
-              () => {
-
-                restarting = false;
-
-                if (!ffmpegProc) {
-                  startFfmpeg();
-                }
-
-              },
-              RESTART_DELAY_MS
-            );
-          }
-
-          // ======================================================
-          // HLS STATE
-          // ======================================================
-
-          function countSegments() {
-
-            try {
-
-              return fs
-                .readdirSync(HLS_DIR)
-                .filter(
-                  (name) =>
-                    /^segment_\d+\.ts$/.test(name)
-                )
-                .length;
-
-            } catch {
-              return 0;
-            }
-          }
-
-          function playlistInfo() {
-
-            try {
-
-              const st =
-                fs.statSync(
-                  PLAYLIST_FILE
-                );
-
-              if (
-                !st.isFile() ||
-                st.size <= 0
-              ) {
-                return {
-                  exists: false,
-                  ageMs: -1,
-                  size: 0
-                };
+          http {
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+
+              sendfile on;
+              tcp_nopush on;
+              tcp_nodelay on;
+              keepalive_timeout 15;
+
+              access_log off;
+              error_log /dev/null crit;
+
+              types {
+                  application/vnd.apple.mpegurl m3u8;
+                  video/mp2t ts;
               }
 
-              return {
-                exists: true,
-                ageMs:
-                  Date.now() -
-                  st.mtimeMs,
-                size: st.size
-              };
+              server {
+                  listen 5000 default_server;
+                  server_name _;
 
-            } catch {
+                  location / {
+                      root /dev/shm;
+                      try_files $uri =404;
 
-              return {
-                exists: false,
-                ageMs: -1,
-                size: 0
-              };
-            }
-          }
+                      add_header Access-Control-Allow-Origin "*" always;
+                      add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+                      add_header Access-Control-Allow-Headers "*" always;
 
-          function health() {
-
-            const p =
-              playlistInfo();
-
-            const segments =
-              countSegments();
-
-            const ffmpegRunning =
-              !!ffmpegProc;
-
-            const playlistFresh =
-              p.exists &&
-              p.ageMs >= 0 &&
-              p.ageMs < 15000;
-
-            const ok =
-              ffmpegRunning &&
-              playlistFresh &&
-              segments >= 2;
-
-            return {
-
-              ok,
-
-              ffmpegRunning,
-
-              playlistExists:
-                p.exists,
-
-              playlistAgeMs:
-                p.ageMs,
-
-              playlistSize:
-                p.size,
-
-              segments,
-
-              ffmpegRestarts:
-                restartCount,
-
-              ffmpegUptimeMs:
-                ffmpegRunning
-                  ? Date.now() -
-                    ffmpegStartedAt
-                  : 0
-            };
-          }
-
-          // ======================================================
-          // HTTP
-          // ======================================================
-
-          function serveFile(
-            res,
-            absPath,
-            mimeType
-          ) {
-
-            fs.stat(
-              absPath,
-              (err, st) => {
-
-                if (
-                  err ||
-                  !st.isFile() ||
-                  st.size <= 0
-                ) {
-
-                  res.writeHead(
-                    404,
-                    {
-                      'Content-Type':
-                        'text/plain',
-                      ...noCacheHeaders()
-                    }
-                  );
-
-                  res.end(
-                    'Not found'
-                  );
-
-                  return;
-                }
-
-                res.writeHead(
-                  200,
-                  {
-                    'Content-Type':
-                      mimeType,
-
-                    'Content-Length':
-                      st.size,
-
-                    ...noCacheHeaders()
+                      add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
+                      add_header Pragma "no-cache" always;
+                      add_header Expires "0" always;
                   }
-                );
 
-                const rs =
-                  fs.createReadStream(
-                    absPath
-                  );
-
-                rs.on(
-                  'error',
-                  () => {
-
-                    if (!res.headersSent) {
-
-                      res.writeHead(
-                        500,
-                        {
-                          'Content-Type':
-                            'text/plain',
-
-                          ...noCacheHeaders()
-                        }
-                      );
-                    }
-
-                    res.end(
-                      'Read error'
-                    );
+                  location = /healthz {
+                      default_type application/json;
+                      return 200 '{"ok":true}';
                   }
-                );
-
-                rs.pipe(res);
               }
-            );
           }
+          NGINX
 
-          function requestHandler(
-            req,
-            res
-          ) {
+          sudo nginx -t
+          sudo systemctl restart nginx
 
-            if (req.method !== 'GET') {
-
-              res.writeHead(
-                405,
-                {
-                  'Content-Type':
-                    'text/plain',
-
-                  ...noCacheHeaders()
-                }
-              );
-
-              res.end(
-                'Method Not Allowed'
-              );
-
-              return;
-            }
-
-            const url =
-              new URL(
-                req.url,
-                'http://localhost'
-              );
-
-            const pathname =
-              decodeURIComponent(
-                url.pathname
-              );
-
-            // --------------------------------------------------
-            // Health
-            // --------------------------------------------------
-
-            if (
-              pathname ===
-              '/healthz'
-            ) {
-
-              const payload =
-                health();
-
-              res.writeHead(
-                payload.ok
-                  ? 200
-                  : 503,
-                {
-                  'Content-Type':
-                    'application/json',
-
-                  ...noCacheHeaders()
-                }
-              );
-
-              res.end(
-                JSON.stringify(
-                  payload
-                )
-              );
-
-              return;
-            }
-
-            // --------------------------------------------------
-            // HLS playlist
-            // --------------------------------------------------
-
-            if (
-              pathname ===
-              '/stream.m3u8'
-            ) {
-
-              serveFile(
-                res,
-                PLAYLIST_FILE,
-                'application/vnd.apple.mpegurl'
-              );
-
-              return;
-            }
-
-            // --------------------------------------------------
-            // HLS segments
-            // --------------------------------------------------
-
-            if (
-              /^\/segment_\d+\.ts$/.test(
-                pathname
-              )
-            ) {
-
-              const filePath =
-                path.join(
-                  HLS_DIR,
-                  path.basename(
-                    pathname
-                  )
-                );
-
-              serveFile(
-                res,
-                filePath,
-                'video/mp2t'
-              );
-
-              return;
-            }
-
-            // --------------------------------------------------
-            // Root
-            // --------------------------------------------------
-
-            if (
-              pathname === '/'
-            ) {
-
-              res.writeHead(
-                200,
-                {
-                  'Content-Type':
-                    'text/plain',
-
-                  ...noCacheHeaders()
-                }
-              );
-
-              res.end(
-                'Use /stream.m3u8'
-              );
-
-              return;
-            }
-
-            res.writeHead(
-              404,
-              {
-                'Content-Type':
-                  'text/plain',
-
-                ...noCacheHeaders()
-              }
-            );
-
-            res.end(
-              'Not found'
-            );
-          }
-
-          // ======================================================
-          // PROCESS EVENTS
-          // ======================================================
-
-          process.on(
-            'uncaughtException',
-            (err) => {
-
-              log(
-                '[uncaughtException]',
-                err.stack ||
-                err.message
-              );
-            }
-          );
-
-          process.on(
-            'unhandledRejection',
-            (reason) => {
-
-              log(
-                '[unhandledRejection]',
-                reason
-              );
-            }
-          );
-
-          process.on(
-            'SIGTERM',
-            () => {
-
-              log(
-                'SIGTERM received'
-              );
-
-              stopFfmpeg();
-
-              process.exit(0);
-            }
-          );
-
-          process.on(
-            'SIGINT',
-            () => {
-
-              log(
-                'SIGINT received'
-              );
-
-              stopFfmpeg();
-
-              process.exit(0);
-            }
-          );
-
-          // ======================================================
-          // START
-          // ======================================================
-
-          startFfmpeg();
-
-          setInterval(
-            () => {
-
-              const h =
-                health();
-
-              log(
-                `[Stats] ` +
-                `ok=${h.ok} ` +
-                `ffmpeg=${h.ffmpegRunning} ` +
-                `playlist=${h.playlistExists} ` +
-                `ageMs=${h.playlistAgeMs} ` +
-                `segments=${h.segments} ` +
-                `restarts=${h.ffmpegRestarts} ` +
-                `uptimeMs=${h.ffmpegUptimeMs}`
-              );
-
-            },
-            30000
-          ).unref();
-
-          const server =
-            http.createServer(
-              requestHandler
-            );
-
-          server.keepAliveTimeout =
-            65000;
-
-          server.headersTimeout =
-            66000;
-
-          server.requestTimeout =
-            0;
-
-          server.timeout =
-            0;
-
-          server.listen(
-            LISTEN_PORT,
-            LISTEN_HOST,
-            () => {
-
-              log(
-                `HLS server listening: ` +
-                `http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`
-              );
-            }
-          );
-
-          EOF
-
-      # ==========================================================
-      # START NODE
-      # ==========================================================
-
-      - name: Start proxy
+      - name: Create FFmpeg restream supervisor
         shell: bash
         run: |
           set -euo pipefail
 
-          nohup node /tmp/hls_server.js \
-            > /tmp/proxy.log 2>&1 &
+          cat > /tmp/restream-supervisor.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -u
 
-          echo $! > /tmp/proxy.pid
+          HLS_DIR="/dev/shm/hls/axn"
+          PLAYLIST="${HLS_DIR}/index.m3u8"
+          SEGMENT_PATTERN="${HLS_DIR}/seg%06d.ts"
+          FFMPEG_LOG="/tmp/ffmpeg.log"
+          SUPERVISOR_LOG="/tmp/supervisor.log"
 
-          sleep 1
+          MPD_URL="${MPD_URL:?}"
+          CLEARKEY_KEY="${CLEARKEY_KEY:?}"
+          USER_AGENT="${USER_AGENT:-Mozilla/5.0}"
+          REFERER="${REFERER:-https://mytvnet.vn/}"
 
-      # ==========================================================
-      # WAIT FOR SERVER
-      # ==========================================================
+          FFMPEG_PID=""
+          RESTARTS=0
 
-      - name: Wait for proxy health
-        shell: bash
-        run: |
-          set -euo pipefail
+          log() {
+            echo "$(date -Is) $*" | tee -a "$SUPERVISOR_LOG"
+          }
 
-          HEALTH_UP=0
+          safe_origin() {
+            printf '%s' "$REFERER" | sed -E 's#^(https?://[^/]+).*#\1#'
+          }
 
-          for i in {1..30}; do
+          stop_ffmpeg() {
+            if [ -n "${FFMPEG_PID}" ] && kill -0 "${FFMPEG_PID}" 2>/dev/null; then
+              kill -TERM "${FFMPEG_PID}" 2>/dev/null || true
 
-            if curl -fsS \
-              --max-time 2 \
-              http://127.0.0.1:5000/healthz \
-              > /tmp/health_boot.json \
-              2>/dev/null; then
+              for _ in {1..10}; do
+                if ! kill -0 "${FFMPEG_PID}" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.2
+              done
 
-              HEALTH_UP=1
-
-              echo "✅ HTTP server ready"
-
-              break
+              kill -KILL "${FFMPEG_PID}" 2>/dev/null || true
             fi
 
-            sleep 1
+            FFMPEG_PID=""
+          }
+
+          cleanup_hls() {
+            rm -f "${HLS_DIR}"/*.m3u8 "${HLS_DIR}"/*.ts "${HLS_DIR}"/*.tmp
+          }
+
+          start_ffmpeg() {
+            cleanup_hls
+            : > "$FFMPEG_LOG"
+
+            local origin
+            origin="$(safe_origin)"
+
+            log "[FFmpeg] starting video transcode"
+
+            ffmpeg \
+              -hide_banner \
+              -loglevel warning \
+              -nostdin \
+              -stats \
+              \
+              -reconnect 1 \
+              -reconnect_streamed 1 \
+              -reconnect_on_network_error 1 \
+              -reconnect_delay_max 3 \
+              -rw_timeout 10000000 \
+              \
+              -user_agent "${USER_AGENT}" \
+              -headers "Referer: ${REFERER}\r\nOrigin: ${origin}\r\n" \
+              -cenc_decryption_key "${CLEARKEY_KEY}" \
+              \
+              -fflags +genpts+discardcorrupt \
+              -err_detect ignore_err \
+              \
+              -i "${MPD_URL}" \
+              \
+              -map 0:v:0? \
+              -map 0:a:0? \
+              \
+              -c:v libx264 \
+              -preset veryfast \
+              -tune zerolatency \
+              -profile:v main \
+              -level 4.0 \
+              -pix_fmt yuv420p \
+              \
+              -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
+              -r 25 \
+              \
+              -b:v 1800k \
+              -maxrate 2200k \
+              -bufsize 4400k \
+              \
+              -g 50 \
+              -keyint_min 50 \
+              -sc_threshold 0 \
+              \
+              -c:a aac \
+              -b:a 128k \
+              -ar 48000 \
+              -ac 2 \
+              -af "aresample=async=1000:first_pts=0" \
+              \
+              -max_muxing_queue_size 4096 \
+              -avoid_negative_ts make_zero \
+              \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 8 \
+              -hls_delete_threshold 3 \
+              -hls_flags delete_segments+independent_segments+omit_endlist+temp_file+program_date_time \
+              -hls_segment_type mpegts \
+              -hls_start_number_source epoch \
+              -hls_segment_filename "${SEGMENT_PATTERN}" \
+              "${PLAYLIST}" \
+              >>"$FFMPEG_LOG" 2>&1 &
+
+            FFMPEG_PID=$!
+            log "[FFmpeg] pid=${FFMPEG_PID}"
+          }
+
+          trap 'stop_ffmpeg; exit 0' TERM INT EXIT
+
+          while true; do
+            start_ffmpeg
+
+            # Watch the actual HLS output. A running FFmpeg process is not
+            # considered healthy if the playlist stops changing.
+            while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
+              sleep 5
+
+              if [ -s "${PLAYLIST}" ]; then
+                now="$(date +%s)"
+                mtime="$(stat -c %Y "${PLAYLIST}" 2>/dev/null || echo 0)"
+                age=$((now - mtime))
+
+                if [ "${age}" -gt 15 ]; then
+                  log "[Watchdog] HLS playlist stale (${age}s). Restarting FFmpeg."
+                  stop_ffmpeg
+                  break
+                fi
+              else
+                # Give FFmpeg a little time to produce its first playlist.
+                started_age=$(( $(date +%s) - $(stat -c %Y /proc/${FFMPEG_PID} 2>/dev/null || date +%s) ))
+                if [ "${started_age}" -gt 30 ]; then
+                  log "[Watchdog] No HLS playlist after startup window. Restarting FFmpeg."
+                  stop_ffmpeg
+                  break
+                fi
+              fi
+            done
+
+            RESTARTS=$((RESTARTS + 1))
+            log "[Supervisor] FFmpeg stopped/restarted count=${RESTARTS}"
+
+            tail -n 40 "$FFMPEG_LOG" || true
+            sleep 2
           done
+          EOF
 
-          if [ "$HEALTH_UP" -ne 1 ]; then
+          chmod +x /tmp/restream-supervisor.sh
 
-            echo "❌ /healthz không phản hồi"
+      - name: Start restream
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            echo "----- proxy -----"
-            tail -n 200 /tmp/proxy.log || true
+          nohup /tmp/restream-supervisor.sh \
+            >/tmp/restream-supervisor-stdout.log 2>&1 &
 
-            echo "----- ffmpeg -----"
-            tail -n 200 /tmp/ffmpeg.log || true
-
-            exit 1
-          fi
-
-      # ==========================================================
-      # WAIT FOR REAL HLS
-      # ==========================================================
+          echo $! >/tmp/restream-supervisor.pid
 
       - name: Wait for real HLS readiness
         shell: bash
@@ -1084,104 +339,44 @@ jobs:
 
           READY=0
 
-          # 180 × 0.5s = 90 seconds maximum.
-          #
-          # Unlike the old version:
-          # - first check happens immediately
-          # - checks every 0.5s
-          # - requires at least 2 segments
+          for i in {1..120}; do
+            sleep 1
 
-          for i in {1..180}; do
-
-            if curl -fsS \
-              --max-time 2 \
-              http://127.0.0.1:5000/stream.m3u8 \
-              > /tmp/live.m3u8 \
-              2>/dev/null; then
-
+            if curl -fsS http://127.0.0.1:5000/axn/index.m3u8 >/tmp/live.m3u8 2>/dev/null; then
               if grep -q '^#EXTM3U' /tmp/live.m3u8 \
                 && grep -q '^#EXT-X-TARGETDURATION' /tmp/live.m3u8 \
                 && grep -q '^#EXTINF:' /tmp/live.m3u8 \
-                && grep -Eq '^segment_[0-9]+\.ts$' /tmp/live.m3u8; then
-
-                SEGMENT_COUNT="$(
-                  grep -Ec '^segment_[0-9]+\.ts$' \
-                  /tmp/live.m3u8 \
-                  || true
-                )"
-
-                if [ "$SEGMENT_COUNT" -ge 2 ]; then
-
-                  READY=1
-
-                  ELAPSED=$(
-                    awk \
-                      -v i="$i" \
-                      'BEGIN { printf "%.1f", i * 0.5 }'
-                  )
-
-                  echo "✅ HLS READY after ${ELAPSED}s"
-
-                  break
-                fi
+                && grep -Eq '^seg[0-9]+\.ts$' /tmp/live.m3u8; then
+                READY=1
+                break
               fi
             fi
-
-            sleep 0.5
           done
 
           if [ "$READY" -ne 1 ]; then
-
-            echo "❌ HLS playlist không sẵn sàng sau 90 giây"
-
-            echo "----- health -----"
-            cat /tmp/health_boot.json || true
-
-            echo "----- playlist -----"
+            echo "❌ HLS playlist không sẵn sàng"
             cat /tmp/live.m3u8 2>/dev/null || true
-
-            echo "----- proxy -----"
-            tail -n 200 /tmp/proxy.log || true
-
+            echo "----- supervisor -----"
+            tail -n 200 /tmp/restream-supervisor-stdout.log || true
             echo "----- ffmpeg -----"
-            tail -n 250 /tmp/ffmpeg.log || true
-
+            tail -n 200 /tmp/ffmpeg.log || true
             exit 1
           fi
 
-          # ------------------------------------------------------
-          # Validate actual segment
-          # ------------------------------------------------------
-
-          SEGMENT_NAME="$(
-            grep -E '^segment_[0-9]+\.ts$' \
-            /tmp/live.m3u8 |
-            tail -n 1
-          )"
+          SEGMENT_NAME="$(grep -E '^seg[0-9]+\.ts$' /tmp/live.m3u8 | tail -n 1)"
 
           if [ -z "$SEGMENT_NAME" ]; then
-
-            echo "❌ Playlist chưa có segment"
-
-            cat /tmp/live.m3u8
-
+            echo "❌ Không tìm thấy segment"
             exit 1
           fi
 
           curl -fsS \
-            --max-time 5 \
-            "http://127.0.0.1:5000/${SEGMENT_NAME}" \
+            "http://127.0.0.1:5000/axn/${SEGMENT_NAME}" \
             -o /tmp/segment_sample.ts
 
           test -s /tmp/segment_sample.ts
 
-          echo "✅ Segment OK: $SEGMENT_NAME"
-
-      # ==========================================================
-      # FFMPEG VALIDATION
-      # ==========================================================
-
-      - name: Local ffprobe validation
+      - name: Validate H264/AAC output
         shell: bash
         run: |
           set -euo pipefail
@@ -1189,254 +384,90 @@ jobs:
           ffprobe \
             -hide_banner \
             -v warning \
-            -i http://127.0.0.1:5000/stream.m3u8 \
+            -i http://127.0.0.1:5000/axn/index.m3u8 \
             -show_streams \
             -show_format \
-            > /tmp/ffprobe_streams.txt \
-            2> /tmp/ffprobe_warn.txt || {
+            >/tmp/ffprobe_streams.txt \
+            2>/tmp/ffprobe_warn.txt
 
-              echo "❌ ffprobe không đọc được HLS"
+          grep -qi 'codec_name=h264' /tmp/ffprobe_streams.txt
+          grep -qi 'width=1920' /tmp/ffprobe_streams.txt
+          grep -qi 'height=1080' /tmp/ffprobe_streams.txt
+          grep -qi 'r_frame_rate=25/1' /tmp/ffprobe_streams.txt
 
-              cat /tmp/ffprobe_warn.txt || true
+          grep -qi 'codec_name=aac' /tmp/ffprobe_streams.txt
+          grep -qi 'sample_rate=48000' /tmp/ffprobe_streams.txt
+          grep -qi 'channels=2' /tmp/ffprobe_streams.txt
 
-              exit 1
-            }
-
-          echo "----- VIDEO -----"
-
-          grep -i \
-            -E 'codec_name=|width=|height=|r_frame_rate=|avg_frame_rate=' \
-            /tmp/ffprobe_streams.txt \
-            | head -n 20 || true
-
-          echo "----- AUDIO -----"
-
-          grep -i \
-            -E 'codec_name=|sample_rate=|channels=' \
-            /tmp/ffprobe_streams.txt \
-            | tail -n 10 || true
-
-          # ------------------------------------------------------
-          # Required video format
-          # ------------------------------------------------------
-
-          grep -qi 'codec_name=h264' \
-            /tmp/ffprobe_streams.txt
-
-          grep -qi 'width=1920' \
-            /tmp/ffprobe_streams.txt
-
-          grep -qi 'height=1080' \
-            /tmp/ffprobe_streams.txt
-
-          grep -qi 'r_frame_rate=25/1' \
-            /tmp/ffprobe_streams.txt
-
-          # ------------------------------------------------------
-          # Required audio format
-          # ------------------------------------------------------
-
-          grep -qi 'codec_name=aac' \
-            /tmp/ffprobe_streams.txt
-
-          grep -qi 'sample_rate=48000' \
-            /tmp/ffprobe_streams.txt
-
-          grep -qi 'channels=2' \
-            /tmp/ffprobe_streams.txt
-
-          echo "✅ H264 1920x1080 25fps"
-
-          echo "✅ AAC 48kHz stereo"
-
-          # ------------------------------------------------------
-          # Timestamp diagnostics
-          # ------------------------------------------------------
-
-          if grep -qi \
-            -E 'DTS discontinuity|non-monoton|More than .* frames duplicated' \
-            /tmp/ffprobe_warn.txt; then
-
-            echo "⚠️ Timestamp/duplication warning detected"
-
-            cat /tmp/ffprobe_warn.txt || true
-          fi
-
-      # ==========================================================
-      # START BORE
-      # ==========================================================
+          echo "✅ HLS output: H264 1920x1080 25fps + AAC 48k stereo"
 
       - name: Start Bore and keep stream alive
         shell: bash
         run: |
           set -euo pipefail
 
-          nohup bore local 5000 \
-            --to bore.pub \
-            --port 30117 \
-            > /tmp/bore.log 2>&1 &
+          nohup bore local 5000 --to bore.pub --port 30117 \
+            >/tmp/bore.log 2>&1 &
 
-          echo $! > /tmp/bore.pid
+          echo $! >/tmp/bore.pid
 
           PORT_BOUND=0
 
           for i in {1..30}; do
-
             sleep 1
 
-            if grep -q \
-              'listening at bore.pub:30117' \
-              /tmp/bore.log; then
-
+            if grep -q 'listening at bore.pub:30117' /tmp/bore.log; then
               PORT_BOUND=1
-
               break
             fi
           done
 
           if [ "$PORT_BOUND" -ne 1 ]; then
-
             echo "❌ Bore tunnel failed"
-
             cat /tmp/bore.log || true
-
-            tail -n 200 /tmp/proxy.log || true
-
-            tail -n 200 /tmp/ffmpeg.log || true
-
             exit 1
           fi
-
-          # ======================================================
-          # FINAL LOCAL CHECK
-          # ======================================================
-
-          curl -fsS \
-            --max-time 5 \
-            http://127.0.0.1:5000/stream.m3u8 \
-            > /tmp/final_live.m3u8
-
-          grep -q \
-            '^#EXTM3U' \
-            /tmp/final_live.m3u8
-
-          grep -q \
-            '^#EXT-X-TARGETDURATION' \
-            /tmp/final_live.m3u8
-
-          grep -q \
-            '^#EXTINF:' \
-            /tmp/final_live.m3u8
-
-          grep -Eq \
-            '^segment_[0-9]+\.ts$' \
-            /tmp/final_live.m3u8
 
           echo "=================================================="
           echo "HLS STREAM READY"
           echo "=================================================="
-          echo "http://bore.pub:30117/stream.m3u8"
+          echo "http://bore.pub:30117/axn/index.m3u8"
           echo "=================================================="
-          echo "Local debug:"
-          echo "http://127.0.0.1:5000/stream.m3u8"
-          echo "=================================================="
-
-          WARN_CURSOR=0
-
-          # ======================================================
-          # KEEP ALIVE
-          # ======================================================
+          echo "Local: http://127.0.0.1:5000/axn/index.m3u8"
 
           while true; do
-
-            # ----------------------------------------------------
-            # Node process
-            # ----------------------------------------------------
-
-            if ! kill -0 \
-              "$(cat /tmp/proxy.pid)" \
-              2>/dev/null; then
-
-              echo "❌ Node proxy process died"
-
-              tail -n 200 /tmp/proxy.log || true
-
-              tail -n 200 /tmp/ffmpeg.log || true
-
+            if ! kill -0 "$(cat /tmp/restream-supervisor.pid)" 2>/dev/null; then
+              echo "❌ Restream supervisor died"
+              tail -n 200 /tmp/restream-supervisor-stdout.log || true
               exit 1
             fi
 
-            # ----------------------------------------------------
-            # Bore
-            # ----------------------------------------------------
-
-            if ! kill -0 \
-              "$(cat /tmp/bore.pid)" \
-              2>/dev/null; then
-
+            if ! kill -0 "$(cat /tmp/bore.pid)" 2>/dev/null; then
               echo "❌ Bore process died"
-
-              cat /tmp/bore.log || true
-
+              tail -n 200 /tmp/bore.log || true
               exit 1
             fi
 
-            # ----------------------------------------------------
-            # Health
-            # ----------------------------------------------------
-
-            if ! curl -fsS \
-              --max-time 5 \
-              http://127.0.0.1:5000/healthz \
-              > /tmp/health_live.json; then
-
-              echo "❌ Health check failed"
-
-              tail -n 200 /tmp/proxy.log || true
-
-              tail -n 200 /tmp/ffmpeg.log || true
-
+            if ! curl -fsS http://127.0.0.1:5000/healthz >/dev/null; then
+              echo "❌ Nginx health check failed"
               exit 1
             fi
 
-            if ! jq -e \
-              '.ok == true' \
-              /tmp/health_live.json \
-              >/dev/null 2>&1; then
-
-              echo "❌ Health check reports not ok"
-
-              cat /tmp/health_live.json || true
-
-              tail -n 200 /tmp/ffmpeg.log || true
-
+            if ! curl -fsS http://127.0.0.1:5000/axn/index.m3u8 >/tmp/health_live.m3u8; then
+              echo "❌ HLS playlist unavailable"
+              tail -n 100 /tmp/ffmpeg.log || true
               exit 1
             fi
 
-            # ----------------------------------------------------
-            # FFmpeg warning monitor
-            # ----------------------------------------------------
-
-            if [ -f /tmp/ffmpeg.log ]; then
-
-              TOTAL_LINES="$(
-                wc -l < /tmp/ffmpeg.log ||
-                echo 0
-              )"
-
-              if [ "$TOTAL_LINES" -gt "$WARN_CURSOR" ]; then
-
-                sed \
-                  -n "$((WARN_CURSOR + 1)),${TOTAL_LINES}p" \
-                  /tmp/ffmpeg.log |
-                  grep -Ei \
-                    'error|fail|invalid|discontinuity|non-monoton|corrupt|timed out|duplicated' |
-                  tail -n 40 ||
-                  true
-
-                WARN_CURSOR="$TOTAL_LINES"
-              fi
+            if ! grep -q '^#EXTINF:' /tmp/health_live.m3u8; then
+              echo "❌ HLS playlist has no segments"
+              exit 1
             fi
 
-            sleep 10
+            echo "----- status -----"
+            stat -c 'playlist_age=%Y size=%s' /dev/shm/hls/axn/index.m3u8 2>/dev/null || true
+            echo "bore: alive"
+            echo "supervisor: alive"
+
+            sleep 15
           done
