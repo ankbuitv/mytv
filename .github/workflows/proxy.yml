@@ -2,7 +2,7 @@ name: IPTV Pure Proxy & Dynamic Route Engine
 
 on:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '59 5,11,17,23 * * *'
   workflow_dispatch:
 
 jobs:
