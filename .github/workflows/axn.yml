@@ -27,7 +27,8 @@ jobs:
 
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
+      # Keep the existing owner-provided key handling; use a GitHub secret here.
+      CLEARKEY_KEY: "${{ secrets.CLEARKEY_KEY }}"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       REFERER: "https://mytvnet.vn/"
 
@@ -104,7 +105,9 @@ jobs:
           const CLEARKEY_KEY = process.env.CLEARKEY_KEY;
           const USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0';
           const REFERER = process.env.REFERER || 'https://mytvnet.vn/';
-          const HLS_FLAGS = process.env.HLS_FLAGS || 'delete_segments+independent_segments+omit_endlist+temp_file';
+          const HLS_FLAGS =
+            process.env.HLS_FLAGS ||
+            'delete_segments+independent_segments+omit_endlist+temp_file';
 
           const HLS_DIR = '/tmp/hls';
           const PLAYLIST_FILE = path.join(HLS_DIR, 'stream.m3u8');
@@ -154,27 +157,59 @@ jobs:
           }
 
           function buildFfmpegArgs() {
-            const headers = `Referer: ${REFERER}\r\nOrigin: ${safeOrigin(REFERER)}\r\n`;
+            const headers =
+              `Referer: ${REFERER}\r\n` +
+              `Origin: ${safeOrigin(REFERER)}\r\n`;
 
             return [
               '-hide_banner',
               '-loglevel', 'warning',
+              '-stats',
 
+              // Network resilience
               '-reconnect', '1',
               '-reconnect_streamed', '1',
               '-reconnect_on_network_error', '1',
               '-reconnect_delay_max', '2',
+              '-rw_timeout', '10000000',
 
               '-user_agent', USER_AGENT,
               '-headers', headers,
+
+              // Existing owner-provided decryption configuration.
               '-cenc_decryption_key', CLEARKEY_KEY,
+
+              // Input timestamp/corruption handling.
+              '-fflags', '+genpts+discardcorrupt',
+              '-err_detect', 'ignore_err',
+
               '-i', MPD_URL,
 
               '-map', '0:v:0?',
               '-map', '0:a:0?',
 
-              '-c:v', 'copy',
+              // Video: transcode to a stable H.264 live stream.
+              '-c:v', 'libx264',
+              '-preset', 'veryfast',
+              '-tune', 'zerolatency',
+              '-profile:v', 'main',
+              '-level', '4.0',
+              '-pix_fmt', 'yuv420p',
 
+              // 1080p live bitrate target.
+              '-b:v', '2500k',
+              '-maxrate', '3000k',
+              '-bufsize', '6000k',
+
+              // Source is expected to be 25 fps.
+              '-r', '25',
+
+              // 2-second HLS segments => 50-frame GOP.
+              '-g', '50',
+              '-keyint_min', '50',
+              '-sc_threshold', '0',
+
+              // Audio: keep the working AAC path.
               '-c:a', 'aac',
               '-b:a', '128k',
               '-ar', '48000',
@@ -182,7 +217,9 @@ jobs:
               '-af', 'aresample=async=1:first_pts=0',
 
               '-max_muxing_queue_size', '4096',
+              '-avoid_negative_ts', 'make_zero',
 
+              // HLS
               '-f', 'hls',
               '-hls_time', '2',
               '-hls_list_size', '6',
@@ -205,9 +242,12 @@ jobs:
             } catch {}
 
             const args = buildFfmpegArgs();
-            log('[FFmpeg] starting HLS producer');
+            log('[FFmpeg] starting HLS producer with video transcode');
 
-            const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+            const proc = spawn('ffmpeg', args, {
+              stdio: ['ignore', 'ignore', 'pipe'],
+            });
+
             ffmpegProc = proc;
             ffmpegStartedAt = Date.now();
 
@@ -239,6 +279,7 @@ jobs:
 
           function scheduleRestart() {
             if (restarting) return;
+
             restarting = true;
             setTimeout(() => {
               restarting = false;
@@ -250,7 +291,10 @@ jobs:
 
           function countSegments() {
             try {
-              return fs.readdirSync(HLS_DIR).filter((n) => /^segment_\d+\.ts$/.test(n)).length;
+              return fs
+                .readdirSync(HLS_DIR)
+                .filter((n) => /^segment_\d+\.ts$/.test(n))
+                .length;
             } catch {
               return 0;
             }
@@ -262,6 +306,7 @@ jobs:
               if (!st.isFile() || st.size <= 0) {
                 return { exists: false, ageMs: -1, size: 0 };
               }
+
               return {
                 exists: true,
                 ageMs: Date.now() - st.mtimeMs,
@@ -276,7 +321,9 @@ jobs:
             const p = playlistInfo();
             const segments = countSegments();
             const ffmpegRunning = !!ffmpegProc;
-            const playlistFresh = p.exists && p.ageMs >= 0 && p.ageMs < 20000;
+            const playlistFresh =
+              p.exists && p.ageMs >= 0 && p.ageMs < 20000;
+
             const ok = ffmpegRunning && playlistFresh && segments > 0;
 
             return {
@@ -286,14 +333,19 @@ jobs:
               playlistAgeMs: p.ageMs,
               segments,
               ffmpegRestarts: restartCount,
-              ffmpegUptimeMs: ffmpegRunning ? Date.now() - ffmpegStartedAt : 0,
+              ffmpegUptimeMs: ffmpegRunning
+                ? Date.now() - ffmpegStartedAt
+                : 0,
             };
           }
 
           function serveFile(res, absPath, mimeType) {
             fs.stat(absPath, (err, st) => {
               if (err || !st.isFile() || st.size <= 0) {
-                res.writeHead(404, { 'Content-Type': 'text/plain', ...noCacheHeaders() });
+                res.writeHead(404, {
+                  'Content-Type': 'text/plain',
+                  ...noCacheHeaders(),
+                });
                 res.end('Not found');
                 return;
               }
@@ -305,19 +357,27 @@ jobs:
               });
 
               const rs = fs.createReadStream(absPath);
+
               rs.on('error', () => {
                 if (!res.headersSent) {
-                  res.writeHead(500, { 'Content-Type': 'text/plain', ...noCacheHeaders() });
+                  res.writeHead(500, {
+                    'Content-Type': 'text/plain',
+                    ...noCacheHeaders(),
+                  });
                 }
                 res.end('Read error');
               });
+
               rs.pipe(res);
             });
           }
 
           function requestHandler(req, res) {
             if (req.method !== 'GET') {
-              res.writeHead(405, { 'Content-Type': 'text/plain', ...noCacheHeaders() });
+              res.writeHead(405, {
+                'Content-Type': 'text/plain',
+                ...noCacheHeaders(),
+              });
               res.end('Method Not Allowed');
               return;
             }
@@ -327,32 +387,48 @@ jobs:
 
             if (pathname === '/healthz') {
               const payload = health();
+
               res.writeHead(payload.ok ? 200 : 503, {
                 'Content-Type': 'application/json',
                 ...noCacheHeaders(),
               });
+
               res.end(JSON.stringify(payload));
               return;
             }
 
             if (pathname === '/stream.m3u8') {
-              serveFile(res, PLAYLIST_FILE, 'application/vnd.apple.mpegurl');
+              serveFile(
+                res,
+                PLAYLIST_FILE,
+                'application/vnd.apple.mpegurl'
+              );
               return;
             }
 
             if (/^\/segment_\d+\.ts$/.test(pathname)) {
-              const filePath = path.join(HLS_DIR, path.basename(pathname));
+              const filePath = path.join(
+                HLS_DIR,
+                path.basename(pathname)
+              );
+
               serveFile(res, filePath, 'video/mp2t');
               return;
             }
 
             if (pathname === '/') {
-              res.writeHead(200, { 'Content-Type': 'text/plain', ...noCacheHeaders() });
+              res.writeHead(200, {
+                'Content-Type': 'text/plain',
+                ...noCacheHeaders(),
+              });
               res.end('Use /stream.m3u8');
               return;
             }
 
-            res.writeHead(404, { 'Content-Type': 'text/plain', ...noCacheHeaders() });
+            res.writeHead(404, {
+              'Content-Type': 'text/plain',
+              ...noCacheHeaders(),
+            });
             res.end('Not found');
           }
 
@@ -376,11 +452,28 @@ jobs:
             process.exit(0);
           });
 
+          // Allow the external video-stall watchdog to restart only FFmpeg.
+          // Node and the Bore-facing HTTP server stay alive.
+          process.on('SIGUSR2', () => {
+            log('[Watchdog] restarting FFmpeg only');
+            stopFfmpeg();
+
+            setTimeout(() => {
+              if (!ffmpegProc) {
+                startFfmpeg();
+              }
+            }, 500);
+          });
+
           startFfmpeg();
 
           setInterval(() => {
             const h = health();
-            log(`[Stats] ok=${h.ok} ffmpeg=${h.ffmpegRunning} playlist=${h.playlistExists} ageMs=${h.playlistAgeMs} segments=${h.segments} restarts=${h.ffmpegRestarts}`);
+            log(
+              `[Stats] ok=${h.ok} ffmpeg=${h.ffmpegRunning} ` +
+              `playlist=${h.playlistExists} ageMs=${h.playlistAgeMs} ` +
+              `segments=${h.segments} restarts=${h.ffmpegRestarts}`
+            );
           }, 30000).unref();
 
           const server = http.createServer(requestHandler);
@@ -390,7 +483,10 @@ jobs:
           server.timeout = 0;
 
           server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-            log(`HLS server listening: http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`);
+            log(
+              `HLS server listening: ` +
+              `http://${LISTEN_HOST}:${LISTEN_PORT}/stream.m3u8`
+            );
           });
           EOF
 
@@ -403,10 +499,10 @@ jobs:
           echo $! > /tmp/proxy.pid
           sleep 2
 
-          # Wait for health endpoint to become responsive
           HEALTH_UP=0
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:5000/healthz >/tmp/health_boot.json 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:5000/healthz \
+              > /tmp/health_boot.json 2>/dev/null; then
               HEALTH_UP=1
               break
             fi
@@ -419,13 +515,14 @@ jobs:
             exit 1
           fi
 
-          # Wait for real HLS playlist and valid content
           READY=0
           for i in {1..120}; do
             sleep 1
 
             if test -s /tmp/hls/stream.m3u8; then
-              if curl -fsS http://127.0.0.1:5000/stream.m3u8 > /tmp/live.m3u8; then
+              if curl -fsS http://127.0.0.1:5000/stream.m3u8 \
+                > /tmp/live.m3u8; then
+
                 if grep -q '^#EXTM3U' /tmp/live.m3u8 \
                   && grep -q '^#EXT-X-TARGETDURATION' /tmp/live.m3u8 \
                   && grep -q '^#EXTINF:' /tmp/live.m3u8 \
@@ -448,33 +545,45 @@ jobs:
           fi
 
           SEGMENT_NAME="$(grep -E '^segment_[0-9]+\.ts$' /tmp/live.m3u8 | tail -n 1)"
+
           if [ -z "$SEGMENT_NAME" ]; then
             echo "❌ Playlist chưa có segment"
             cat /tmp/live.m3u8
             exit 1
           fi
 
-          curl -fsS "http://127.0.0.1:5000/${SEGMENT_NAME}" -o /tmp/segment_sample.ts
+          curl -fsS \
+            "http://127.0.0.1:5000/${SEGMENT_NAME}" \
+            -o /tmp/segment_sample.ts
+
           test -s /tmp/segment_sample.ts
 
-          # Ensure at least one TS file exists on disk and non-empty
-          FIRST_TS="$(find /tmp/hls -maxdepth 1 -type f -name 'segment_*.ts' | head -n 1 || true)"
+          FIRST_TS="$(
+            find /tmp/hls -maxdepth 1 -type f \
+              -name 'segment_*.ts' | head -n 1 || true
+          )"
+
           if [ -z "$FIRST_TS" ]; then
             echo "❌ Không tìm thấy file segment_*.ts"
             exit 1
           fi
+
           test -s "$FIRST_TS"
 
-      - name: Local ffprobe validation (H264/AAC/1080p/25fps/48k/stereo)
+      - name: Local ffprobe validation
         shell: bash
         run: |
           set -euo pipefail
 
-          ffprobe -hide_banner -v warning -i http://127.0.0.1:5000/stream.m3u8 -show_streams -show_format > /tmp/ffprobe_streams.txt 2> /tmp/ffprobe_warn.txt || {
-            echo "❌ ffprobe không đọc được HLS playlist local"
-            cat /tmp/ffprobe_warn.txt || true
-            exit 1
-          }
+          ffprobe -hide_banner -v warning \
+            -i http://127.0.0.1:5000/stream.m3u8 \
+            -show_streams -show_format \
+            > /tmp/ffprobe_streams.txt \
+            2> /tmp/ffprobe_warn.txt || {
+              echo "❌ ffprobe không đọc được HLS playlist local"
+              cat /tmp/ffprobe_warn.txt || true
+              exit 1
+            }
 
           grep -qi 'codec_name=h264' /tmp/ffprobe_streams.txt
           grep -qi 'width=1920' /tmp/ffprobe_streams.txt
@@ -486,10 +595,23 @@ jobs:
           grep -qi 'channels=2' /tmp/ffprobe_streams.txt
 
           if grep -qi 'DTS discontinuity' /tmp/ffprobe_warn.txt; then
-            echo "⚠️ Phát hiện DTS discontinuity từ ffprobe. Thu thập mẫu packet để phân tích thêm..."
-            ffprobe -hide_banner -v warning -i http://127.0.0.1:5000/stream.m3u8 -show_packets -show_entries packet=stream_index,pts_time,dts_time,duration_time,flags -of csv=p=0 > /tmp/packets.csv 2> /tmp/ffprobe_packets_warn.txt || true
+            echo "⚠️ Phát hiện DTS discontinuity từ ffprobe."
+            echo "Thu thập mẫu packet để phân tích thêm..."
+
+            timeout 30s ffprobe \
+              -hide_banner \
+              -v warning \
+              -i http://127.0.0.1:5000/stream.m3u8 \
+              -show_packets \
+              -show_entries \
+              packet=stream_index,pts_time,dts_time,duration_time,flags \
+              -of csv=p=0 \
+              > /tmp/packets.csv \
+              2> /tmp/ffprobe_packets_warn.txt || true
+
             echo "----- ffprobe warnings -----"
             cat /tmp/ffprobe_warn.txt || true
+
             echo "----- packet sample head -----"
             head -n 80 /tmp/packets.csv || true
           fi
@@ -499,12 +621,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
+          nohup bore local 5000 --to bore.pub --port 30117 \
+            > /tmp/bore.log 2>&1 &
+
           echo $! > /tmp/bore.pid
 
           PORT_BOUND=0
           for i in {1..30}; do
             sleep 1
+
             if grep -q 'listening at bore.pub:30117' /tmp/bore.log; then
               PORT_BOUND=1
               break
@@ -519,8 +644,10 @@ jobs:
             exit 1
           fi
 
-          # Final local re-check before announcing public URL
-          curl -fsS http://127.0.0.1:5000/stream.m3u8 > /tmp/final_live.m3u8
+          curl -fsS \
+            http://127.0.0.1:5000/stream.m3u8 \
+            > /tmp/final_live.m3u8
+
           grep -q '^#EXTM3U' /tmp/final_live.m3u8
           grep -q '^#EXT-X-TARGETDURATION' /tmp/final_live.m3u8
           grep -q '^#EXTINF:' /tmp/final_live.m3u8
@@ -534,6 +661,8 @@ jobs:
           echo "Local debug: http://127.0.0.1:5000/stream.m3u8"
 
           WARN_CURSOR=0
+          LAST_VIDEO_SIZE=0
+          STALL_COUNT=0
 
           while true; do
             if ! kill -0 "$(cat /tmp/proxy.pid)" 2>/dev/null; then
@@ -549,7 +678,9 @@ jobs:
               exit 1
             fi
 
-            if ! curl -fsS http://127.0.0.1:5000/healthz > /tmp/health_live.json; then
+            if ! curl -fsS \
+              http://127.0.0.1:5000/healthz \
+              > /tmp/health_live.json; then
               echo "❌ Health check request failed"
               tail -n 200 /tmp/proxy.log || true
               tail -n 200 /tmp/ffmpeg.log || true
@@ -564,15 +695,55 @@ jobs:
               exit 1
             fi
 
-            # Print only new warning/error-like lines from ffmpeg log
+            # Video-stall watchdog:
+            # compare the newest HLS video segment size over time.
+            NEWEST_TS="$(
+              find /tmp/hls -maxdepth 1 -type f \
+                -name 'segment_*.ts' -printf '%T@ %s %p\n' \
+                2>/dev/null | sort -n | tail -n 1 || true
+            )"
+
+            if [ -n "$NEWEST_TS" ]; then
+              VIDEO_SIZE="$(echo "$NEWEST_TS" | awk '{print $2}')"
+
+              if [ "$VIDEO_SIZE" -gt 0 ] && [ "$VIDEO_SIZE" -eq "$LAST_VIDEO_SIZE" ]; then
+                STALL_COUNT=$((STALL_COUNT + 1))
+              else
+                STALL_COUNT=0
+              fi
+
+              LAST_VIDEO_SIZE="$VIDEO_SIZE"
+            fi
+
+            # Print only new warning/error-like lines from ffmpeg log.
             if [ -f /tmp/ffmpeg.log ]; then
               TOTAL_LINES="$(wc -l < /tmp/ffmpeg.log || echo 0)"
+
               if [ "$TOTAL_LINES" -gt "$WARN_CURSOR" ]; then
                 sed -n "$((WARN_CURSOR + 1)),${TOTAL_LINES}p" /tmp/ffmpeg.log \
-                  | grep -Ei 'error|fail|invalid|discontinuity|non-monoton|corrupt|timed out' \
+                  | grep -Ei \
+                    'error|fail|invalid|discontinuity|non-monoton|corrupt|timed out|speed=' \
                   | tail -n 40 || true
+
                 WARN_CURSOR="$TOTAL_LINES"
               fi
+            fi
+
+            if [ "$STALL_COUNT" -ge 3 ]; then
+              echo "⚠️ HLS segment size has not advanced for several checks."
+              echo "----- health -----"
+              cat /tmp/health_live.json || true
+              echo "----- ffmpeg tail -----"
+              tail -n 120 /tmp/ffmpeg.log || true
+              echo "----- restarting FFmpeg -----"
+
+              if kill -0 "$(cat /tmp/proxy.pid)" 2>/dev/null; then
+                # Restart only FFmpeg; keep Node and Bore alive.
+                kill -USR2 "$(cat /tmp/proxy.pid)" 2>/dev/null || true
+              fi
+
+              STALL_COUNT=0
+              LAST_VIDEO_SIZE=0
             fi
 
             sleep 10
