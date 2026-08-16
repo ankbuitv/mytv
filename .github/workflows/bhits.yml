@@ -1,0 +1,257 @@
+name: Restream Box Hits VTVPrime - Bore 30118
+
+on:
+  workflow_dispatch:
+
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BOXHIT/manifest.mpd"
+      CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
+      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
+      REFERER: "https://vtvprime.vn/"
+
+    steps:
+      - name: Install System Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl nodejs ffmpeg
+
+          ffmpeg -version | head -n 1
+
+          # Cài đặt Bore Tunnel
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
+          tar -xzf /tmp/bore.tar.gz -C /tmp
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
+          rm -f /tmp/bore.tar.gz /tmp/bore
+
+      - name: Create Production Proxy Server Script
+        shell: bash
+        run: |
+          cat << 'EOF' > /tmp/server.js
+          const http = require('http');
+          const { spawn } = require('child_process');
+
+          const MPD_URL = process.env.MPD_URL;
+          const CLEARKEY_KEY = process.env.CLEARKEY_KEY;
+          const USER_AGENT = process.env.USER_AGENT;
+          const REFERER = process.env.REFERER;
+
+          const CHANNELS = new Map();
+          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Buffer 6MB
+          const MAX_BACKPRESSURE_BYTES = 8 * 1024 * 1024; // Ngưỡng 8MB tồn đọng mới ngắt socket client
+
+          // Bắt uncaughtException để chặn crash Node process khi client ngắt kết nối
+          process.on('uncaughtException', (err) => {
+            console.error('[FATAL - Caught UncaughtException]', err.message);
+          });
+
+          function buildFFmpegArgs(mpdUrl, key) {
+            const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n`;
+            return [
+              '-hide_banner', '-loglevel', 'warning',
+              '-user_agent', USER_AGENT,
+              '-headers', customHeaders,
+              '-cenc_decryption_key', key,
+              '-fflags', '+genpts+discardcorrupt+nobuffer',
+              '-i', mpdUrl,
+              '-map', '0:v:0?', '-map', '0:a:0?',
+              
+              // Reset PTS/DTS độc lập về 0 (Zero-PTS)
+              '-c:v', 'copy',
+              '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
+              '-c:a', 'copy',
+              '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
+              
+              // Mux delay 0.3s chống lệch pha audio/video do network jitter
+              '-max_muxing_queue_size', '4096',
+              '-muxdelay', '0.3',
+              '-muxpreload', '0.3',
+              '-avoid_negative_ts', 'make_zero',
+              '-fps_mode', 'passthrough',
+              '-f', 'mpegts',
+              '-mpegts_flags', '+resend_headers+pat_pmt_at_frames+initial_discontinuity',
+              '-mpegts_copyts', '0',
+              '-pcr_period', '20',
+              '-pat_period', '0.1',
+              '-pmt_period', '0.1',
+              'pipe:1'
+            ];
+          }
+
+          function spawnFFmpegProcess(id, mpdUrl, key, entry) {
+            console.log(`[FFmpeg] Spawning process for channel: ${id}`);
+            const proc = spawn('ffmpeg', buildFFmpegArgs(mpdUrl, key), {
+              stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            entry.proc = proc;
+
+            proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString().trim()));
+
+            proc.stdout.on('data', (chunk) => {
+              // Ghi vào Ring Buffer
+              entry.ringBuffer.push(chunk);
+              entry.ringBufferSize += chunk.length;
+              while (entry.ringBufferSize > RING_BUFFER_MAX) {
+                const removed = entry.ringBuffer.shift();
+                if (removed) entry.ringBufferSize -= removed.length;
+              }
+
+              // Broadcast cho các client đang xem
+              for (const res of entry.clients) {
+                if (res.writableEnded || res.destroyed) {
+                  entry.clients.delete(res);
+                  continue;
+                }
+
+                res.write(chunk);
+
+                if (res.socket && res.socket.writableLength > MAX_BACKPRESSURE_BYTES) {
+                  console.warn(`[Proxy] Client overloaded (${res.socket.writableLength} bytes queued). Disconnecting client.`);
+                  res.destroy();
+                  entry.clients.delete(res);
+                }
+              }
+            });
+
+            proc.on('exit', (code, signal) => {
+              console.warn(`[FFmpeg] Exited with code=${code}, signal=${signal}`);
+              if (entry.clients.size > 0 && !entry.manualKill) {
+                console.log(`[FFmpeg] Auto-restarting in 1.5s (${entry.clients.size} clients active)...`);
+                setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
+              } else {
+                CHANNELS.delete(id);
+              }
+            });
+
+            return proc;
+          }
+
+          function getOrCreateChannel(id) {
+            if (CHANNELS.has(id)) return CHANNELS.get(id);
+            
+            const entry = {
+              proc: null,
+              clients: new Set(),
+              ringBuffer: [],
+              ringBufferSize: 0,
+              manualKill: false
+            };
+            
+            spawnFFmpegProcess(id, MPD_URL, CLEARKEY_KEY, entry);
+            CHANNELS.set(id, entry);
+            return entry;
+          }
+
+          const server = http.createServer((req, res) => {
+            if (req.method !== 'GET') {
+              res.writeHead(405).end();
+              return;
+            }
+            if (req.url === '/favicon.ico') {
+              res.writeHead(404).end();
+              return;
+            }
+
+            console.log(`[Client Connected] ${req.url}`);
+
+            // Chặn lỗi Socket gây crash tiến trình Node.js
+            res.on('error', (err) => {
+              console.warn(`[Client Response Error] ${err.message}`);
+            });
+            if (req.socket) {
+              req.socket.on('error', (err) => {
+                console.warn(`[Client Socket Error] ${err.message}`);
+              });
+              req.socket.setNoDelay(true);
+            }
+
+            res.writeHead(200, {
+              'Content-Type': 'video/mp2t',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Access-Control-Allow-Origin': '*',
+              'X-Accel-Buffering': 'no'
+            });
+
+            const channelEntry = getOrCreateChannel('boxhits');
+
+            // Cache hit: Gửi dữ liệu ring buffer cho client mới join
+            for (const buf of channelEntry.ringBuffer) {
+              res.write(buf);
+            }
+
+            channelEntry.clients.add(res);
+
+            req.on('close', () => {
+              console.log(`[Client Disconnected]`);
+              channelEntry.clients.delete(res);
+              if (channelEntry.clients.size === 0) {
+                console.log(`[FFmpeg] No active clients left. Stopping FFmpeg process...`);
+                channelEntry.manualKill = true;
+                if (channelEntry.proc) channelEntry.proc.kill('SIGKILL');
+              }
+            });
+          });
+
+          server.keepAliveTimeout = 0;
+          server.headersTimeout = 0;
+          server.timeout = 0;
+
+          server.listen(5000, '0.0.0.0', () => {
+            console.log('🚀 Box Hits Restream Proxy running on port 5000');
+          });
+          EOF
+
+      - name: Start Services & Health Check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nohup node /tmp/server.js > /tmp/proxy.log 2>&1 &
+          echo $! > /tmp/proxy.pid
+          sleep 2
+
+          # Kết nối tới Port 30118 trên bore.pub
+          nohup bore local 5000 --to bore.pub --port 30118 > /tmp/bore.log 2>&1 &
+          echo $! > /tmp/bore.pid
+
+          PORT_BOUND=0
+          for i in {1..20}; do
+            sleep 1
+            if grep -q "listening at bore.pub:30118" /tmp/bore.log; then
+              PORT_BOUND=1
+              break
+            fi
+          done
+
+          if [ "$PORT_BOUND" -eq 0 ]; then
+            echo "❌ ERROR: Bore tunnel failed to connect on port 30118."
+            cat /tmp/bore.log
+            exit 1
+          fi
+
+          echo "=================================================="
+          echo "✅ LINK STREAM MPEG-TS BOX HITS (PORT 30118):"
+          echo "👉 http://bore.pub:30118/stream.ts"
+          echo "=================================================="
+
+          while true; do
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then 
+              echo "Proxy process died!"
+              cat /tmp/proxy.log
+              exit 1
+            fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then 
+              echo "Bore process died!"
+              cat /tmp/bore.log
+              exit 1
+            fi
+            sleep 10
+          done
