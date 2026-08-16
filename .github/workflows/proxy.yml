@@ -52,7 +52,7 @@ jobs:
           BHITS_SERVER = "http://bore.pub:30119/index.m3u8"
           BOX1_SERVER = "http://bore.pub:30117/index.m3u8"
           WO_URL = "http://bore.pub:30120/index.m3u8"
-          HC_URL = "http://bore.pub:30128/index.m3u8"
+          HC_URL = "http://bore.pub:30118/index.m3u8"
 
           AMAGI_STUDIO_C = (
               "https://amg12058-c15studio-amg12058c1-lg-us-5787."
