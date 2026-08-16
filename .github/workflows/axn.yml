@@ -19,13 +19,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl nodejs ffmpeg
-
           ffmpeg -version | head -n 1
 
-          # Cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
@@ -38,16 +35,15 @@ jobs:
           const http = require('http');
           const { spawn } = require('child_process');
 
-          const MPD_URL = process.env.MPD_URL || "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd";
-          const CLEARKEY_KEY = process.env.CLEARKEY_KEY || "6f1c09c035eab36323d60d1454db3d20";
-          const USER_AGENT = process.env.USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36";
-          const REFERER = process.env.REFERER || "https://mytvnet.vn/";
+          const MPD_URL = process.env.MPD_URL || 'https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd';
+          const CLEARKEY_KEY = process.env.CLEARKEY_KEY || '6f1c09c035eab36323d60d1454db3d20';
+          const USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+          const REFERER = process.env.REFERER || 'https://mytvnet.vn/';
 
           const CHANNELS = new Map();
-          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Buffer 6MB
-          const MAX_BACKPRESSURE_BYTES = 8 * 1024 * 1024; // 8MB tồn đọng mới ngắt kết nối client
+          const RING_BUFFER_MAX = 6 * 1024 * 1024;
+          const MAX_BACKPRESSURE_BYTES = 8 * 1024 * 1024;
 
-          // Bắt lỗi toàn cục để không bao giờ bị sập tiến trình Node.js Proxy
           process.on('uncaughtException', (err) => {
             console.error('[FATAL - Caught UncaughtException]', err.message);
           });
@@ -62,14 +58,12 @@ jobs:
               '-fflags', '+genpts+discardcorrupt+nobuffer',
               '-i', mpdUrl,
               '-map', '0:v:0?', '-map', '0:a:0?',
-              
-              // Reset PTS/DTS độc lập về 0 cho cả 2 luồng (0% CPU)
+
               '-c:v', 'copy',
               '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
               '-c:a', 'copy',
               '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
-              
-              // Mux delay 0.3s để chống jitter qua Bore Tunnel gây giật hình/mất âm thanh ngắt quãng
+
               '-max_muxing_queue_size', '4096',
               '-muxdelay', '0.3',
               '-muxpreload', '0.3',
@@ -92,11 +86,9 @@ jobs:
             });
 
             entry.proc = proc;
-
-            proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString().trim()));
+            proc.stderr.on('data', (d) => console.error('[FFmpeg Log]', d.toString().trim()));
 
             proc.stdout.on('data', (chunk) => {
-              // Ghi dữ liệu vào Ring Buffer
               entry.ringBuffer.push(chunk);
               entry.ringBufferSize += chunk.length;
               while (entry.ringBufferSize > RING_BUFFER_MAX) {
@@ -104,7 +96,6 @@ jobs:
                 if (removed) entry.ringBufferSize -= removed.length;
               }
 
-              // Broadcast dữ liệu cho các client
               for (const res of entry.clients) {
                 if (res.writableEnded || res.destroyed) {
                   entry.clients.delete(res);
@@ -113,9 +104,8 @@ jobs:
 
                 res.write(chunk);
 
-                // Kiểm tra backpressure thực tế dựa trên dung lượng bộ nhớ đệm socket
                 if (res.socket && res.socket.writableLength > MAX_BACKPRESSURE_BYTES) {
-                  console.warn(`[Proxy] Client overloaded (${res.socket.writableLength} bytes queued). Disconnecting client.`);
+                  console.warn(`[Proxy] Client overloaded (${res.socket.writableLength} bytes queued). Disconnecting.`);
                   res.destroy();
                   entry.clients.delete(res);
                 }
@@ -128,7 +118,6 @@ jobs:
                 console.log(`[FFmpeg] Auto-restarting in 1.5s (${entry.clients.size} clients active)...`);
                 setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
               } else {
-                // CHỈ XÓA instance khỏi Map khi FFmpeg đã thực sự thoát hoàn toàn (khắc phục Race Condition)
                 CHANNELS.delete(id);
               }
             });
@@ -138,7 +127,7 @@ jobs:
 
           function getOrCreateChannel(id) {
             if (CHANNELS.has(id)) return CHANNELS.get(id);
-            
+
             const entry = {
               proc: null,
               clients: new Set(),
@@ -146,14 +135,13 @@ jobs:
               ringBufferSize: 0,
               manualKill: false
             };
-            
+
             spawnFFmpegProcess(id, MPD_URL, CLEARKEY_KEY, entry);
             CHANNELS.set(id, entry);
             return entry;
           }
 
           const server = http.createServer((req, res) => {
-            // Lọc loại bỏ các HTTP Method và Route rác không phải stream
             if (req.method !== 'GET') {
               res.writeHead(405).end();
               return;
@@ -165,7 +153,6 @@ jobs:
 
             console.log(`[Client Connected] ${req.url}`);
 
-            // BẮT BỘ SỰ KIỆN LỖI TRÊN SOCKET VÀ RESPONSE - CHỐNG SẬP SERVICE
             res.on('error', (err) => {
               console.warn(`[Client Response Error] ${err.message}`);
             });
@@ -185,7 +172,6 @@ jobs:
 
             const channelEntry = getOrCreateChannel('axn');
 
-            // Flush Ring Buffer cho client mới nhận ngay dữ liệu gần nhất
             for (const buf of channelEntry.ringBuffer) {
               res.write(buf);
             }
@@ -193,10 +179,10 @@ jobs:
             channelEntry.clients.add(res);
 
             req.on('close', () => {
-              console.log(`[Client Disconnected]`);
+              console.log('[Client Disconnected]');
               channelEntry.clients.delete(res);
               if (channelEntry.clients.size === 0) {
-                console.log(`[FFmpeg] No active clients left. Stopping FFmpeg process...`);
+                console.log('[FFmpeg] No active clients left. Stopping FFmpeg process...');
                 channelEntry.manualKill = true;
                 if (channelEntry.proc) channelEntry.proc.kill('SIGKILL');
               }
@@ -245,12 +231,12 @@ jobs:
           echo "=================================================="
 
           while true; do
-            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then 
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then
               echo "Proxy process died!"
               cat /tmp/proxy.log
               exit 1
             fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then 
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
               echo "Bore process died!"
               cat /tmp/bore.log
               exit 1
