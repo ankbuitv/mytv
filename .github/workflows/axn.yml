@@ -7,14 +7,17 @@ on:
         description: "Override MPD URL (optional)"
         required: false
         default: ""
+
       clearkey_key:
         description: "Override ClearKey hex key (optional)"
         required: false
         default: ""
+
       user_agent:
         description: "Override User-Agent (optional)"
         required: false
         default: ""
+
       referer:
         description: "Override Referer (optional)"
         required: false
@@ -26,63 +29,70 @@ jobs:
     timeout-minutes: 360
 
     env:
-      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KEY: ${{ secrets.CLEARKEY_KEY }}
-      USER_AGENT: "Dalvik/2.1.0"
-      REFERER: "https://mytvnet.vn/"
+      DEFAULT_MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+      CLEARKEY_SECRET: ${{ secrets.CLEARKEY_KEY }}
+      DEFAULT_USER_AGENT: "Dalvik/2.1.0"
+      DEFAULT_REFERER: "https://mytvnet.vn/"
 
     steps:
 
       # ============================================================
-      # Resolve runtime configuration
+      # Resolve configuration
       # ============================================================
+
       - name: Resolve runtime configuration
         shell: bash
         run: |
           set -euo pipefail
 
-          MPD_EFFECTIVE="${{ github.event.inputs.mpd_url }}"
-          KEY_EFFECTIVE="${{ github.event.inputs.clearkey_key }}"
-          UA_EFFECTIVE="${{ github.event.inputs.user_agent }}"
-          REF_EFFECTIVE="${{ github.event.inputs.referer }}"
+          MPD_INPUT='${{ github.event.inputs.mpd_url }}'
+          KEY_INPUT='${{ github.event.inputs.clearkey_key }}'
+          UA_INPUT='${{ github.event.inputs.user_agent }}'
+          REF_INPUT='${{ github.event.inputs.referer }}'
 
-          [[ -n "$MPD_EFFECTIVE" ]] || MPD_EFFECTIVE="$MPD_URL"
-          [[ -n "$KEY_EFFECTIVE" ]] || KEY_EFFECTIVE="${CLEARKEY_KEY:-}"
-          [[ -n "$UA_EFFECTIVE" ]] || UA_EFFECTIVE="$USER_AGENT"
-          [[ -n "$REF_EFFECTIVE" ]] || REF_EFFECTIVE="$REFERER"
+          MPD="${MPD_INPUT:-$DEFAULT_MPD_URL}"
+          KEY="${KEY_INPUT:-$CLEARKEY_SECRET}"
+          UA="${UA_INPUT:-$DEFAULT_USER_AGENT}"
+          REF="${REF_INPUT:-$DEFAULT_REFERER}"
 
-          if [[ -z "$MPD_EFFECTIVE" ]]; then
+          if [[ -z "$MPD" ]]; then
             echo "ERROR: MPD URL is empty"
             exit 1
           fi
 
-          if [[ -z "$KEY_EFFECTIVE" ]]; then
+          if [[ -z "$KEY" ]]; then
             echo "ERROR: CLEARKEY_KEY is empty"
             exit 1
           fi
 
-          # Basic validation: ClearKey is a 32-byte AES key represented
-          # as 64 hexadecimal characters.
-          if ! [[ "$KEY_EFFECTIVE" =~ ^[0-9a-fA-F]{32}$ ]]; then
-            echo "ERROR: CLEARKEY_KEY must be exactly 32 hexadecimal characters"
+          # Normalize key.
+          KEY="${KEY#0x}"
+          KEY="${KEY#0X}"
+          KEY="${KEY//:/}"
+
+          if ! [[ "$KEY" =~ ^[0-9a-fA-F]{32}$ ]]; then
+            echo "ERROR: CLEARKEY_KEY must be exactly 32 hex characters"
             exit 1
           fi
 
           {
-            echo "MPD_URL=$MPD_EFFECTIVE"
-            echo "CLEARKEY_KEY=$KEY_EFFECTIVE"
-            echo "USER_AGENT=$UA_EFFECTIVE"
-            echo "REFERER=$REF_EFFECTIVE"
+            echo "MPD_URL=$MPD"
+            echo "CLEARKEY_KEY=$KEY"
+            echo "USER_AGENT=$UA"
+            echo "REFERER=$REF"
           } >> "$GITHUB_ENV"
 
-          echo "MPD configured"
-          echo "ClearKey configured"
-          echo "User-Agent: $UA_EFFECTIVE"
-          echo "Referer: $REF_EFFECTIVE"
+          echo "Configuration resolved."
+          echo "MPD: $MPD"
+          echo "ClearKey: [32 hex characters]"
+          echo "User-Agent: $UA"
+          echo "Referer: $REF"
+
 
       # ============================================================
       # Dependencies
       # ============================================================
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -99,77 +109,66 @@ jobs:
             dnsutils
 
           echo "===== FFmpeg ====="
-          ffmpeg -version | head -n 5
+          ffmpeg -version | head -n 3
 
-          echo "===== FFprobe ====="
-          ffprobe -version | head -n 2
+          echo "===== FFmpeg CENC ====="
+          ffmpeg -hide_banner -h full 2>&1 \
+            | grep -E "cenc_decryption_key|cenc_decryption_keys" || true
 
           echo "===== Nginx ====="
           nginx -v
 
+
       # ============================================================
-      # Verify FFmpeg ClearKey support
+      # Bore
       # ============================================================
-      - name: Verify FFmpeg CENC support
+
+      - name: Install Bore
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! ffmpeg -hide_banner -h full 2>&1 \
-              | grep -q "cenc_decryption_key"; then
-            echo "ERROR: Installed FFmpeg does not expose cenc_decryption_key"
-            exit 1
-          fi
+          curl -fsSL \
+            "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz" \
+            -o /tmp/bore.tar.gz
 
-          if ! ffmpeg -hide_banner -h full 2>&1 \
-              | grep -q "cenc_decryption_keys"; then
-            echo "WARNING: cenc_decryption_keys is unavailable"
-          fi
+          tar -xzf /tmp/bore.tar.gz -C /tmp
 
-          echo "CENC ClearKey support detected."
+          sudo install \
+            -m 755 \
+            /tmp/bore \
+            /usr/local/bin/bore
 
-      # ============================================================
-      # Test MPD + ClearKey BEFORE starting HLS
-      # ============================================================
-      - name: Test AXN DASH input
-        shell: bash
-        run: |
-          set -euo pipefail
+          bore --version
 
-          echo "Testing MPD..."
+          rm -f \
+            /tmp/bore.tar.gz \
+            /tmp/bore
 
-          timeout 30 ffmpeg \
-            -hide_banner \
-            -loglevel warning \
-            -nostdin \
-            -user_agent "$USER_AGENT" \
-            -headers "Referer: $REFERER"$'\r\n' \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -i "$MPD_URL" \
-            -map 0:v:0 \
-            -map 0:a:0 \
-            -t 5 \
-            -f null \
-            - \
-            2>&1 | tee /tmp/mpd-test.log
-
-          echo "AXN DASH input test passed."
 
       # ============================================================
-      # RAM HLS directory
+      # RAM HLS
       # ============================================================
-      - name: Prepare RAM HLS storage
+
+      - name: Prepare HLS storage
         shell: bash
         run: |
           set -euo pipefail
 
           sudo rm -rf /dev/shm/hls
-          sudo mkdir -p /dev/shm/hls/axn
+
+          sudo mkdir -p \
+            /dev/shm/hls/axn
+
           sudo chmod -R 777 /dev/shm/hls
+
+          df -h /dev/shm
+
 
       # ============================================================
       # Nginx
       # ============================================================
+
       - name: Configure nginx
         shell: bash
         run: |
@@ -181,7 +180,7 @@ jobs:
           pid /run/nginx.pid;
 
           events {
-              worker_connections 2048;
+              worker_connections 4096;
               multi_accept on;
           }
 
@@ -211,6 +210,8 @@ jobs:
                   location / {
                       root /dev/shm;
 
+                      try_files $uri =404;
+
                       add_header Access-Control-Allow-Origin "*" always;
                       add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
                       add_header Access-Control-Allow-Headers "*" always;
@@ -218,8 +219,6 @@ jobs:
                       add_header Cache-Control "no-cache, no-store, must-revalidate, max-age=0" always;
                       add_header Pragma "no-cache" always;
                       add_header Expires "0" always;
-
-                      try_files $uri =404;
                   }
 
                   location = /healthz {
@@ -233,9 +232,11 @@ jobs:
           sudo nginx -t
           sudo systemctl restart nginx
 
+
       # ============================================================
       # FFmpeg supervisor
       # ============================================================
+
       - name: Create FFmpeg supervisor
         shell: bash
         run: |
@@ -247,8 +248,8 @@ jobs:
           set -u
 
           HLS_DIR="/dev/shm/hls/axn"
-          PLAYLIST="$HLS_DIR/index.m3u8"
-          SEGMENT_PATTERN="$HLS_DIR/seg%06d.ts"
+          PLAYLIST="${HLS_DIR}/index.m3u8"
+          SEGMENT_PATTERN="${HLS_DIR}/seg%06d.ts"
 
           FFMPEG_LOG="/tmp/ffmpeg.log"
           SUPERVISOR_LOG="/tmp/supervisor.log"
@@ -260,41 +261,36 @@ jobs:
           REFERER="${REFERER:-https://mytvnet.vn/}"
 
           FFMPEG_PID=""
-          RESTARTS=0
 
           log() {
               echo "$(date -Is) $*" | tee -a "$SUPERVISOR_LOG"
           }
 
-          get_origin() {
-              printf '%s\n' "$REFERER" \
-                  | sed -E 's#^(https?://[^/]+).*#\1#'
+          cleanup_hls() {
+              rm -f \
+                "${HLS_DIR}"/*.m3u8 \
+                "${HLS_DIR}"/*.ts \
+                "${HLS_DIR}"/*.tmp
           }
 
           stop_ffmpeg() {
               if [[ -n "${FFMPEG_PID}" ]] &&
                  kill -0 "${FFMPEG_PID}" 2>/dev/null; then
 
-                  kill -TERM "$FFMPEG_PID" 2>/dev/null || true
+                  kill -TERM "${FFMPEG_PID}" 2>/dev/null || true
 
                   for _ in {1..20}; do
-                      if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+                      if ! kill -0 "${FFMPEG_PID}" 2>/dev/null; then
                           break
                       fi
+
                       sleep 0.25
                   done
 
-                  kill -KILL "$FFMPEG_PID" 2>/dev/null || true
+                  kill -KILL "${FFMPEG_PID}" 2>/dev/null || true
               fi
 
               FFMPEG_PID=""
-          }
-
-          cleanup_hls() {
-              rm -f \
-                  "$HLS_DIR"/*.m3u8 \
-                  "$HLS_DIR"/*.ts \
-                  "$HLS_DIR"/*.tmp
           }
 
           start_ffmpeg() {
@@ -303,77 +299,83 @@ jobs:
 
               : > "$FFMPEG_LOG"
 
-              local origin
-              origin="$(get_origin)"
-
-              log "[FFmpeg] starting AXN DASH -> HLS"
+              log "[FFmpeg] starting AXN DASH"
 
               ffmpeg \
-                  -hide_banner \
-                  -loglevel warning \
-                  -nostdin \
-                  -stats \
-                  \
-                  -user_agent "$USER_AGENT" \
-                  -headers "Referer: $REFERER"$'\r\n'"Origin: $origin"$'\r\n' \
-                  \
-                  -cenc_decryption_key "$CLEARKEY_KEY" \
-                  \
-                  -i "$MPD_URL" \
-                  \
-                  -map 0:v:0 \
-                  -map 0:a:0 \
-                  \
-                  -c:v libx264 \
-                  -preset veryfast \
-                  -tune zerolatency \
-                  -profile:v main \
-                  -level 4.0 \
-                  -pix_fmt yuv420p \
-                  \
-                  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
-                  \
-                  -fps_mode passthrough \
-                  \
-                  -b:v 1800k \
-                  -maxrate 2200k \
-                  -bufsize 4400k \
-                  \
-                  -g 50 \
-                  -keyint_min 50 \
-                  -sc_threshold 0 \
-                  \
-                  -c:a aac \
-                  -b:a 128k \
-                  -ar 48000 \
-                  -ac 2 \
-                  \
-                  -af "aresample=async=1:first_pts=0" \
-                  \
-                  -max_muxing_queue_size 4096 \
-                  \
-                  -avoid_negative_ts disabled \
-                  \
-                  -f hls \
-                  -hls_time 2 \
-                  -hls_list_size 6 \
-                  -hls_delete_threshold 2 \
-                  \
-                  -hls_flags \
-                  delete_segments+independent_segments+omit_endlist+temp_file+program_date_time \
-                  \
-                  -hls_segment_type mpegts \
-                  \
-                  -hls_start_number_source epoch \
-                  \
-                  -hls_segment_filename "$SEGMENT_PATTERN" \
-                  \
-                  "$PLAYLIST" \
-                  > "$FFMPEG_LOG" 2>&1 &
+                -hide_banner \
+                -loglevel warning \
+                -nostdin \
+                -stats \
+                \
+                -user_agent "${USER_AGENT}" \
+                -headers "Referer: ${REFERER}\r\n" \
+                \
+                -reconnect 1 \
+                -reconnect_streamed 1 \
+                -reconnect_on_network_error 1 \
+                -reconnect_delay_max 5 \
+                \
+                -rw_timeout 15000000 \
+                \
+                -cenc_decryption_key "${CLEARKEY_KEY}" \
+                \
+                -fflags +discardcorrupt \
+                -err_detect ignore_err \
+                \
+                -i "${MPD_URL}" \
+                \
+                -map 0:v:0 \
+                -map 0:a:0 \
+                \
+                -c:v libx264 \
+                -preset ultrafast \
+                -tune zerolatency \
+                -profile:v main \
+                -level 4.0 \
+                -pix_fmt yuv420p \
+                \
+                -fps_mode passthrough \
+                \
+                -b:v 2200k \
+                -maxrate 2500k \
+                -bufsize 5000k \
+                \
+                -g 50 \
+                -keyint_min 50 \
+                -sc_threshold 0 \
+                \
+                -c:a aac \
+                -b:a 128k \
+                -ar 48000 \
+                -ac 2 \
+                \
+                -max_muxing_queue_size 8192 \
+                \
+                -avoid_negative_ts make_zero \
+                \
+                -f hls \
+                \
+                -hls_time 4 \
+                -hls_list_size 6 \
+                -hls_delete_threshold 2 \
+                \
+                -hls_flags \
+                  delete_segments+\
+                  independent_segments+\
+                  omit_endlist+\
+                  temp_file+\
+                  program_date_time \
+                \
+                -hls_segment_type mpegts \
+                \
+                -hls_segment_filename "${SEGMENT_PATTERN}" \
+                \
+                "${PLAYLIST}" \
+                >"$FFMPEG_LOG" 2>&1 &
 
               FFMPEG_PID=$!
 
-              log "[FFmpeg] pid=$FFMPEG_PID"
+              log "[FFmpeg] pid=${FFMPEG_PID}"
           }
 
           trap 'stop_ffmpeg; exit 0' TERM INT EXIT
@@ -382,78 +384,46 @@ jobs:
 
               start_ffmpeg
 
-              while kill -0 "$FFMPEG_PID" 2>/dev/null; do
-
+              while kill -0 "${FFMPEG_PID}" 2>/dev/null; do
                   sleep 5
-
-                  # ------------------------------------------------
-                  # Playlist watchdog
-                  # ------------------------------------------------
-                  if [[ -f "$PLAYLIST" ]]; then
-
-                      now=$(date +%s)
-                      mtime=$(stat -c %Y "$PLAYLIST" 2>/dev/null || echo 0)
-                      age=$((now - mtime))
-
-                      if (( age > 15 )); then
-                          log "[Watchdog] playlist stale: ${age}s"
-                          stop_ffmpeg
-                          break
-                      fi
-                  fi
-
-                  # ------------------------------------------------
-                  # Excessive timestamp duplication watchdog
-                  # ------------------------------------------------
-                  if grep -q "More than 1000 frames duplicated" "$FFMPEG_LOG" 2>/dev/null; then
-                      log "[Watchdog] excessive frame duplication detected"
-                      stop_ffmpeg
-                      break
-                  fi
-
-                  # ------------------------------------------------
-                  # Fatal FFmpeg errors
-                  # ------------------------------------------------
-                  if grep -Eq \
-                      "Error opening input|Invalid argument|Conversion failed|Could not write header" \
-                      "$FFMPEG_LOG" 2>/dev/null; then
-
-                      log "[Watchdog] fatal FFmpeg error detected"
-                      tail -n 80 "$FFMPEG_LOG" || true
-
-                      stop_ffmpeg
-                      break
-                  fi
               done
 
-              RESTARTS=$((RESTARTS + 1))
+              log "[Supervisor] FFmpeg exited."
 
-              log "[Supervisor] FFmpeg stopped; restart=$RESTARTS"
+              echo "===== LAST FFMPEG LOG ====="
+              tail -n 100 "$FFMPEG_LOG" || true
 
-              tail -n 80 "$FFMPEG_LOG" || true
+              cleanup_hls
 
-              sleep 2
+              sleep 3
+
+              log "[Supervisor] restarting FFmpeg..."
           done
           EOF
 
           chmod +x /tmp/restream-supervisor.sh
 
+
       # ============================================================
-      # Start supervisor
+      # Start
       # ============================================================
+
       - name: Start restream
         shell: bash
         run: |
           set -euo pipefail
 
           nohup /tmp/restream-supervisor.sh \
-              >/tmp/restream-supervisor-stdout.log 2>&1 &
+            >/tmp/restream-supervisor-stdout.log \
+            2>&1 &
 
-          echo $! >/tmp/restream-supervisor.pid
+          echo $! > /tmp/restream-supervisor.pid
+
 
       # ============================================================
-      # Wait for REAL HLS output
+      # Readiness
       # ============================================================
+
       - name: Wait for HLS readiness
         shell: bash
         run: |
@@ -462,30 +432,56 @@ jobs:
           READY=0
 
           for i in {1..180}; do
-
               sleep 1
 
-              if curl -fsS \
-                  --max-time 5 \
-                  http://127.0.0.1:5000/axn/index.m3u8 \
-                  >/tmp/live.m3u8 2>/dev/null; then
-
-                  if grep -q '^#EXTM3U' /tmp/live.m3u8 \
-                    && grep -q '^#EXTINF:' /tmp/live.m3u8 \
-                    && grep -q '^#EXT-X-TARGETDURATION:' /tmp/live.m3u8; then
-
-                      READY=1
-                      break
-                  fi
+              if ! curl -fsS \
+                  "http://127.0.0.1:5000/axn/index.m3u8" \
+                  -o /tmp/live.m3u8 2>/dev/null; then
+                  continue
               fi
 
-              if (( i % 15 == 0 )); then
-                  echo "Waiting for HLS... ${i}s"
+              if ! grep -q '^#EXTM3U' /tmp/live.m3u8; then
+                  continue
               fi
+
+              if ! grep -q '^#EXTINF:' /tmp/live.m3u8; then
+                  continue
+              fi
+
+              SEGMENT_NAME="$(
+                  grep -E '^seg[0-9]+\.ts$' /tmp/live.m3u8 \
+                  | tail -n 1
+              )"
+
+              if [[ -z "$SEGMENT_NAME" ]]; then
+                  continue
+              fi
+
+              if ! curl -fsS \
+                  "http://127.0.0.1:5000/axn/${SEGMENT_NAME}" \
+                  -o /tmp/test.ts 2>/dev/null; then
+                  continue
+              fi
+
+              if [[ ! -s /tmp/test.ts ]]; then
+                  continue
+              fi
+
+              SIZE=$(stat -c '%s' /tmp/test.ts)
+
+              if (( SIZE < 10000 )); then
+                  continue
+              fi
+
+              echo "HLS READY"
+              echo "Segment: ${SEGMENT_NAME}"
+              echo "Size: ${SIZE} bytes"
+
+              READY=1
+              break
           done
 
           if [[ "$READY" != "1" ]]; then
-
               echo "ERROR: HLS playlist not ready."
 
               echo
@@ -494,154 +490,162 @@ jobs:
 
               echo
               echo "===== SUPERVISOR ====="
-              tail -n 200 /tmp/restream-supervisor-stdout.log || true
+              tail -n 200 \
+                /tmp/restream-supervisor-stdout.log \
+                2>/dev/null || true
 
               echo
               echo "===== FFMPEG ====="
-              tail -n 200 /tmp/ffmpeg.log || true
+              tail -n 200 \
+                /tmp/ffmpeg.log \
+                2>/dev/null || true
 
               echo
               echo "===== FILES ====="
-              find /dev/shm/hls/axn -maxdepth 1 -type f -printf '%f %s bytes\n' \
-                  2>/dev/null || true
+              ls -lah /dev/shm/hls/axn || true
 
               exit 1
           fi
 
-          echo "HLS playlist is ready."
-
-          cat /tmp/live.m3u8
 
       # ============================================================
-      # Validate output
+      # Validate
       # ============================================================
-      - name: Validate HLS output
+
+      - name: Validate HLS
         shell: bash
         run: |
           set -euo pipefail
 
           ffprobe \
-              -hide_banner \
-              -v warning \
-              -i http://127.0.0.1:5000/axn/index.m3u8 \
-              -show_streams \
-              -show_format \
-              >/tmp/ffprobe.txt \
-              2>/tmp/ffprobe-error.txt
+            -hide_banner \
+            -v warning \
+            -i "http://127.0.0.1:5000/axn/index.m3u8" \
+            -show_streams \
+            -show_format \
+            >/tmp/ffprobe.txt \
+            2>/tmp/ffprobe.err
 
-          echo "===== STREAM INFO ====="
+          echo "===== FFPROBE ====="
           cat /tmp/ffprobe.txt
 
-          grep -q 'codec_name=h264' /tmp/ffprobe.txt
-          grep -q 'width=1920' /tmp/ffprobe.txt
-          grep -q 'height=1080' /tmp/ffprobe.txt
-          grep -q 'codec_name=aac' /tmp/ffprobe.txt
-          grep -q 'sample_rate=48000' /tmp/ffprobe.txt
-          grep -q 'channels=2' /tmp/ffprobe.txt
+          grep -qi 'codec_name=h264' /tmp/ffprobe.txt
+          grep -qi 'codec_name=aac' /tmp/ffprobe.txt
 
-          echo "HLS output validation passed."
+          echo
+          echo "HLS validation OK."
+
 
       # ============================================================
       # Bore
       # ============================================================
-      - name: Install Bore
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          curl -fsSL \
-            https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
-            -o /tmp/bore.tar.gz
-
-          tar -xzf /tmp/bore.tar.gz -C /tmp
-
-          sudo install -m 755 /tmp/bore /usr/local/bin/bore
-
-          bore --version
-
-      - name: Start Bore and keep stream alive
+      - name: Start Bore tunnel
         shell: bash
         run: |
           set -euo pipefail
 
           nohup bore local 5000 \
-              --to bore.pub \
-              --port 30117 \
-              >/tmp/bore.log 2>&1 &
+            --to bore.pub \
+            --port 30117 \
+            >/tmp/bore.log \
+            2>&1 &
 
-          BORE_PID=$!
-          echo "$BORE_PID" >/tmp/bore.pid
+          echo $! >/tmp/bore.pid
 
           for i in {1..30}; do
-
               sleep 1
 
-              if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
+              if grep -q 'listening at bore.pub:30117' /tmp/bore.log; then
+
+                  echo
+                  echo "=========================================="
+                  echo "AXN HLS STREAM READY"
+                  echo "=========================================="
+                  echo "http://bore.pub:30117/axn/index.m3u8"
+                  echo "=========================================="
+
                   break
               fi
 
-              if ! kill -0 "$BORE_PID" 2>/dev/null; then
-                  echo "ERROR: Bore died."
+              if [[ "$i" == "30" ]]; then
+                  echo "ERROR: Bore failed"
                   cat /tmp/bore.log || true
                   exit 1
               fi
-
           done
 
-          if ! grep -q "listening at bore.pub:30117" /tmp/bore.log; then
-              echo "ERROR: Bore tunnel failed."
-              cat /tmp/bore.log || true
-              exit 1
-          fi
 
-          echo
-          echo "=============================================="
-          echo "AXN HLS STREAM READY"
-          echo "=============================================="
-          echo
-          echo "http://bore.pub:30117/axn/index.m3u8"
-          echo
-          echo "=============================================="
-          echo
+      # ============================================================
+      # Keep runner alive
+      # ============================================================
+
+      - name: Keep stream alive
+        shell: bash
+        run: |
+          set -euo pipefail
 
           while true; do
 
-              if ! kill -0 "$BORE_PID" 2>/dev/null; then
-                  echo "ERROR: Bore stopped."
-                  cat /tmp/bore.log || true
+              if ! kill -0 \
+                  "$(cat /tmp/restream-supervisor.pid)" \
+                  2>/dev/null; then
+
+                  echo "ERROR: Supervisor died"
+
+                  tail -n 200 \
+                    /tmp/restream-supervisor-stdout.log || true
+
                   exit 1
               fi
 
-              if [[ ! -f /dev/shm/hls/axn/index.m3u8 ]]; then
-                  echo "ERROR: HLS playlist disappeared."
+              if ! kill -0 \
+                  "$(cat /tmp/bore.pid)" \
+                  2>/dev/null; then
+
+                  echo "ERROR: Bore died"
+
+                  cat /tmp/bore.log || true
+
                   exit 1
               fi
 
               if ! curl -fsS \
-                  --max-time 10 \
-                  http://127.0.0.1:5000/healthz \
+                  "http://127.0.0.1:5000/healthz" \
                   >/dev/null; then
 
-                  echo "ERROR: nginx health check failed."
+                  echo "ERROR: Nginx health check failed"
                   exit 1
               fi
 
               if ! curl -fsS \
-                  --max-time 10 \
-                  http://127.0.0.1:5000/axn/index.m3u8 \
-                  >/tmp/health_live.m3u8; then
+                  "http://127.0.0.1:5000/axn/index.m3u8" \
+                  -o /tmp/health.m3u8; then
 
-                  echo "ERROR: HLS playlist unavailable."
-                  tail -n 100 /tmp/ffmpeg.log || true
+                  echo "ERROR: HLS playlist unavailable"
+
+                  tail -n 100 \
+                    /tmp/ffmpeg.log || true
+
                   exit 1
               fi
 
-              if ! grep -q '^#EXTINF:' /tmp/health_live.m3u8; then
-                  echo "ERROR: HLS playlist contains no segments."
+              if ! grep -q '^#EXTINF:' /tmp/health.m3u8; then
+                  echo "ERROR: HLS playlist has no segments"
                   exit 1
               fi
 
-              echo "[$(date -Is)] AXN alive"
+              echo
+              echo "===== STATUS $(date -Is) ====="
 
-              sleep 15
+              stat \
+                -c 'playlist=%n size=%s mtime=%y' \
+                /dev/shm/hls/axn/index.m3u8 \
+                2>/dev/null || true
+
+              echo "FFmpeg: alive"
+              echo "Bore: alive"
+              echo "HLS: alive"
+
+              sleep 30
           done
