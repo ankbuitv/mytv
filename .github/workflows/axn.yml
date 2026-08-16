@@ -27,71 +27,118 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Create Proxy Server (Reset Audio & Video PTS to 0)
+      - name: Create Proxy Server File
         shell: bash
         run: |
           cat << 'EOF' > /tmp/server.js
           const http = require('http');
           const { spawn } = require('child_process');
 
-          const MPD_URL = process.env.MPD_URL;
-          const KEY = process.env.CLEARKEY_KEY;
-          const UA = process.env.USER_AGENT;
-          const REF = process.env.REFERER;
+          // Configuration
+          const MPD_URL = process.env.MPD_URL || "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd";
+          const CLEARKEY_KEY = process.env.CLEARKEY_KEY || "6f1c09c035eab36323d60d1454db3d20";
+          const USER_AGENT = process.env.USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36";
+          const REFERER = process.env.REFERER || "https://mytvnet.vn/";
+
+          const CHANNELS = new Map(); // Store stream sessions
+
+          function buildFFmpegArgs(mpdUrl, key) {
+            const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://mytvnet.vn\r\n`;
+            return [
+              '-hide_banner', '-loglevel', 'warning',
+              '-user_agent', USER_AGENT,
+              '-headers', customHeaders,
+              '-cenc_decryption_key', key,
+              '-fflags', '+genpts+discardcorrupt+nobuffer+igndts',
+              '-i', mpdUrl,
+              '-map', '0:v:0?', '-map', '0:a:0?',
+              
+              // Reset PTS/DTS độc lập về 0 cho cả 2 luồng (0% CPU)
+              '-c:v', 'copy',
+              '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
+              '-c:a', 'copy',
+              '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
+              
+              // Tối ưu MPEG-TS Live Output
+              '-muxdelay', '0', '-muxpreload', '0', '-max_delay', '0',
+              '-avoid_negative_ts', 'make_zero',
+              '-fps_mode', 'passthrough',
+              '-f', 'mpegts',
+              '-mpegts_flags', '+resend_headers+pat_pmt_at_frames+initial_discontinuity',
+              '-mpegts_copyts', '0',
+              '-pcr_period', '20',
+              '-pat_period', '0.1',
+              '-pmt_period', '0.1',
+              'pipe:1'
+            ];
+          }
+
+          function getOrCreateChannel(id, mpdUrl, key) {
+            if (CHANNELS.has(id)) return CHANNELS.get(id);
+
+            console.log(`[FFmpeg] Spawning new process for channel: ${id}`);
+            const proc = spawn('ffmpeg', buildFFmpegArgs(mpdUrl, key), {
+              stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            const entry = { proc, clients: new Set() };
+            CHANNELS.set(id, entry);
+
+            proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString()));
+
+            proc.stdout.on('data', (chunk) => {
+              for (const res of entry.clients) {
+                const ok = res.write(chunk);
+                if (!ok) {
+                  proc.stdout.pause();
+                  res.once('drain', () => proc.stdout.resume());
+                }
+              }
+            });
+
+            proc.on('exit', (code) => {
+              console.log(`[FFmpeg] Process exited code=${code}`);
+              for (const res of entry.clients) res.end();
+              CHANNELS.delete(id);
+            });
+
+            return entry;
+          }
 
           const server = http.createServer((req, res) => {
-            console.log(`[${new Date().toISOString()}] Client connected: ${req.url}`);
+            console.log(`[Client Connected] ${req.url}`);
 
             res.writeHead(200, {
               'Content-Type': 'video/mp2t',
-              'Connection': 'keep-alive',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Connection': 'close',
               'Access-Control-Allow-Origin': '*'
             });
+            
+            if (req.socket) {
+              req.socket.setNoDelay(true);
+            }
 
-            const customHeaders = `Referer: ${REF}\r\nOrigin: https://mytvnet.vn\r\n`;
-
-            const ffmpegArgs = [
-              '-hide_banner',
-              '-loglevel', 'error',
-              '-user_agent', UA,
-              '-headers', customHeaders,
-              '-cenc_decryption_key', KEY,
-              '-i', MPD_URL,
-              '-map', '0:v:0?',
-              '-map', '0:a:0?',
-              // 1. Giữ nguyên Video codec (0% CPU), ép PTS Video bắt đầu từ 0
-              '-c:v', 'copy',
-              '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTPTS',
-              // 2. Re-encode nhẹ Audio & ép PTS Audio bắt đầu từ 0 (Triệt hạ hoàn toàn lỗi lệch 8.9s)
-              '-c:a', 'aac',
-              '-b:a', '128k',
-              '-ar', '48000',
-              '-ac', '2',
-              '-af', 'asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.100000',
-              // 3. Đóng gói MPEG-TS mượt mà
-              '-muxdelay', '0',
-              '-muxpreload', '0',
-              '-f', 'mpegts',
-              'pipe:1'
-            ];
-
-            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-
-            ffmpeg.stdout.pipe(res);
-
-            ffmpeg.stderr.on('data', (data) => {
-              console.error(`FFmpeg Log: ${data}`);
-            });
+            const channelEntry = getOrCreateChannel('axn', MPD_URL, CLEARKEY_KEY);
+            channelEntry.clients.add(res);
 
             req.on('close', () => {
-              console.log('Client disconnect -> Killing FFmpeg...');
-              ffmpeg.kill('SIGKILL');
+              console.log(`[Client Disconnected]`);
+              channelEntry.clients.delete(res);
+              if (channelEntry.clients.size === 0) {
+                console.log(`[FFmpeg] No active clients, killing FFmpeg...`);
+                channelEntry.proc.kill('SIGKILL');
+                CHANNELS.delete('axn');
+              }
             });
           });
 
-          server.keepAliveTimeout = 60000;
+          server.keepAliveTimeout = 0;
+          server.headersTimeout = 0;
+          server.timeout = 0;
+
           server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Server running on port 5000');
+            console.log('🚀 Ultimate Restream Proxy running on port 5000');
           });
           EOF
 
@@ -99,7 +146,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
           nohup node /tmp/server.js > /tmp/proxy.log 2>&1 &
           echo $! > /tmp/proxy.pid
           sleep 2
@@ -123,12 +170,20 @@ jobs:
           fi
 
           echo "=================================================="
-          echo "✅ LINK TEST CHUẨN XEM TRÊN VLC KHOÔNG CÒN MẤT TIẾNG:"
+          echo "✅ LINK TEST CHUẨN XEM TRÊN VLC KHÔNG CÒN MẤT TIẾNG:"
           echo "👉 http://bore.pub:30117/stream.ts"
           echo "=================================================="
 
           while true; do
-            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then exit 1; fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
+            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then 
+              echo "Proxy process died!"
+              cat /tmp/proxy.log
+              exit 1
+            fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then 
+              echo "Bore process died!"
+              cat /tmp/bore.log
+              exit 1
+            fi
             sleep 10
           done
