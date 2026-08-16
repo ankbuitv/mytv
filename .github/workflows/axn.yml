@@ -15,32 +15,43 @@ jobs:
       REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install dependencies
+      - name: Install Dependencies & Static FFmpeg 6.x
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg curl nodejs
+          
+          # Tải FFmpeg 6.x static build chuẩn để có BSF setts mới nhất
+          curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+          sudo cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe
+          sudo chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          rm -rf /tmp/ffmpeg*
+          ffmpeg -version | head -n 1
 
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl nodejs
+
+          # Install Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-      - name: Create Proxy Server File
+      - name: Create Production Proxy Server Script
         shell: bash
         run: |
           cat << 'EOF' > /tmp/server.js
           const http = require('http');
           const { spawn } = require('child_process');
 
-          // Configuration
           const MPD_URL = process.env.MPD_URL || "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd";
           const CLEARKEY_KEY = process.env.CLEARKEY_KEY || "6f1c09c035eab36323d60d1454db3d20";
           const USER_AGENT = process.env.USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36";
           const REFERER = process.env.REFERER || "https://mytvnet.vn/";
 
-          const CHANNELS = new Map(); // Store stream sessions
+          const CHANNELS = new Map();
+          const RING_BUFFER_MAX = 6 * 1024 * 1024; // Buffer ~6MB dữ liệu cho client mới join
 
           function buildFFmpegArgs(mpdUrl, key) {
             const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://mytvnet.vn\r\n`;
@@ -49,7 +60,8 @@ jobs:
               '-user_agent', USER_AGENT,
               '-headers', customHeaders,
               '-cenc_decryption_key', key,
-              '-fflags', '+genpts+discardcorrupt+nobuffer+igndts',
+              // Đã bỏ igndts để bảo vệ thứ tự B-frame chống xé hình
+              '-fflags', '+genpts+discardcorrupt+nobuffer',
               '-i', mpdUrl,
               '-map', '0:v:0?', '-map', '0:a:0?',
               
@@ -59,7 +71,9 @@ jobs:
               '-c:a', 'copy',
               '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
               
-              // Tối ưu MPEG-TS Live Output
+              // Chống phình queue & tối ưu MPEG-TS Live Output
+              '-max_muxing_queue_size', '4096',
+              '-max_interleave_delta', '0',
               '-muxdelay', '0', '-muxpreload', '0', '-max_delay', '0',
               '-avoid_negative_ts', 'make_zero',
               '-fps_mode', 'passthrough',
@@ -73,61 +87,96 @@ jobs:
             ];
           }
 
-          function getOrCreateChannel(id, mpdUrl, key) {
-            if (CHANNELS.has(id)) return CHANNELS.get(id);
-
-            console.log(`[FFmpeg] Spawning new process for channel: ${id}`);
+          function spawnFFmpegProcess(id, mpdUrl, key, entry) {
+            console.log(`[FFmpeg] Spawning process for channel: ${id}`);
             const proc = spawn('ffmpeg', buildFFmpegArgs(mpdUrl, key), {
               stdio: ['ignore', 'pipe', 'pipe']
             });
 
-            const entry = { proc, clients: new Set() };
-            CHANNELS.set(id, entry);
+            entry.proc = proc;
 
-            proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString()));
+            proc.stderr.on('data', (d) => console.error(`[FFmpeg Log]`, d.toString().trim()));
 
             proc.stdout.on('data', (chunk) => {
+              // Lưu vào Ring Buffer cho client join sau
+              entry.ringBuffer.push(chunk);
+              let size = entry.ringBuffer.reduce((s, b) => s + b.length, 0);
+              while (size > RING_BUFFER_MAX) {
+                size -= entry.ringBuffer.shift().length;
+              }
+
+              // Broadcast cho các client đang xem
               for (const res of entry.clients) {
                 const ok = res.write(chunk);
                 if (!ok) {
-                  proc.stdout.pause();
-                  res.once('drain', () => proc.stdout.resume());
+                  // Tránh pause FFmpeg gây lag cho client khác.
+                  // Kênh mạng của client này quá chậm -> Hủy socket client đó.
+                  console.warn(`[Proxy] Client network slow, destroying socket to prevent backpressure.`);
+                  res.socket.destroy();
+                  entry.clients.delete(res);
                 }
               }
             });
 
-            proc.on('exit', (code) => {
-              console.log(`[FFmpeg] Process exited code=${code}`);
-              for (const res of entry.clients) res.end();
-              CHANNELS.delete(id);
+            proc.on('exit', (code, signal) => {
+              console.warn(`[FFmpeg] Exited with code=${code}, signal=${signal}`);
+              if (entry.clients.size > 0 && !entry.manualKill) {
+                console.log(`[FFmpeg] Auto-restarting in 1.5s (${entry.clients.size} clients connected)...`);
+                setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
+              } else {
+                CHANNELS.delete(id);
+              }
             });
 
+            return proc;
+          }
+
+          function getOrCreateChannel(id) {
+            if (CHANNELS.has(id)) return CHANNELS.get(id);
+            
+            const entry = {
+              proc: null,
+              clients: new Set(),
+              ringBuffer: [],
+              manualKill: false
+            };
+            
+            spawnFFmpegProcess(id, MPD_URL, CLEARKEY_KEY, entry);
+            CHANNELS.set(id, entry);
             return entry;
           }
 
           const server = http.createServer((req, res) => {
             console.log(`[Client Connected] ${req.url}`);
 
+            // HTTP Streaming Header chuẩn (Hỗ trợ HTTP/1.1 Chunked)
             res.writeHead(200, {
               'Content-Type': 'video/mp2t',
               'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Connection': 'close',
-              'Access-Control-Allow-Origin': '*'
+              'Access-Control-Allow-Origin': '*',
+              'X-Accel-Buffering': 'no'
             });
-            
+
             if (req.socket) {
               req.socket.setNoDelay(true);
             }
 
-            const channelEntry = getOrCreateChannel('axn', MPD_URL, CLEARKEY_KEY);
+            const channelEntry = getOrCreateChannel('axn');
+
+            // Flush Ring Buffer ngay cho client mới nhận keyframe phát liền
+            for (const buf of channelEntry.ringBuffer) {
+              res.write(buf);
+            }
+
             channelEntry.clients.add(res);
 
             req.on('close', () => {
               console.log(`[Client Disconnected]`);
               channelEntry.clients.delete(res);
               if (channelEntry.clients.size === 0) {
-                console.log(`[FFmpeg] No active clients, killing FFmpeg...`);
-                channelEntry.proc.kill('SIGKILL');
+                console.log(`[FFmpeg] No active clients left. Stopping FFmpeg process...`);
+                channelEntry.manualKill = true;
+                if (channelEntry.proc) channelEntry.proc.kill('SIGKILL');
                 CHANNELS.delete('axn');
               }
             });
@@ -142,7 +191,7 @@ jobs:
           });
           EOF
 
-      - name: Start Services
+      - name: Start Services & Health Check
         shell: bash
         run: |
           set -euo pipefail
@@ -164,13 +213,13 @@ jobs:
           done
 
           if [ "$PORT_BOUND" -eq 0 ]; then
-            echo "❌ ERROR: Bore failed."
+            echo "❌ ERROR: Bore tunnel failed to connect."
             cat /tmp/bore.log
             exit 1
           fi
 
           echo "=================================================="
-          echo "✅ LINK TEST CHUẨN XEM TRÊN VLC KHÔNG CÒN MẤT TIẾNG:"
+          echo "✅ LINK STREAM MPEG-TS ĐÃ ĐƯỢC FIX HOÀN HẢO:"
           echo "👉 http://bore.pub:30117/stream.ts"
           echo "=================================================="
 
