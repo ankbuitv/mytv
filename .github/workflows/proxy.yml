@@ -1,245 +1,582 @@
-name: Ultimate DASH Zero-PTS Proxy - Bore 30117
+name: IPTV Pure Proxy & Dynamic Route Engine
 
 on:
+  schedule:
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
-  proxy:
+  proxy-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    env:
-      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
-      CLEARKEY_KEY: "6f1c09c035eab36323d60d1454db3d20"
-      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-      REFERER: "https://mytvnet.vn/"
 
     steps:
-      - name: Install System Dependencies
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl dnsutils
+          pip install flask flask-cors gunicorn requests
+
+      - name: Setup Bore Tunnel & SSHX
+        run: |
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+
+          curl -sSf https://sshx.io/get | sh
+
+      - name: Generate App Code
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
-          ffmpeg -version | head -n 1
+          cat > app.py <<'PYTHON'
+          import os
+          import requests
 
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
-          tar -xzf /tmp/bore.tar.gz -C /tmp
-          sudo install -m 755 /tmp/bore /usr/local/bin/bore
-          rm -f /tmp/bore.tar.gz /tmp/bore
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
 
-      - name: Create Production Proxy Server Script
+          app = Flask(__name__)
+
+          DUCKDNS_DOMAIN = "chrtv"
+          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          TARGET_SERVER = "http://23.237.104.106:8080"
+
+          AMAGI_STUDIO_C = (
+              "https://amg12058-c15studio-amg12058c1-lg-us-5787."
+              "playouts.now.amagi.tv/playlist.m3u8"
+          )
+
+          WARNER_TV = (
+              "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          )
+
+          PARAMOUNT = (
+              "http://206.212.244.63/137/index.m3u8"
+          )
+
+          KENSCOM_180 = (
+              "http://103.152.216.26:8443/live/"
+              "DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
+          )
+
+          KENSCOM_191 = (
+              "http://103.152.216.26:8443/live/"
+              "DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+          )
+
+          TV360_9 = (
+              "https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          )
+
+          TV360_10 = (
+              "https://vmttv.dpdns.org/tv360/?id=tv360-10"
+          )
+
+          DREAMWORKS = (
+              "https://cdn12.178.indevs.in/163189/dreamworks"
+          )
+
+          # ============================================================
+          # SKYGO SOURCES
+          # ============================================================
+
+          DISCOVERY_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "Discovery_Asia/HLSv3-FTA/Discovery_Asia.m3u8"
+          )
+
+          SOUTHEAST_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
+          )
+
+          UA_CHROME = (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/151.0.0.0 Safari/537.36"
+          )
+
+          HEADERS_DEFAULT = {
+              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+              "Accept": "*/*",
+              "Accept-Language": (
+                  "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
+              ),
+              "Connection": "keep-alive",
+          }
+
+          UA_DALVIK = "Dalvik/2.1.0"
+
+
+          def get_public_base_url():
+              return os.environ.get(
+                  "PUBLIC_BASE_URL",
+                  "http://chrtv.duckdns.org:30114",
+              )
+
+
+          def add_cors_headers(response):
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = (
+                  "GET, OPTIONS, HEAD"
+              )
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              return response
+
+
+          @app.route("/")
+          def home():
+              return (
+                  f"IPTV Engine Active! "
+                  f"Base URL: {get_public_base_url()}",
+                  200,
+              )
+
+
+          @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
+          def get_playlist():
+              if request.method == "OPTIONS":
+                  return add_cors_headers(
+                      Response(status=204)
+                  )
+
+              public_url = get_public_base_url()
+
+              m3u_content = f"""#EXTM3U
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
+          {public_url}/stream/tv360-9
+          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
+          {public_url}/stream/tv360-10
+          #EXTINF:-1 tvg-id="DreamWorks" group-title="Kids",DreamWorks HD
+          {public_url}/stream/dreamworks
+          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
+          {public_url}/stream/USA_HBO_ZONE/index.m3u8
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
+          {public_url}/stream/USA_DISCOVERY/index.m3u8
+          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
+          {public_url}/stream/warner
+          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
+          {public_url}/stream/paramount
+          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+          {public_url}/stream/studioc
+          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
+          {public_url}/stream/180.m3u8
+          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
+          {public_url}/stream/191.m3u8
+          #EXTINF:-1 tvg-id="DiscoveryAsia" group-title="Asia",Discovery Asia HD
+          {public_url}/stream/asia
+          #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
+          {public_url}/stream/dsc"""
+
+              response = Response(
+                  m3u_content.strip(),
+                  mimetype="application/x-mpegurl",
+              )
+
+              return add_cors_headers(response)
+
+
+          def handle_hls_proxy(
+              default_target_url,
+              endpoint_path,
+              custom_user_agent=None,
+          ):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(
+                      Response(status=204)
+                  )
+
+              target_url = (
+                  request.args.get("url")
+                  or default_target_url
+              )
+
+              target_url = unquote(target_url)
+
+              req_headers = HEADERS_DEFAULT.copy()
+
+              if custom_user_agent:
+                  req_headers["User-Agent"] = custom_user_agent
+
+              if "tv360" in target_url or "vmttv" in target_url:
+                  req_headers["User-Agent"] = UA_DALVIK
+
+              if "103.152.216.26" in target_url:
+                  req_headers["Host"] = "103.152.216.26:8443"
+
+              try:
+                  resp = requests.get(
+                      target_url,
+                      headers=req_headers,
+                      timeout=12,
+                      stream=True,
+                      allow_redirects=True,
+                  )
+
+                  if resp.status_code != 200:
+                      return add_cors_headers(
+                          Response(
+                              f"Upstream Error: HTTP {resp.status_code}",
+                              status=resp.status_code,
+                          )
+                      )
+
+                  final_url = resp.url
+
+                  content_type = (
+                      resp.headers.get("Content-Type", "")
+                  )
+
+                  is_m3u8 = (
+                      ".m3u8" in target_url
+                      or "m3u8" in content_type
+                      or resp.text.strip().startswith("#EXTM3U")
+                  )
+
+                  if is_m3u8:
+                      raw_text = resp.text
+                      lines = raw_text.splitlines()
+                      rewritten_lines = []
+
+                      for line in lines:
+                          line_str = line.strip()
+
+                          if (
+                              not line_str
+                              or line_str.startswith("#")
+                          ):
+                              rewritten_lines.append(line_str)
+                          else:
+                              full_url = urljoin(
+                                  final_url,
+                                  line_str,
+                              )
+
+                              rewritten_lines.append(
+                                  f"{endpoint_path}"
+                                  f"?url={quote(full_url)}"
+                              )
+
+                      response = Response(
+                          "\n".join(
+                              rewritten_lines
+                          ).strip(),
+                          status=200,
+                          mimetype="application/x-mpegurl",
+                      )
+
+                      response.headers["Cache-Control"] = (
+                          "no-cache, no-store, must-revalidate"
+                      )
+
+                      return add_cors_headers(response)
+
+                  def generate():
+                      for chunk in resp.iter_content(
+                          chunk_size=16384
+                      ):
+                          if chunk:
+                              yield chunk
+
+                  response = Response(
+                      stream_with_context(generate()),
+                      status=200,
+                      mimetype="video/mp2t",
+                  )
+
+                  return add_cors_headers(response)
+
+              except Exception as exc:
+                  return add_cors_headers(
+                      Response(
+                          f"Proxy Exception: {str(exc)}",
+                          status=502,
+                      )
+                  )
+
+
+          @app.route(
+              "/stream/tv360-9",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_tv360_9():
+              return handle_hls_proxy(
+                  TV360_9,
+                  "/stream/tv360-9",
+              )
+
+
+          @app.route(
+              "/stream/tv360-10",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_tv360_10():
+              return handle_hls_proxy(
+                  TV360_10,
+                  "/stream/tv360-10",
+              )
+
+
+          @app.route(
+              "/stream/dreamworks",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_dreamworks():
+              return handle_hls_proxy(
+                  DREAMWORKS,
+                  "/stream/dreamworks",
+              )
+
+
+          @app.route(
+              "/stream/studioc",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_studioc():
+              return handle_hls_proxy(
+                  AMAGI_STUDIO_C,
+                  "/stream/studioc",
+              )
+
+
+          @app.route(
+              "/stream/warner",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_warner():
+              return handle_hls_proxy(
+                  WARNER_TV,
+                  "/stream/warner",
+              )
+
+
+          @app.route(
+              "/stream/paramount",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_paramount():
+              return handle_hls_proxy(
+                  PARAMOUNT,
+                  "/stream/paramount",
+              )
+
+
+          @app.route(
+              "/stream/180.m3u8",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_180():
+              return handle_hls_proxy(
+                  KENSCOM_180,
+                  "/stream/180.m3u8",
+              )
+
+
+          @app.route(
+              "/stream/191.m3u8",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_191():
+              return handle_hls_proxy(
+                  KENSCOM_191,
+                  "/stream/191.m3u8",
+              )
+
+
+          @app.route(
+              "/stream/asia",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_asia():
+              return handle_hls_proxy(
+                  DISCOVERY_ASIA,
+                  "/stream/asia",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
+          @app.route(
+              "/stream/dsc",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_dsc():
+              return handle_hls_proxy(
+                  SOUTHEAST_ASIA,
+                  "/stream/dsc",
+                  custom_user_agent=UA_CHROME,
+              )
+
+
+          @app.route(
+              "/stream/<channel_id>/<path:subpath>",
+              methods=["GET", "OPTIONS"],
+          )
+          def proxy_dynamic_23_237(channel_id, subpath):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(
+                      Response(status=204)
+                  )
+
+              if request.args.get("url"):
+                  target_url = unquote(
+                      request.args.get("url")
+                  )
+              else:
+                  target_url = (
+                      f"{TARGET_SERVER}/"
+                      f"{channel_id}/{subpath}"
+                  )
+
+              return handle_hls_proxy(
+                  target_url,
+                  f"/stream/{channel_id}/{subpath}",
+              )
+
+
+          if __name__ == "__main__":
+              app.run(
+                  host="0.0.0.0",
+                  port=5000,
+                  threaded=True,
+              )
+          PYTHON
+
+          python3 -m py_compile app.py
+
+          echo "✅ app.py syntax OK"
+
+      - name: Start Proxy Server & Tunnel
         shell: bash
         run: |
-          cat << 'EOF' > /tmp/server.js
-          const http = require('http');
-          const { spawn } = require('child_process');
+          cat > start_proxy.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
 
-          const MPD_URL = process.env.MPD_URL || 'https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd';
-          const CLEARKEY_KEY = process.env.CLEARKEY_KEY || '6f1c09c035eab36323d60d1454db3d20';
-          const USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-          const REFERER = process.env.REFERER || 'https://mytvnet.vn/';
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
 
-          const CHANNELS = new Map();
-          const RING_BUFFER_MAX = 6 * 1024 * 1024;
-          const MAX_BACKPRESSURE_BYTES = 8 * 1024 * 1024;
+          BORE_PORT="30114"
 
-          process.on('uncaughtException', (err) => {
-            console.error('[FATAL - Caught UncaughtException]', err.message);
-          });
+          echo "💻 Starting SSHX Web Terminal..."
 
-          function buildFFmpegArgs(mpdUrl, key) {
-            const customHeaders = `Referer: ${REFERER}\r\nOrigin: https://mytvnet.vn\r\n`;
-            return [
-              '-hide_banner', '-loglevel', 'warning',
-              '-user_agent', USER_AGENT,
-              '-headers', customHeaders,
-              '-cenc_decryption_key', key,
-              '-fflags', '+genpts+discardcorrupt+nobuffer',
-              '-i', mpdUrl,
-              '-map', '0:v:0?', '-map', '0:a:0?',
+          sshx > sshx.log 2>&1 &
+          SSHX_PID=$!
 
-              '-c:v', 'copy',
-              '-bsf:v', 'h264_mp4toannexb,setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
-              '-c:a', 'copy',
-              '-bsf:a', 'setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS',
+          sleep 4
 
-              '-max_muxing_queue_size', '4096',
-              '-muxdelay', '0.3',
-              '-muxpreload', '0.3',
-              '-avoid_negative_ts', 'make_zero',
-              '-fps_mode', 'passthrough',
-              '-f', 'mpegts',
-              '-mpegts_flags', '+resend_headers+pat_pmt_at_frames+initial_discontinuity',
-              '-mpegts_copyts', '0',
-              '-pcr_period', '20',
-              '-pat_period', '0.1',
-              '-pmt_period', '0.1',
-              'pipe:1'
-            ];
-          }
+          SSHX_URL="$(
+            grep "https://sshx.io/s/" sshx.log |
+            head -n1 |
+            xargs || true
+          )"
 
-          function spawnFFmpegProcess(id, mpdUrl, key, entry) {
-            console.log(`[FFmpeg] Spawning process for channel: ${id}`);
-            const proc = spawn('ffmpeg', buildFFmpegArgs(mpdUrl, key), {
-              stdio: ['ignore', 'pipe', 'pipe']
-            });
+          echo "🌐 Starting Bore Tunnel..."
 
-            entry.proc = proc;
-            proc.stderr.on('data', (d) => console.error('[FFmpeg Log]', d.toString().trim()));
+          bore local 5000 \
+            --to bore.pub \
+            --port "${BORE_PORT}" \
+            > bore.log 2>&1 &
 
-            proc.stdout.on('data', (chunk) => {
-              entry.ringBuffer.push(chunk);
-              entry.ringBufferSize += chunk.length;
-              while (entry.ringBufferSize > RING_BUFFER_MAX) {
-                const removed = entry.ringBuffer.shift();
-                if (removed) entry.ringBufferSize -= removed.length;
-              }
+          BORE_PID=$!
 
-              for (const res of entry.clients) {
-                if (res.writableEnded || res.destroyed) {
-                  entry.clients.delete(res);
-                  continue;
-                }
+          echo "⏳ Waiting for Bore..."
 
-                res.write(chunk);
+          for i in $(seq 1 30); do
+              sleep 1
 
-                if (res.socket && res.socket.writableLength > MAX_BACKPRESSURE_BYTES) {
-                  console.warn(`[Proxy] Client overloaded (${res.socket.writableLength} bytes queued). Disconnecting.`);
-                  res.destroy();
-                  entry.clients.delete(res);
-                }
-              }
-            });
+              if grep -q \
+                  "bore.pub:${BORE_PORT}" \
+                  bore.log 2>/dev/null; then
+                  break
+              fi
 
-            proc.on('exit', (code, signal) => {
-              console.warn(`[FFmpeg] Exited with code=${code}, signal=${signal}`);
-              if (entry.clients.size > 0 && !entry.manualKill) {
-                console.log(`[FFmpeg] Auto-restarting in 1.5s (${entry.clients.size} clients active)...`);
-                setTimeout(() => spawnFFmpegProcess(id, mpdUrl, key, entry), 1500);
-              } else {
-                CHANNELS.delete(id);
-              }
-            });
-
-            return proc;
-          }
-
-          function getOrCreateChannel(id) {
-            if (CHANNELS.has(id)) return CHANNELS.get(id);
-
-            const entry = {
-              proc: null,
-              clients: new Set(),
-              ringBuffer: [],
-              ringBufferSize: 0,
-              manualKill: false
-            };
-
-            spawnFFmpegProcess(id, MPD_URL, CLEARKEY_KEY, entry);
-            CHANNELS.set(id, entry);
-            return entry;
-          }
-
-          const server = http.createServer((req, res) => {
-            if (req.method !== 'GET') {
-              res.writeHead(405).end();
-              return;
-            }
-            if (req.url === '/favicon.ico') {
-              res.writeHead(404).end();
-              return;
-            }
-
-            console.log(`[Client Connected] ${req.url}`);
-
-            res.on('error', (err) => {
-              console.warn(`[Client Response Error] ${err.message}`);
-            });
-            if (req.socket) {
-              req.socket.on('error', (err) => {
-                console.warn(`[Client Socket Error] ${err.message}`);
-              });
-              req.socket.setNoDelay(true);
-            }
-
-            res.writeHead(200, {
-              'Content-Type': 'video/mp2t',
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Access-Control-Allow-Origin': '*',
-              'X-Accel-Buffering': 'no'
-            });
-
-            const channelEntry = getOrCreateChannel('axn');
-
-            for (const buf of channelEntry.ringBuffer) {
-              res.write(buf);
-            }
-
-            channelEntry.clients.add(res);
-
-            req.on('close', () => {
-              console.log('[Client Disconnected]');
-              channelEntry.clients.delete(res);
-              if (channelEntry.clients.size === 0) {
-                console.log('[FFmpeg] No active clients left. Stopping FFmpeg process...');
-                channelEntry.manualKill = true;
-                if (channelEntry.proc) channelEntry.proc.kill('SIGKILL');
-              }
-            });
-          });
-
-          server.keepAliveTimeout = 0;
-          server.headersTimeout = 0;
-          server.timeout = 0;
-
-          server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Ultimate Restream Proxy V3 running on port 5000');
-          });
-          EOF
-
-      - name: Start Services & Health Check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          nohup node /tmp/server.js > /tmp/proxy.log 2>&1 &
-          echo $! > /tmp/proxy.pid
-          sleep 2
-
-          nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
-          echo $! > /tmp/bore.pid
-
-          PORT_BOUND=0
-          for i in {1..20}; do
-            sleep 1
-            if grep -q "listening at bore.pub:30117" /tmp/bore.log; then
-              PORT_BOUND=1
-              break
-            fi
+              if ! kill -0 "${BORE_PID}" 2>/dev/null; then
+                  echo "❌ Bore exited unexpectedly"
+                  cat bore.log
+                  exit 1
+              fi
           done
 
-          if [ "$PORT_BOUND" -eq 0 ]; then
-            echo "❌ ERROR: Bore tunnel failed to connect."
-            cat /tmp/bore.log
-            exit 1
+          if ! kill -0 "${BORE_PID}" 2>/dev/null; then
+              echo "❌ Bore failed"
+              cat bore.log
+              exit 1
           fi
 
-          echo "=================================================="
-          echo "✅ LINK STREAM MPEG-TS PRODUCTION READY (V3):"
-          echo "👉 http://bore.pub:30117/stream.ts"
-          echo "=================================================="
+          echo "✅ Bore active:"
+          echo "   bore.pub:${BORE_PORT}"
 
-          while true; do
-            if ! kill -0 $(cat /tmp/proxy.pid) 2>/dev/null; then
-              echo "Proxy process died!"
-              cat /tmp/proxy.log
-              exit 1
-            fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "Bore process died!"
-              cat /tmp/bore.log
-              exit 1
-            fi
-            sleep 10
-          done
+          BORE_IP="$(dig +short bore.pub | tail -n1 || true)"
+
+          if [ -n "${BORE_IP}" ]; then
+              echo "📡 bore.pub IP: ${BORE_IP}"
+
+              curl -fsS \
+                "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" \
+                || true
+          else
+              echo "⚠️ Could not resolve bore.pub"
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          export PUBLIC_BASE_URL="${PUBLIC_URL}"
+
+          echo ""
+          echo "===================================================="
+          echo "🚀 IPTV PROXY ACTIVE"
+          echo "===================================================="
+          echo "🌐 Bore        : bore.pub"
+          echo "🔌 Port        : ${BORE_PORT}"
+          echo "🌍 Public URL : ${PUBLIC_URL}"
+          echo "🔑 SSHX        : ${SSHX_URL}"
+          echo ""
+          echo "📺 Playlist:"
+          echo "${PUBLIC_URL}/playlist.m3u"
+          echo ""
+          echo "📺 DreamWorks:"
+          echo "${PUBLIC_URL}/stream/dreamworks"
+          echo ""
+          echo "📺 TV360+9:"
+          echo "${PUBLIC_URL}/stream/tv360-9"
+          echo ""
+          echo "📺 TV360+10:"
+          echo "${PUBLIC_URL}/stream/tv360-10"
+          echo ""
+          echo "📺 Discovery Asia:"
+          echo "${PUBLIC_URL}/stream/asia"
+          echo ""
+          echo "📺 Southeast Asia:"
+          echo "${PUBLIC_URL}/stream/dsc"
+          echo "===================================================="
+          echo ""
+
+          echo "🔥 Starting Gunicorn..."
+
+          exec gunicorn \
+            -w 12 \
+            --threads 8 \
+            --access-logfile - \
+            --error-logfile - \
+            --keep-alive 15 \
+            --bind 0.0.0.0:5000 \
+            app:app
+          BASH
+
+          chmod +x start_proxy.sh
+
+          echo "🔍 Checking shell syntax..."
+
+          bash -n start_proxy.sh
+
+          echo "✅ start_proxy.sh syntax OK"
+
+          ./start_proxy.sh
