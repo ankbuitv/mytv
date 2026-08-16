@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: axn-hls-proxy
+    env: docker
+    plan: free
+    region: singapore
+    envVars:
+      - key: MPD_URL
+        value: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/axn.smil/manifest.mpd"
+      - key: CLEARKEY_KEY
+        value: "6f1c09c035eab36323d60d1454db3d20"
+      - key: BORE_PORT
+        value: "30117"
