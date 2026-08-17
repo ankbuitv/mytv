@@ -114,7 +114,7 @@ jobs:
           echo $! > /tmp/ffmpeg.pid
 
           # 3. Bore Tunnel - tự chờ remote port rảnh
-          BORE_PORT=30118
+          BORE_PORT=30117
 
           echo "🌐 Đang tìm bore.pub:${BORE_PORT}..."
 
