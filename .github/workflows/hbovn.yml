@@ -1,38 +1,63 @@
-name: HBOVN
+name: HLS Restream - HBO Asia 1080p (Cron Auto Restart)
 
 on:
   workflow_dispatch:
   schedule:
-    # Tự khởi chạy lại sau mỗi 5 giờ để nối luồng liên tục
+    # Tự khởi chạy lại sau mỗi 6 tiếng để nối luồng liên tục
     - cron: '59 5,11,17,23 * * *'
 
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Tự ngắt sau 5h 50m nhường cho job cron mới
+    timeout-minutes: 350 # GitHub chặn cứng 360 phút, để 350 cho an toàn
 
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
+      CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
-      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
-      REFERER: "https://mytv.com.vn/"
+      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+      REFERER: "https://www.mytvnet.vn/"
+      ORIGIN: "https://www.mytvnet.vn"
+      BORE_PORT: "30121"
+      HLS_DIR: "/dev/shm/hls/hbo"
+      HLS_SERVER_PORT: "5000"
+      # MODE:
+      #   auto       = thử copy (remux) trước, lỗi thì tự đổi sang transcode
+      #   copy       = chỉ remux sau khi giải mã ClearKey (mượt nhất, không encode)
+      #   transcode  = luôn encode lại H.264
+      MODE: "auto"
+      # Bắt đầu trễ hơn live edge 6 segment (~30s) để có bộ đệm, hết giật
+      LIVE_START_INDEX: "-6"
 
     steps:
-      - name: Install System Dependencies
+      - name: Cài đặt công cụ
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
+          sudo apt-get install -y -qq curl ffmpeg
+          ffmpeg -version | head -1
 
+          # Bore tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          mkdir -p /dev/shm/hls/boxhits
+          mkdir -p "${HLS_DIR}"
 
-      - name: Create HLS Server
+      - name: Chẩn đoán luồng nguồn (xem index stream để chỉnh -map nếu cần)
+        shell: bash
+        run: |
+          echo "=== Các stream trong MPD ==="
+          ffprobe -v error \
+            -cenc_decryption_key "$CLEARKEY_KEY" \
+            -show_entries stream=index,codec_name,codec_type,profile,width,height,avg_frame_rate \
+            -of compact=p=0:nk=0 \
+            "$MPD_URL" 2>&1 | head -40 || true
+          echo "=== Xong ==="
+
+      - name: Tạo HLS server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -40,7 +65,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const HLS_DIR = '/dev/shm/hls/boxhits';
+          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls/hbo';
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
@@ -77,157 +102,180 @@ jobs:
             });
           });
 
-          server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Server started on port 5000...');
+          server.listen(process.env.HLS_SERVER_PORT || 5000, '0.0.0.0', () => {
+            console.log('Server started on port ' + (process.env.HLS_SERVER_PORT || 5000));
           });
           EOF
+          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          sleep 1
+          kill -0 "$(cat /tmp/server.pid)" && echo "HLS server OK"
 
-      - name: Start Services & FFmpeg (Map Stream 0:3 - 1080p Gốc)
+      - name: Restream chính (copy trước, tự fallback + tự phục hồi)
         shell: bash
         run: |
           set -euo pipefail
 
-          # 1. Server
-          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-          echo $! > /tmp/server.pid
+          # CRLF thật sự cho header (dùng $'' thay vì "\r\n" để ffmpeg đọc đúng)
+          CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # 2. FFmpeg: Ép map 0:3 (Stream V3 1080p) và 0:4 (Audio A0)
-          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://mytv.com.vn\r\n"
-          
-          nohup ffmpeg -hide_banner -loglevel warning \
-            -user_agent "$USER_AGENT" \
-            -headers "$CUSTOM_HEADERS" \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -fflags +genpts+discardcorrupt+nobuffer \
-            -i "$MPD_URL" \
-            -map 0:3 -map 0:4 \
-            -c:v libx264 -preset ultrafast -tune zerolatency \
-            -crf 18 -maxrate 6000k -bufsize 12000k \
-            -g 50 -r 25 -pix_fmt yuv420p \
-            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
-            -f hls \
-            -hls_time 2 \
-            -hls_list_size 10 \
-            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
-            -hls_segment_filename "/dev/shm/hls/boxhits/segment_%03d.ts" \
-            /dev/shm/hls/boxhits/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
-          echo $! > /tmp/ffmpeg.pid
+          pid_alive() {
+            [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null
+          }
 
-          # 3. Bore Tunnel - tự chờ remote port rảnh
-          BORE_PORT=30121
+          start_ffmpeg() {
+            local MODE="$1"
+            local ARGS
 
-          echo "🌐 Đang tìm bore.pub:${BORE_PORT}..."
+            if [ "$MODE" = "copy" ]; then
+              # Giải mã ClearKey rồi remux thẳng -> không encode -> không tụt video
+              ARGS="-map 0:v:0 -map 0:a:0 -c copy"
+            else
+              # Dự phòng: encode lại H.264 (dùng khi copy lỗi vì codec lạ)
+              # Không ép -r 25 cứng nữa (HBO có thể 50/60fps), keyframe theo thời gian
+              ARGS="-map 0:v:0 -map 0:a:0 \
+                -c:v libx264 -preset veryfast -tune zerolatency \
+                -crf 19 -maxrate 5000k -bufsize 10000k \
+                -pix_fmt yuv420p -fps_mode cfr \
+                -force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0 \
+                -c:a aac -b:a 160k -ar 48000 -ac 2 -af aresample=async=1000"
+            fi
 
+            rm -f "${HLS_DIR}"/index.m3u8 "${HLS_DIR}"/segment_*.ts
+
+            nohup ffmpeg -hide_banner -loglevel warning \
+              -user_agent "$USER_AGENT" \
+              -headers "$CUSTOM_HEADERS" \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 10 \
+              -rw_timeout 20000000 \
+              -live_start_index "$LIVE_START_INDEX" \
+              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -fflags +genpts+discardcorrupt \
+              -i "$MPD_URL" \
+              $ARGS \
+              -max_muxing_queue_size 4096 \
+              -f hls \
+              -hls_time 2 -hls_list_size 12 \
+              -hls_flags delete_segments+omit_endlist+append_list+temp_file+independent_segments+program_date_time \
+              -hls_segment_filename "${HLS_DIR}/segment_%03d.ts" \
+              "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
+            echo $! > /tmp/ffmpeg.pid
+          }
+
+          wait_hls_ready() {
+            local LIMIT="${1:-120}"
+            for i in $(seq 1 "$LIMIT"); do
+              if [ -s "${HLS_DIR}/index.m3u8" ] && ls "${HLS_DIR}"/segment_*.ts >/dev/null 2>&1; then
+                echo "HLS da san sang (sau ${i}s)"
+                return 0
+              fi
+              if ! pid_alive /tmp/ffmpeg.pid; then
+                return 1
+              fi
+              sleep 1
+            done
+            return 1
+          }
+
+          # ---------- 1. Khởi động ffmpeg lần đầu (kèm fallback copy -> transcode) ----------
+          MODE_CURRENT="$MODE"
+          if [ "$MODE_CURRENT" = "auto" ]; then MODE_CURRENT="copy"; fi
+
+          start_ffmpeg "$MODE_CURRENT"
+          if ! wait_hls_ready 120; then
+            echo "Mode $MODE_CURRENT khong chay duoc, thu transcode..."
+            tail -n 40 /tmp/ffmpeg.log || true
+            if [ "$MODE" = "auto" ] && [ "$MODE_CURRENT" = "copy" ]; then
+              MODE_CURRENT="transcode"
+              start_ffmpeg "$MODE_CURRENT"
+              if ! wait_hls_ready 120; then
+                echo "Ca 2 mode deu fail!"
+                tail -n 40 /tmp/ffmpeg.log || true
+                exit 1
+              fi
+            else
+              exit 1
+            fi
+          fi
+
+          # ---------- 2. Bore tunnel port 30121 (tự thử lại khi port bận) ----------
+          echo "Dang tim bore.pub:${BORE_PORT}..."
           while true; do
-            echo "🔍 Đang thử lấy bore.pub:${BORE_PORT}..."
-
             rm -f /tmp/bore.log
-
-            bore local 5000 \
+            bore local "${HLS_SERVER_PORT}" \
               --to bore.pub \
               --port "${BORE_PORT}" \
               > /tmp/bore.log 2>&1 &
-
-            BORE_PID=$!
-            echo "$BORE_PID" > /tmp/bore.pid
+            echo $! > /tmp/bore.pid
 
             PORT_READY=0
-
-            # Cho Bore tối đa 30 giây để bind remote port
             for i in {1..30}; do
               sleep 1
-
-              if grep -qiE \
-                "bound to remote port|bore.pub:${BORE_PORT}" \
-                /tmp/bore.log 2>/dev/null; then
-
+              if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
                 PORT_READY=1
                 break
               fi
-
-              if ! kill -0 "$BORE_PID" 2>/dev/null; then
-                break
-              fi
+              if ! pid_alive /tmp/bore.pid; then break; fi
             done
 
             if [ "$PORT_READY" -eq 1 ]; then
-              echo "✅ Bore đã chiếm được port ${BORE_PORT}!"
+              echo "Bore da chiem duoc port ${BORE_PORT}!"
               break
             fi
 
-            echo "⚠️ Chưa lấy được bore.pub:${BORE_PORT}"
-            echo "----- Bore log -----"
-            cat /tmp/bore.log 2>/dev/null || true
-            echo "--------------------"
-
-            kill "$BORE_PID" 2>/dev/null || true
-            wait "$BORE_PID" 2>/dev/null || true
-
-            echo "⏳ Chờ 15 giây rồi thử lại..."
+            echo "Chua lay duoc bore.pub:${BORE_PORT}, thu lai sau 15s..."
+            kill "$(cat /tmp/bore.pid)" 2>/dev/null || true
             sleep 15
           done
 
-          echo "=================================================="
-          echo "🌐 BORE READY"
-          echo "👉 http://bore.pub:${BORE_PORT}/index.m3u8"
-          echo "=================================================="
-          
-          echo "⏳ Đang chờ FFmpeg tạo HLS..."
-          STREAM_READY=0
-
-          for i in {1..120}; do
-            if [ -f "/dev/shm/hls/hc/index.m3u8" ]; then
-              STREAM_READY=1
-              echo "✅ HLS Stream Ready!"
-              break
-            fi
-
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
-              echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
-              echo "----- FFmpeg log -----"
-              tail -n 100 /tmp/ffmpeg.log || true
-              echo "----------------------"
-              exit 1
-            fi
-
-            sleep 1
-          done
-
-          if [ "$STREAM_READY" -ne 1 ]; then
-            echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
-            tail -n 100 /tmp/ffmpeg.log || true
-            exit 1
+          # Kiểm tra tunnel end-to-end
+          if curl -sf -m 20 "http://bore.pub:${BORE_PORT}/index.m3u8" -o /dev/null; then
+            echo "Tunnel OK - playlist phuc vu duoc qua bore.pub:${BORE_PORT}"
+          else
+            echo "Canh bao: chua curl duoc playlist (ffmpeg co the dang khoi dong lai)"
           fi
 
-          # 4. Timer 5h 59m (21540s)
+          echo "=================================================="
+          echo "URL: http://bore.pub:${BORE_PORT}/index.m3u8"
+          echo "Mode dang chay: ${MODE_CURRENT}"
+          echo "=================================================="
+
+          # ---------- 3. Vòng giám sát: tự restart ffmpeg, canh server/bore, hết giờ thì thoát ----------
           START_TIME=$(date +%s)
-          LIMIT_SECONDS=21540
+          LIMIT_SECONDS=20940 # 5h49m, thoát trước khi GitHub kill ở 350 phút
 
           while true; do
             NOW=$(date +%s)
-            ELAPSED=$(( NOW - START_TIME ))
+            ELAPSED=$((NOW - START_TIME))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
+              echo "Het gio (5h49m), thoát nhường cron job moi..."
               exit 0
             fi
 
-            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
-              echo "❌ Server crashed! Log:"
-              cat /tmp/server.log
-              exit 1
+            if ! pid_alive /tmp/server.pid; then
+              echo "HLS server chet!"; cat /tmp/server.log; exit 1
             fi
-
-            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then
-              echo "❌ FFmpeg crashed! Log:"
-              cat /tmp/ffmpeg.log
-              exit 1
+            if ! pid_alive /tmp/bore.pid; then
+              echo "Bore tunnel chet!"; cat /tmp/bore.log; exit 1
             fi
-
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "❌ Bore Tunnel crashed! Log:"
-              cat /tmp/bore.log
-              exit 1
+            if ! pid_alive /tmp/ffmpeg.pid; then
+              echo "FFmpeg thoat, khoi dong lai..."
+              tail -n 30 /tmp/ffmpeg.log || true
+              if [ "$MODE" = "auto" ]; then
+                # Đảo mode mỗi lần chết: copy -> transcode -> copy -> ...
+                if [ "$MODE_CURRENT" = "copy" ]; then
+                  MODE_CURRENT="transcode"
+                else
+                  MODE_CURRENT="copy"
+                fi
+              fi
+              start_ffmpeg "$MODE_CURRENT"
+              if ! wait_hls_ready 120; then
+                echo "Khong tao duoc HLS o mode $MODE_CURRENT, thoat..."
+                tail -n 50 /tmp/ffmpeg.log || true
+                exit 1
+              fi
             fi
 
             sleep 10
