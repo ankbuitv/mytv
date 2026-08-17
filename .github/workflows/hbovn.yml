@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Transcode 2s + SSHX Debug)
+name: HLS Restream - HBO Asia (HLS Source + Transcode 2s)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 350
 
     env:
+      # ==== NGUỒN HLS (ưu tiên) - không cần ClearKey ====
+      HLS_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/playlist.m3u8"
+      # ==== NGUỒN MPD (dự phòng, chỉ dùng khi HLS fail) ====
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -19,213 +22,154 @@ jobs:
       BORE_PORT: "30121"
       HLS_DIR: "/dev/shm/hls/hbo"
       HLS_SERVER_PORT: "5000"
-      MAP_V: "0:v:0"           # 1080p. CDN bóp băng thông thì đổi 0:v:1 (720p)
+      MAP_V: "0:v:0"           # 1080p; CDN yếu thì 0:v:1 (720p)
       MAP_A: "0:a:0"
-      X264_PRESET: "veryfast"  # 4 vCPU chạy khỏe; thử "fast" nếu CPU thừa
-      LIVE_START_INDEX: "-6"   # trễ nguồn ~30s để có bộ đệm đầu nguồn
-      USE_BORE: "true"         # bore.pub:30121 (dự phòng)
-      USE_CLOUDFLARED: "true"  # trycloudflare.com (URL chính)
+      X264_PRESET: "veryfast"
+      USE_BORE: "true"
+      USE_CLOUDFLARED: "true"
       SSHX_NAME: "HBO-Restream"
 
     steps:
-      - name: Cài đặt công cụ (ffmpeg 7.x tĩnh, bore, cloudflared, sshx)
+      - name: Cài đặt công cụ (ffmpeg tĩnh, bore, cloudflared, sshx)
         shell: bash
         run: |
           set -euo pipefail
-
-          # ---------- FFmpeg tĩnh mới nhất (có -live_start_index) ----------
-          # BtbN GPL build gồm cả libx264. Thất bại thì fallback ffmpeg 6.1.1 apt
-          echo "Dang tai ffmpeg tinh (master)..."
-          curl -fL --retry 3 -m 300 \
-            -o /tmp/ff.tar.xz \
+          curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl \
-            || echo "Khong tai duoc ffmpeg tinh - dung ffmpeg apt 6.1.1"
+            || echo "Fallback apt ffmpeg"
+          ffmpeg -version | head -1
 
-          ffmpeg -version | head -2
-          if ffmpeg -hide_banner -h demuxer=dash 2>&1 | grep -q 'live_start_index'; then
-            echo "OK: ffmpeg co live_start_index"
-          else
-            echo "WARN: khong co live_start_index (se bo qua)"
-          fi
-
-          # ---------- Bore tunnel ----------
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # ---------- Cloudflared ----------
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           sudo install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared
           cloudflared --version || true
 
-          # ---------- SSHX (script chay root tren runner nen tu cai vao /usr/local/bin) ----------
-          curl -sSf https://sshx.io/get | sh || echo "sshx install fail (khong chet workflow)"
+          curl -sSf https://sshx.io/get | sh || true
           SSHX_BIN="$(command -v sshx || true)"
-          if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.local/bin/sshx" ]; then
-            SSHX_BIN="$HOME/.local/bin/sshx"
-          fi
+          if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.local/bin/sshx" ]; then SSHX_BIN="$HOME/.local/bin/sshx"; fi
           if [ -n "$SSHX_BIN" ] && [ "$SSHX_BIN" != "/usr/local/bin/sshx" ]; then
             sudo install -m 755 "$SSHX_BIN" /usr/local/bin/sshx
           fi
-          command -v sshx >/dev/null 2>&1 && sshx --version || echo "WARN: sshx khong san sang"
+          command -v sshx >/dev/null 2>&1 && sshx --version || echo "WARN: khong co sshx"
 
           mkdir -p "${HLS_DIR}"
 
-      - name: Chẩn đoán (streams + tốc độ CDN thực tế)
+      - name: Chẩn đoán nguồn (HLS có mã hoá không + tốc độ CDN)
         shell: bash
         run: |
-          echo "=== Streams trong MPD ==="
-          ffprobe -v error \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -show_entries stream=index,codec_name,codec_type,width,height,avg_frame_rate \
-            -of compact=p=0:nk=0 \
-            "$MPD_URL" 2>&1 | head -20 || true
-
+          UA_="$USER_AGENT"
+          echo "=== chunklist 1080p (30 dong dau) ==="
+          curl -s -m 15 -A "$UA_" -H "Referer: ${REFERER}" \
+            "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/chunklist_b4628000.m3u8" | head -30 || true
           echo ""
-          echo "=== Toc do tai segment tu CDN (do tu runner) ==="
-          MPD_TMP=/tmp/mpd_diag.xml
-          if curl -fsSL -m 30 -A "$USER_AGENT" \
-               -H "Referer: ${REFERER}" -H "Origin: ${ORIGIN}" \
-               "$MPD_URL" -o "$MPD_TMP" 2>/dev/null; then
-            SEG_URL=$(grep -oE 'https?://[^"<> ]+' "$MPD_TMP" \
-                      | grep -iE '\.(m4s|mp4|ts)(\?|$)' | head -1 || true)
-            [ -z "$SEG_URL" ] && SEG_URL=$(grep -oE 'https?://[^"<> ]+' "$MPD_TMP" | head -1 || true)
-            if [ -n "$SEG_URL" ]; then
-              echo "Segment URL: ${SEG_URL:0:120}..."
-              curl -fsSL -m 20 -A "$USER_AGENT" \
-                   -H "Referer: ${REFERER}" -H "Origin: ${ORIGIN}" \
-                   -o /dev/null \
-                   -w 'speed=%{speed_download} B/s | size=%{size_download} B | time=%{time_total}s\n' \
-                   "$SEG_URL" \
-                || echo "!!! Tai segment that bai - CDN co the dang chan IP runner (Mỹ/EU)"
-            else
-              echo "Khong tim thay URL segment nao trong MPD"
-            fi
+          echo "=== toc do tai 1 segment (3 lan) ==="
+          SEG=$(curl -s -m 15 -A "$UA_" -H "Referer: ${REFERER}" \
+            "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/chunklist_b4628000.m3u8" \
+            | grep -vE '^#' | head -1 || true)
+          if [ -n "$SEG" ]; then
+            for n in 1 2 3; do
+              curl -fsSL -m 30 -A "$UA_" -H "Referer: ${REFERER}" -H "Origin: ${ORIGIN}" \
+                -o /dev/null -w "lan $n: %{speed_download} B/s | %{size_download} B | %{time_total}s\n" \
+                "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/${SEG}" || echo "lan $n: FAIL"
+            done
           else
-            echo "Khong tai duoc MPD de do toc do"
+            echo "Khong lay duoc segment URL tu chunklist"
           fi
           echo "=== Xong ==="
 
-      - name: Tạo HLS server (Range + HEAD + /status)
+      - name: Tạo HLS server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
-
           const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls/hbo';
           const PORT = parseInt(process.env.HLS_SERVER_PORT || '5000', 10);
-
-          const mime = (p) =>
-            p.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' :
-            p.endsWith('.ts')   ? 'video/mp2t' : 'application/octet-stream';
-
+          const mime = p => p.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : p.endsWith('.ts') ? 'video/mp2t' : 'application/octet-stream';
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.setHeader('Connection', 'keep-alive');
-
             if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-
             const urlPath = req.url.split('?')[0];
             if (urlPath === '/status') {
               let m3u8Age = -1, segCount = 0, ffAlive = false;
-              try {
-                const st = fs.statSync(path.join(HLS_DIR, 'index.m3u8'));
-                m3u8Age = Math.round((Date.now() - st.mtimeMs) / 1000);
-              } catch (e) {}
-              try { segCount = fs.readdirSync(HLS_DIR).filter(f => f.endsWith('.ts')).length; } catch (e) {}
-              try { ffAlive = fs.existsSync('/tmp/ffmpeg.pid') && process.kill(parseInt(fs.readFileSync('/tmp/ffmpeg.pid','utf8'),10), 0); } catch (e) {}
-              const body = JSON.stringify({ m3u8Age, segCount, ffmpegAlive: ffAlive });
-              res.setHeader('Content-Type', 'application/json');
-              res.end(body);
-              return;
+              try { m3u8Age = Math.round((Date.now() - fs.statSync(path.join(HLS_DIR,'index.m3u8')).mtimeMs)/1000); } catch(e){}
+              try { segCount = fs.readdirSync(HLS_DIR).filter(f=>f.endsWith('.ts')).length; } catch(e){}
+              try { ffAlive = process.kill(parseInt(fs.readFileSync('/tmp/ffmpeg.pid','utf8'),10),0); } catch(e){}
+              res.setHeader('Content-Type','application/json');
+              return res.end(JSON.stringify({ m3u8Age, segCount, ffmpegAlive: ffAlive }));
             }
-
             let fileName = urlPath.replace('/', '');
             if (!fileName) fileName = 'index.m3u8';
             const filePath = path.join(HLS_DIR, fileName);
-
             if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
-
             const stat = fs.statSync(filePath);
             const headers = { 'Content-Type': mime(filePath), 'Accept-Ranges': 'bytes', 'Content-Length': stat.size };
-
             if (req.method === 'HEAD') { res.writeHead(200, headers); return res.end(); }
-
             const range = req.headers.range;
             if (range) {
-              const parts = range.replace(/bytes=/, '').split('-');
-              const start = Math.min(parseInt(parts[0],10) || 0, stat.size - 1);
-              const end = parts[1] ? Math.min(parseInt(parts[1],10), stat.size - 1) : stat.size - 1;
-              res.writeHead(206, {
-                ...headers,
-                'Content-Range': 'bytes ' + start + '-' + end + '/' + stat.size,
-                'Content-Length': end - start + 1,
-              });
-              fs.createReadStream(filePath, { start, end }).pipe(res);
-            } else {
-              res.writeHead(200, headers);
-              fs.createReadStream(filePath).pipe(res);
+              const parts = range.replace(/bytes=/,'').split('-');
+              const start = Math.min(parseInt(parts[0],10)||0, stat.size-1);
+              const end = parts[1] ? Math.min(parseInt(parts[1],10), stat.size-1) : stat.size-1;
+              res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Content-Length': end-start+1 });
+              return fs.createReadStream(filePath,{start,end}).pipe(res);
             }
+            res.writeHead(200, headers);
+            fs.createReadStream(filePath).pipe(res);
           });
-
           server.listen(PORT, '0.0.0.0', () => console.log('HLS server on ' + PORT));
           EOF
-
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
           sleep 1
           kill -0 "$(cat /tmp/server.pid)" && echo "HLS server OK"
-          curl -s "http://localhost:${HLS_SERVER_PORT}/status" || true
 
       - name: SSHX - web terminal debug
         shell: bash
         run: |
           nohup sshx --quiet --name "${SSHX_NAME}" > /tmp/sshx.log 2>&1 &
           echo $! > /tmp/sshx.pid
-
           SSHX_URL=""
           for i in {1..30}; do
             SSHX_URL=$(grep -oE 'https://sshx\.io/s/[^ ]+' /tmp/sshx.log 2>/dev/null | head -1 || true)
             [ -n "$SSHX_URL" ] && break
-            if ! kill -0 "$(cat /tmp/sshx.pid 2>/dev/null)" 2>/dev/null; then
-              echo "SSHX khong khoi dong duoc:"; cat /tmp/sshx.log; break
-            fi
+            if ! kill -0 "$(cat /tmp/sshx.pid 2>/dev/null)" 2>/dev/null; then echo "SSHX fail:"; cat /tmp/sshx.log; break; fi
             sleep 1
           done
-
           if [ -n "$SSHX_URL" ]; then
             echo "$SSHX_URL" > /tmp/sshx.url
-            echo "=================================================="
             echo "SSHX TERMINAL: ${SSHX_URL}"
-            echo "=================================================="
             { echo "### SSHX Terminal"; echo "${SSHX_URL}"; } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "SSHX khong tao duoc link"
           fi
 
-      - name: Restream chính (transcode 2s + watchdog tự phục hồi)
+      - name: Restream chính (HLS first -> MPD fallback, transcode 2s)
         shell: bash
         run: |
           set -euo pipefail
 
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # live_start_index: chỉ ffmpeg 7.x+ có -> kiểm tra trước khi dùng
-          LIVE_ARGS=""
+          # live_start_index: HLS demuxer co san; DASH chi neu co
+          HLS_LIVE_ARGS=""
+          if ffmpeg -hide_banner -h demuxer=hls 2>&1 | grep -q 'live_start_index'; then
+            HLS_LIVE_ARGS="-live_start_index -6"
+          fi
+          MPD_LIVE_ARGS=""
           if ffmpeg -hide_banner -h demuxer=dash 2>&1 | grep -q 'live_start_index'; then
-            LIVE_ARGS="-live_start_index ${LIVE_START_INDEX}"
-            echo "Dung live_start_index=${LIVE_START_INDEX}"
-          else
-            echo "ffmpeg 6.1 - bo qua live_start_index"
+            MPD_LIVE_ARGS="-live_start_index -6"
           fi
 
           pid_alive() {
@@ -233,36 +177,36 @@ jobs:
           }
 
           start_ffmpeg() {
-            local MODE="$1"
-            local ARGS
+            local SRC="$1" MODE="$2"
+            local INPUT_ARGS=""
+            if [ "$SRC" = "hls" ]; then
+              INPUT_ARGS="$HLS_LIVE_ARGS -i ${HLS_URL}"
+            else
+              INPUT_ARGS="$MPD_LIVE_ARGS -cenc_decryption_key ${CLEARKEY_KEY} -i ${MPD_URL}"
+            fi
 
+            local ARGS=""
             if [ "$MODE" = "copy" ]; then
-              # Dự phòng cuối: remux thẳng (segment dài theo keyframe nguồn)
               ARGS="-map ${MAP_V} -map ${MAP_A} -c copy"
             else
-              # Mặc định: transcode video + audio, keyframe 2s -> segment 2s
               ARGS="-map ${MAP_V} -map ${MAP_A} \
                 -c:v libx264 -preset ${X264_PRESET} -tune zerolatency \
                 -crf 19 -maxrate 5500k -bufsize 11000k \
                 -pix_fmt yuv420p -fps_mode cfr \
                 -force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0 \
-                -c:a aac -b:a 160k -ar 48000 -ac 2 -af aresample=async=1"
+                -c:a aac -b:a 160k -ar 48000 -ac 2 -af aresample=async=1000"
             fi
 
-            # Chỉ xoá playlist cũ (playlist mới), GIỮ segment cũ -> player không mất buffer
             rm -f "${HLS_DIR}/index.m3u8"
 
-            nohup ffmpeg -hide_banner -loglevel warning -stats_period 30 \
+            nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 403,429,500,502,503,504 \
               -reconnect_delay_max 10 \
               -rw_timeout 15000000 \
-              $LIVE_ARGS \
-              -cenc_decryption_key "$CLEARKEY_KEY" \
-              -fflags +genpts+discardcorrupt \
-              -i "$MPD_URL" \
+              $INPUT_ARGS \
               $ARGS \
               -max_muxing_queue_size 4096 \
               -f hls \
@@ -272,6 +216,7 @@ jobs:
               -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
               "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
+            echo "start: src=${SRC} mode=${MODE} pid=$(cat /tmp/ffmpeg.pid)"
           }
 
           wait_hls_ready() {
@@ -287,158 +232,129 @@ jobs:
             return 1
           }
 
-          restart_ffmpeg_robust() {
-            start_ffmpeg "$MODE_CURRENT"
-            if wait_hls_ready 90; then
-              echo "OK - mode ${MODE_CURRENT}"
-              return 0
-            fi
-            if [ "$MODE" = "auto" ] || [ "$MODE" = "transcode" ]; then
-              if [ "$MODE_CURRENT" = "copy" ]; then MODE_CURRENT="transcode"; else MODE_CURRENT="copy"; fi
-              echo "Doi mode sang: ${MODE_CURRENT}"
-              start_ffmpeg "$MODE_CURRENT"
+          # Chuoi fallback: HLS transcode -> HLS copy -> MPD transcode -> MPD copy
+          COMBOS=("hls:transcode" "hls:copy" "mpd:transcode" "mpd:copy")
+          COMBO_COUNT=${#COMBOS[@]}
+          CURRENT_IDX=0
+
+          restart_robust() {
+            local start_idx="$1"
+            for ((i=start_idx; i<COMBO_COUNT; i++)); do
+              local combo="${COMBOS[$i]}"
+              local src="${combo%%:*}" mode="${combo##*:}"
+              echo "Thu: src=${src} mode=${mode}"
+              start_ffmpeg "$src" "$mode"
               if wait_hls_ready 90; then
-                echo "OK - mode ${MODE_CURRENT}"
+                CURRENT_IDX=$i
                 return 0
               fi
-            fi
-            echo "FAIL - khong tao duoc HLS"
-            tail -n 40 /tmp/ffmpeg.log || true
+              tail -n 15 /tmp/ffmpeg.log || true
+            done
             return 1
           }
 
-          # ---------- 1. Khởi động: transcode trước, copy fallback ----------
-          MODE="auto"
-          MODE_CURRENT="transcode"
+          # ---------- 1. Khởi động ffmpeg ----------
+          if ! restart_robust 0; then
+            echo "Tat ca combo deu fail!"
+            exit 1
+          fi
 
-          if ! restart_ffmpeg_robust; then exit 1; fi
-
-          # ---------- 2. Bore tunnel port 30121 (dự phòng) ----------
+          # ---------- 2. Bore tunnel (dự phòng) ----------
           BORE_URL=""
           if [ "${USE_BORE}" = "true" ]; then
-            echo "Dang tim bore.pub:${BORE_PORT}..."
-            BORE_TRY=0
-            while [ "$BORE_TRY" -lt 10 ]; do
-              BORE_TRY=$((BORE_TRY+1))
+            for try in {1..10}; do
               rm -f /tmp/bore.log
-              bore local "${HLS_SERVER_PORT}" \
-                --to bore.pub \
-                --port "${BORE_PORT}" \
-                > /tmp/bore.log 2>&1 &
+              bore local "${HLS_SERVER_PORT}" --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
-
-              PORT_READY=0
+              OK=0
               for i in {1..30}; do
                 sleep 1
-                if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
-                  PORT_READY=1; break
-                fi
+                if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then OK=1; break; fi
                 if ! pid_alive /tmp/bore.pid; then break; fi
               done
-
-              if [ "$PORT_READY" -eq 1 ]; then
-                echo "Bore OK: bore.pub:${BORE_PORT}"
-                BORE_URL="http://bore.pub:${BORE_PORT}/index.m3u8"
-                break
-              fi
-              echo "Lan $BORE_TRY: chua lay duoc port, thu lai sau 15s..."
+              if [ "$OK" -eq 1 ]; then BORE_URL="http://bore.pub:${BORE_PORT}/index.m3u8"; echo "Bore OK: ${BORE_URL}"; break; fi
+              echo "Thu lan ${try}: chua lay duoc bore port, cho 15s..."
               kill "$(cat /tmp/bore.pid)" 2>/dev/null || true
               sleep 15
             done
-            [ -z "$BORE_URL" ] && echo "Bo qua bore (khong lay duoc port sau 10 lan)"
+            [ -z "$BORE_URL" ] && echo "Bo qua bore"
           fi
 
           # ---------- 3. Cloudflared quick tunnel (URL chính) ----------
           CF_URL=""
           if [ "${USE_CLOUDFLARED}" = "true" ]; then
-            echo "Khoi dong cloudflared quick tunnel..."
             nohup cloudflared tunnel --no-autoupdate \
-              --url "http://localhost:${HLS_SERVER_PORT}" \
-              > /tmp/cloudflared.log 2>&1 &
+              --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cloudflared.log 2>&1 &
             echo $! > /tmp/cloudflared.pid
-
             for i in {1..60}; do
               CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1 || true)
               [ -n "$CF_URL" ] && break
-              if ! pid_alive /tmp/cloudflared.pid; then
-                echo "Cloudflared chet:"; tail -n 20 /tmp/cloudflared.log; break
-              fi
+              if ! pid_alive /tmp/cloudflared.pid; then echo "cloudflared chet:"; tail -n 20 /tmp/cloudflared.log; break; fi
               sleep 2
             done
           fi
 
-          # ---------- 4. Tổng kết URL ----------
-          echo "=================================================="
-          [ -n "$CF_URL" ]  && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
-          [ -n "$BORE_URL" ] && echo "URL DU PHONG (bore):      ${BORE_URL}"
+          # ---------- 4. Tổng kết ----------
           SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
-          [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL: ${SSHX_URL}"
-          echo "Status: http://localhost:${HLS_SERVER_PORT}/status"
-          echo "Mode dang chay: ${MODE_CURRENT}"
+          COMBO="${COMBOS[$CURRENT_IDX]}"
           echo "=================================================="
-
+          [ -n "$CF_URL" ] && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
+          [ -n "$BORE_URL" ] && echo "URL DU PHONG (bore):      ${BORE_URL}"
+          [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL: ${SSHX_URL}"
+          echo "Dang chay: ${COMBO}"
+          echo "Status:    http://localhost:${HLS_SERVER_PORT}/status"
+          echo "=================================================="
           {
             echo "### HBO Restream"
-            [ -n "$CF_URL" ]  && echo "- URL chinh (Cloudflare): ${CF_URL}/index.m3u8"
-            [ -n "$BORE_URL" ] && echo "- URL du phong (bore): ${BORE_URL}"
+            [ -n "$CF_URL" ] && echo "- URL chinh: ${CF_URL}/index.m3u8"
+            [ -n "$BORE_URL" ] && echo "- URL phu: ${BORE_URL}"
             [ -n "$SSHX_URL" ] && echo "- SSHX: ${SSHX_URL}"
+            echo "- combo: ${COMBO}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           # ---------- 5. Watchdog ----------
           START_TIME=$(date +%s)
-          LIMIT_SECONDS=20940 # 5h49m, thoát trước GitHub kill (350 phút)
+          LIMIT_SECONDS=20940
           LAST_HEALTH=0
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_TIME))
-
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "Het gio (5h49m), thoát nhường cron job moi..."
+              echo "Het gio, thoát nhường cron job moi..."
               exit 0
             fi
 
-            if ! pid_alive /tmp/server.pid; then
-              echo "HLS server chet!"; cat /tmp/server.log; exit 1
-            fi
+            if ! pid_alive /tmp/server.pid; then echo "HLS server chet!"; cat /tmp/server.log; exit 1; fi
 
-            # Janitor: dọn segment mồ côi (sau restart) khỏi /dev/shm
             find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +6 -delete 2>/dev/null || true
 
-            # Bore: tự khởi động lại nếu chết
             if [ "${USE_BORE}" = "true" ] && [ -n "$BORE_URL" ] && ! pid_alive /tmp/bore.pid; then
-              echo "Bore chet, khoi dong lai..."
               nohup bore local "${HLS_SERVER_PORT}" --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
             fi
 
-            # Cloudflared: tự khởi động lại nếu chết
             if [ "${USE_CLOUDFLARED}" = "true" ] && ! pid_alive /tmp/cloudflared.pid; then
-              echo "Cloudflared chet, khoi dong lai..."
               nohup cloudflared tunnel --no-autoupdate \
-                --url "http://localhost:${HLS_SERVER_PORT}" \
-                > /tmp/cloudflared.log 2>&1 &
+                --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cloudflared.log 2>&1 &
               echo $! > /tmp/cloudflared.pid
             fi
 
-            # SSHX: tự khởi động lại nếu chết
             if ! pid_alive /tmp/sshx.pid; then
-              echo "SSHX chet, khoi dong lai..."
               nohup sshx --quiet --name "${SSHX_NAME}" > /tmp/sshx.log 2>&1 &
               echo $! > /tmp/sshx.pid
             fi
 
-            # FFmpeg: restart nếu chết HOẶC HLS tre (playlist quá 60s không cập nhật)
             FF_RESTART=0
             if ! pid_alive /tmp/ffmpeg.pid; then
               echo "FFmpeg thoat, khoi dong lai..."
-              tail -n 30 /tmp/ffmpeg.log || true
+              tail -n 25 /tmp/ffmpeg.log || true
               FF_RESTART=1
             else
               if [ -f "${HLS_DIR}/index.m3u8" ]; then
                 AGE=$(( NOW - $(stat -c %Y "${HLS_DIR}/index.m3u8") ))
                 if [ "$AGE" -gt 60 ]; then
-                  echo "HLS tre ${AGE}s - ffmpeg bi kẹt, restart..."
+                  echo "HLS tre ${AGE}s - restart..."
                   kill "$(cat /tmp/ffmpeg.pid)" 2>/dev/null || true
                   sleep 2
                   FF_RESTART=1
@@ -447,17 +363,15 @@ jobs:
             fi
 
             if [ "$FF_RESTART" -eq 1 ]; then
-              restart_ffmpeg_robust || exit 1
+              restart_robust "$CURRENT_IDX" || exit 1
             fi
 
-            # Health log mỗi 5 phút (xem qua sshx)
             if [ $((NOW - LAST_HEALTH)) -ge 300 ]; then
               LAST_HEALTH=$NOW
-              M3U8_AGE="NA"; SEGS="NA"; SHM="NA"
+              M3U8_AGE="NA"; SEGS="NA"
               [ -f "${HLS_DIR}/index.m3u8" ] && M3U8_AGE=$(( NOW - $(stat -c %Y "${HLS_DIR}/index.m3u8") ))s
               SEGS=$(ls "${HLS_DIR}"/seg_*.ts 2>/dev/null | wc -l)
-              SHM=$(df -h /dev/shm | awk 'NR==2{print $5}')
-              echo "[HEALTH] up=${ELAPSED}s ffmpeg=OK mode=${MODE_CURRENT} hls_age=${M3U8_AGE} segs=${SEGS} shm=${SHM}"
+              echo "[HEALTH] up=${ELAPSED}s combo=${COMBOS[$CURRENT_IDX]} hls_age=${M3U8_AGE} segs=${SEGS}"
             fi
 
             sleep 10
