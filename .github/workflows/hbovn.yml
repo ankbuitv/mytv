@@ -179,22 +179,28 @@ jobs:
           start_ffmpeg() {
             local SRC="$1" MODE="$2"
             local INPUT_ARGS=""
+            
+            # Cờ chung chống mất gói và fix mốc thời gian DTS/PTS
+            local FIX_FLAGS="-fflags +genpts+discardcorrupt -avoid_negative_ts make_zero"
+            
             if [ "$SRC" = "hls" ]; then
-              INPUT_ARGS="$HLS_LIVE_ARGS -i ${HLS_URL}"
+              INPUT_ARGS="$HLS_LIVE_ARGS $FIX_FLAGS -i ${HLS_URL}"
             else
-              INPUT_ARGS="$MPD_LIVE_ARGS -cenc_decryption_key ${CLEARKEY_KEY} -i ${MPD_URL}"
+              # FIX LỖI DTS: Đặt key trước -i và thêm cờ fix timestamp
+              INPUT_ARGS="$MPD_LIVE_ARGS -cenc_decryption_key ${CLEARKEY_KEY} $FIX_FLAGS -i ${MPD_URL}"
             fi
 
             local ARGS=""
             if [ "$MODE" = "copy" ]; then
               ARGS="-map ${MAP_V} -map ${MAP_A} -c copy"
             else
+              # Tối ưu bitrate (CRF 23) để đỡ gánh CPU Runner, thêm aresample async fix lệch âm thanh
               ARGS="-map ${MAP_V} -map ${MAP_A} \
                 -c:v libx264 -preset ${X264_PRESET} -tune zerolatency \
-                -crf 19 -maxrate 5500k -bufsize 11000k \
+                -crf 23 -maxrate 4000k -bufsize 8000k \
                 -pix_fmt yuv420p -fps_mode cfr \
                 -force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0 \
-                -c:a aac -b:a 160k -ar 48000 -ac 2 -af aresample=async=1000"
+                -c:a aac -b:a 128k -ar 48000 -ac 2 -af aresample=async=1000"
             fi
 
             rm -f "${HLS_DIR}/index.m3u8"
@@ -204,8 +210,8 @@ jobs:
               -headers "$CUSTOM_HEADERS" \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 403,429,500,502,503,504 \
-              -reconnect_delay_max 10 \
-              -rw_timeout 15000000 \
+              -reconnect_delay_max 5 \
+              -rw_timeout 10000000 \
               $INPUT_ARGS \
               $ARGS \
               -max_muxing_queue_size 4096 \
@@ -218,7 +224,6 @@ jobs:
             echo $! > /tmp/ffmpeg.pid
             echo "start: src=${SRC} mode=${MODE} pid=$(cat /tmp/ffmpeg.pid)"
           }
-
           wait_hls_ready() {
             local LIMIT="${1:-120}"
             for i in $(seq 1 "$LIMIT"); do
