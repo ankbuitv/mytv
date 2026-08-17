@@ -8,6 +8,7 @@ on:
 jobs:
   proxy-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 370
 
     steps:
       - name: Checkout Code
@@ -20,8 +21,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl dnsutils
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl dnsutils netcat-openbsd
           pip install flask flask-cors gunicorn requests
 
       - name: Setup Bore Tunnel & SSHX
@@ -305,7 +306,7 @@ jobs:
           python3 -m py_compile app.py
           echo "✅ app.py syntax OK"
 
-      - name: Start Proxy Server & Tunnel
+      - name: Start Proxy Server & Smart Bore Tunnel
         shell: bash
         run: |
           cat > start_proxy.sh <<'BASH'
@@ -318,39 +319,49 @@ jobs:
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
-          SSHX_PID=$!
-          sleep 4
+          echo $! > sshx.pid
+          sleep 3
 
-          SSHX_URL="$(grep "https://sshx.io/s/" sshx.log | head -n1 | xargs || true)"
+          SSHX_URL="$(grep -o "https://sshx.io/s/[^ ]*" sshx.log | head -n1 || true)"
+          if [ -n "${SSHX_URL}" ]; then
+              echo "🔗 Web Terminal URL: ${SSHX_URL}"
+          fi
 
-          echo "🌐 Starting Bore Tunnel..."
+          echo "🌐 Connecting Bore Tunnel to port ${BORE_PORT}..."
           bore local 5000 --to bore.pub --port "${BORE_PORT}" > bore.log 2>&1 &
           BORE_PID=$!
+          echo $BORE_PID > bore.pid
 
-          echo "⏳ Waiting for Bore..."
-          for i in $(seq 1 30); do
-              sleep 1
-              if grep -q "bore.pub:${BORE_PORT}" bore.log 2>/dev/null; then
+          # Smart Retry Logic: Tự động thử lại nếu port bị kẹt từ job cũ
+          SUCCESS=0
+          for i in $(seq 1 60); do
+              sleep 2
+              if grep -q "bound to remote port ${BORE_PORT}" bore.log 2>/dev/null || \
+                 grep -q "bore.pub:${BORE_PORT}" bore.log 2>/dev/null; then
+                  echo "✅ Bore Tunnel successfully connected to port ${BORE_PORT}!"
+                  SUCCESS=1
                   break
               fi
-              if ! kill -0 "${BORE_PID}" 2>/dev/null; then
-                  echo "❌ Bore exited unexpectedly"
-                  cat bore.log
-                  exit 1
+
+              if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" bore.log 2>/dev/null; then
+                  echo "⏳ Port ${BORE_PORT} đang bị giữ bởi job cũ, thử lại lần $i..."
+                  kill -9 $BORE_PID 2>/dev/null || true
+                  > bore.log
+                  bore local 5000 --to bore.pub --port "${BORE_PORT}" > bore.log 2>&1 &
+                  BORE_PID=$!
+                  echo $BORE_PID > bore.pid
               fi
           done
 
-          if ! kill -0 "${BORE_PID}" 2>/dev/null; then
-              echo "❌ Bore failed"
+          if [ $SUCCESS -ne 1 ]; then
+              echo "❌ Không thể chiếm giữ port ${BORE_PORT} sau 2 phút chờ đợi!"
               cat bore.log
               exit 1
           fi
 
-          echo "✅ Bore active: bore.pub:${BORE_PORT}"
           BORE_IP="$(dig +short bore.pub | tail -n1 || true)"
-
           if [ -n "${BORE_IP}" ]; then
-              echo "📡 bore.pub IP: ${BORE_IP}"
+              echo "📡 Updating DuckDNS with Bore IP: ${BORE_IP}"
               curl -fsS "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" || true
           fi
 
@@ -359,7 +370,7 @@ jobs:
 
           echo ""
           echo "===================================================="
-          echo "🚀 IPTV PROXY ACTIVE"
+          echo "🚀 IPTV PROXY ENGINE IS LIVE"
           echo "===================================================="
           echo "📺 Playlist    : ${PUBLIC_URL}/playlist.m3u"
           echo "📺 Hollywood   : ${PUBLIC_URL}/stream/hc"
@@ -369,7 +380,39 @@ jobs:
           echo "===================================================="
           echo ""
 
-          exec gunicorn -w 12 --threads 8 --access-logfile - --error-logfile - --keep-alive 15 --bind 0.0.0.0:5000 app:app
+          # Chạy Gunicorn ở chế độ background để khởi chạy Loop giám sát sức khỏe
+          gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 --bind 0.0.0.0:5000 app:app > gunicorn.log 2>&1 &
+          GUNICORN_PID=$!
+          echo $GUNICORN_PID > gunicorn.pid
+
+          START_TIME=$(date +%s)
+          LIMIT_SECONDS=21540 # 5h 59m
+
+          while true; do
+              NOW=$(date +%s)
+              ELAPSED=$(( NOW - START_TIME ))
+
+              if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
+                  echo "⏰ Đã đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
+                  exit 0
+              fi
+
+              # Kiểm tra và khôi phục Bore Tunnel nếu ngắt kết nối
+              if ! kill -0 $(cat bore.pid) 2>/dev/null; then
+                  echo "⚠️ Bore Tunnel bị ngắt, đang tự kết nối lại..."
+                  bore local 5000 --to bore.pub --port "${BORE_PORT}" > bore.log 2>&1 &
+                  echo $! > bore.pid
+              fi
+
+              # Kiểm tra sức khỏe Proxy Server
+              if ! kill -0 $(cat gunicorn.pid) 2>/dev/null; then
+                  echo "❌ Gunicorn Server crashed! Log:"
+                  cat gunicorn.log
+                  exit 1
+              fi
+
+              sleep 10
+          done
           BASH
 
           chmod +x start_proxy.sh
