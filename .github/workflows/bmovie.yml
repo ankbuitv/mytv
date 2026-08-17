@@ -1,4 +1,4 @@
-name: HLS Restream - Box Movie 1 (Auto 1080p & Cron 5h59m)
+name: HLS Restream - Box Movie 1
 
 on:
   workflow_dispatch:
@@ -9,13 +9,13 @@ jobs:
   hls-proxy:
     runs-on: ubuntu-latest
     timeout-minutes: 370
-
     env:
+      CHANNEL_ID: "bm1"
+      TARGET_PORT: "30117"
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      TARGET_PORT: "30117"
 
     steps:
       - name: Install System Dependencies
@@ -24,13 +24,11 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl nodejs ffmpeg netcat-openbsd
-
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
-
-          mkdir -p /dev/shm/hls/bm1
+          mkdir -p /dev/shm/hls/${CHANNEL_ID}
 
       - name: Create HLS Server
         shell: bash
@@ -39,74 +37,47 @@ jobs:
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
-
-          const HLS_DIR = '/dev/shm/hls/bm1';
+          const channelId = process.env.CHANNEL_ID;
+          const HLS_DIR = `/dev/shm/hls/${channelId}`;
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            res.setHeader('Connection', 'keep-alive');
-
-            if (req.method === 'OPTIONS') {
-              res.writeHead(204);
-              return res.end();
-            }
-
+            if (req.method === 'OPTIONS') return res.writeHead(204).end();
+            
             let fileName = req.url.split('?')[0].replace('/', '');
             if (!fileName || fileName === '') fileName = 'index.m3u8';
-
             const filePath = path.join(HLS_DIR, fileName);
 
-            if (!fs.existsSync(filePath)) {
-              res.writeHead(404);
-              return res.end('404 Not Found');
-            }
+            if (!fs.existsSync(filePath)) return res.writeHead(404).end('404 Not Found');
 
-            if (fileName.endsWith('.m3u8')) {
-              res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            } else if (fileName.endsWith('.ts')) {
-              res.setHeader('Content-Type', 'video/mp2t');
-            }
+            if (fileName.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            else if (fileName.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
 
-            const stream = fs.createReadStream(filePath);
-            stream.pipe(res);
-            stream.on('error', () => {
-              if (!res.headersSent) res.writeHead(500);
-              res.end();
-            });
+            fs.createReadStream(filePath).pipe(res).on('error', () => { if (!res.headersSent) res.writeHead(500).end(); });
           });
-
-          server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Server started on port 5000...');
-          });
+          server.listen(5000, '0.0.0.0');
           EOF
 
       - name: Start Services & FFmpeg
         shell: bash
         run: |
           set -euo pipefail
-
-          # 1. Start Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
+          for i in {1..10}; do if nc -z localhost 5000; then break; fi; sleep 1; done
 
-          for i in {1..10}; do
-            if nc -z localhost 5000; then break; fi
-            sleep 1
-          done
-
-          # 2. Start FFmpeg
-          cat << EOF > /tmp/run_ffmpeg.sh
+          cat << 'EOF' > /tmp/run_ffmpeg.sh
           #!/usr/bin/env bash
-          CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
+          HEADER_ARG="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
 
           while true; do
             echo "🚀 Starting FFmpeg stream..."
             ffmpeg -hide_banner -loglevel warning \
+              -http_persistent 0 \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -user_agent "${USER_AGENT}" \
-              -headers "\$CUSTOM_HEADERS" \
+              -headers "${HEADER_ARG}" \
               -cenc_decryption_key "${CLEARKEY_KEY}" \
               -fflags +genpts+discardcorrupt+nobuffer \
               -i "${MPD_URL}" \
@@ -115,99 +86,48 @@ jobs:
               -crf 18 -maxrate 6000k -bufsize 12000k \
               -g 50 -r 25 -pix_fmt yuv420p \
               -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 10 \
-              -hls_flags delete_segments+omit_endlist+append_list+temp_file \
-              -hls_segment_filename "/dev/shm/hls/bm1/segment_%03d.ts" \
-              /dev/shm/hls/bm1/index.m3u8
-
-            echo "⚠️ FFmpeg exited! Retrying in 3 seconds..."
+              -f hls -hls_time 2 -hls_list_size 10 -hls_flags delete_segments+omit_endlist+append_list+temp_file \
+              -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
+              /dev/shm/hls/${CHANNEL_ID}/index.m3u8
             sleep 3
           done
           EOF
 
           chmod +x /tmp/run_ffmpeg.sh
           nohup /tmp/run_ffmpeg.sh > /tmp/ffmpeg.log 2>&1 &
-          echo $! > /tmp/ffmpeg.pid
-
-          # 3. Bore Tunnel
-          echo "🌐 Connecting Bore Tunnel to port ${TARGET_PORT}..."
+          
           bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-          BORE_PID=$!
-          echo $BORE_PID > /tmp/bore.pid
+          echo $! > /tmp/bore.pid
 
-          SUCCESS=0
           for i in {1..60}; do
             sleep 2
-            if grep -q "bound to remote port ${TARGET_PORT}" /tmp/bore.log 2>/dev/null || \
-               grep -q "bore.pub:${TARGET_PORT}" /tmp/bore.log 2>/dev/null; then
-              echo "✅ Bore Tunnel successfully connected to port ${TARGET_PORT}!"
-              SUCCESS=1
-              break
-            fi
-
-            if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" /tmp/bore.log 2>/dev/null; then
-              echo "⏳ Port ${TARGET_PORT} đang bận, thử lại..."
-              kill -9 $BORE_PID 2>/dev/null || true
+            if grep -q -e "bound to remote port" -e "bore.pub:${TARGET_PORT}" /tmp/bore.log; then SUCCESS=1; break; fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null || grep -q "address already in use" /tmp/bore.log; then
+              kill -9 $(cat /tmp/bore.pid) 2>/dev/null || true
               > /tmp/bore.log
-              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-              BORE_PID=$!
-              echo $BORE_PID > /tmp/bore.pid
-            fi
-          done
-
-          if [ $SUCCESS -ne 1 ]; then
-            echo "❌ Không thể lấy port ${TARGET_PORT}!"
-            cat /tmp/bore.log
-            exit 1
-          fi
-
-          echo "Waiting for HLS Stream..."
-          STREAM_READY=0
-          for i in {1..40}; do
-            if [ -f /dev/shm/hls/bm1/index.m3u8 ]; then
-              echo "✅ HLS Stream Ready!"
-              STREAM_READY=1
-              break
-            fi
-            sleep 1
-          done
-
-          if [ $STREAM_READY -ne 1 ]; then
-            echo "❌ FFmpeg không tạo được file index.m3u8. Log FFmpeg:"
-            cat /tmp/ffmpeg.log
-            exit 1
-          fi
-
-          echo "=================================================="
-          echo "✅ LINK STREAM HLS 1080P KÊNH BOX MOVIE 1:"
-          echo "👉 http://bore.pub:${TARGET_PORT}/index.m3u8"
-          echo "=================================================="
-
-          START_TIME=$(date +%s)
-          LIMIT_SECONDS=21540
-
-          while true; do
-            NOW=$(date +%s)
-            ELAPSED=$(( NOW - START_TIME ))
-
-            if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Đã chạy đủ 5h 59m, thoát..."
-              exit 0
-            fi
-
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "⚠️ Bore Tunnel rớt, kết nối lại..."
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
             fi
+          done
 
-            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
-              echo "❌ Server crashed!"
-              cat /tmp/server.log
-              exit 1
+          if [ ${SUCCESS:-0} -ne 1 ]; then cat /tmp/bore.log; exit 1; fi
+
+          for i in {1..40}; do
+            if [ -f /dev/shm/hls/${CHANNEL_ID}/index.m3u8 ]; then STREAM_READY=1; break; fi
+            sleep 1
+          done
+          if [ ${STREAM_READY:-0} -ne 1 ]; then cat /tmp/ffmpeg.log; exit 1; fi
+
+          echo "=================================================="
+          echo "✅ LINK STREAM SẴN SÀNG: http://bore.pub:${TARGET_PORT}/index.m3u8"
+          echo "=================================================="
+
+          START_TIME=$(date +%s)
+          while true; do
+            if [ $(( $(date +%s) - START_TIME )) -ge 21540 ]; then exit 0; fi
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
+              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
+              echo $! > /tmp/bore.pid
             fi
-
             sleep 10
           done
