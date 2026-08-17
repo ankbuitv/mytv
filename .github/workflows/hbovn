@@ -1,0 +1,234 @@
+name: HBOVN
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Tự khởi chạy lại sau mỗi 5 giờ để nối luồng liên tục
+    - cron: '59 5,11,17,23 * * *'
+
+jobs:
+  hls-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Tự ngắt sau 5h 50m nhường cho job cron mới
+
+    env:
+      MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
+      CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
+      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
+      REFERER: "https://mytv.com.vn/"
+
+    steps:
+      - name: Install System Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl nodejs ffmpeg
+
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
+          tar -xzf /tmp/bore.tar.gz -C /tmp
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
+          rm -f /tmp/bore.tar.gz /tmp/bore
+
+          mkdir -p /dev/shm/hls/boxhits
+
+      - name: Create HLS Server
+        shell: bash
+        run: |
+          cat << 'EOF' > /tmp/hls_server.js
+          const http = require('http');
+          const fs = require('fs');
+          const path = require('path');
+
+          const HLS_DIR = '/dev/shm/hls/boxhits';
+
+          const server = http.createServer((req, res) => {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Connection', 'keep-alive');
+
+            if (req.method === 'OPTIONS') {
+              res.writeHead(204);
+              return res.end();
+            }
+
+            let fileName = req.url.split('?')[0].replace('/', '');
+            if (!fileName || fileName === '') fileName = 'index.m3u8';
+
+            const filePath = path.join(HLS_DIR, fileName);
+
+            if (!fs.existsSync(filePath)) {
+              res.writeHead(404);
+              return res.end('404 Not Found');
+            }
+
+            if (fileName.endsWith('.m3u8')) {
+              res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            } else if (fileName.endsWith('.ts')) {
+              res.setHeader('Content-Type', 'video/mp2t');
+            }
+
+            const stream = fs.createReadStream(filePath);
+            stream.pipe(res);
+            stream.on('error', () => {
+              if (!res.headersSent) res.writeHead(500);
+              res.end();
+            });
+          });
+
+          server.listen(5000, '0.0.0.0', () => {
+            console.log('🚀 Server started on port 5000...');
+          });
+          EOF
+
+      - name: Start Services & FFmpeg (Map Stream 0:3 - 1080p Gốc)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Server
+          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+
+          # 2. FFmpeg: Ép map 0:3 (Stream V3 1080p) và 0:4 (Audio A0)
+          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
+          
+          nohup ffmpeg -hide_banner -loglevel warning \
+            -user_agent "$USER_AGENT" \
+            -headers "$CUSTOM_HEADERS" \
+            -cenc_decryption_key "$CLEARKEY_KEY" \
+            -fflags +genpts+discardcorrupt+nobuffer \
+            -i "$MPD_URL" \
+            -map 0:3 -map 0:4 \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -crf 18 -maxrate 6000k -bufsize 12000k \
+            -g 50 -r 25 -pix_fmt yuv420p \
+            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
+            -f hls \
+            -hls_time 2 \
+            -hls_list_size 10 \
+            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
+            -hls_segment_filename "/dev/shm/hls/boxhits/segment_%03d.ts" \
+            /dev/shm/hls/boxhits/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
+          echo $! > /tmp/ffmpeg.pid
+
+          # 3. Bore Tunnel - tự chờ remote port rảnh
+          BORE_PORT=30121
+
+          echo "🌐 Đang tìm bore.pub:${BORE_PORT}..."
+
+          while true; do
+            echo "🔍 Đang thử lấy bore.pub:${BORE_PORT}..."
+
+            rm -f /tmp/bore.log
+
+            bore local 5000 \
+              --to bore.pub \
+              --port "${BORE_PORT}" \
+              > /tmp/bore.log 2>&1 &
+
+            BORE_PID=$!
+            echo "$BORE_PID" > /tmp/bore.pid
+
+            PORT_READY=0
+
+            # Cho Bore tối đa 30 giây để bind remote port
+            for i in {1..30}; do
+              sleep 1
+
+              if grep -qiE \
+                "bound to remote port|bore.pub:${BORE_PORT}" \
+                /tmp/bore.log 2>/dev/null; then
+
+                PORT_READY=1
+                break
+              fi
+
+              if ! kill -0 "$BORE_PID" 2>/dev/null; then
+                break
+              fi
+            done
+
+            if [ "$PORT_READY" -eq 1 ]; then
+              echo "✅ Bore đã chiếm được port ${BORE_PORT}!"
+              break
+            fi
+
+            echo "⚠️ Chưa lấy được bore.pub:${BORE_PORT}"
+            echo "----- Bore log -----"
+            cat /tmp/bore.log 2>/dev/null || true
+            echo "--------------------"
+
+            kill "$BORE_PID" 2>/dev/null || true
+            wait "$BORE_PID" 2>/dev/null || true
+
+            echo "⏳ Chờ 15 giây rồi thử lại..."
+            sleep 15
+          done
+
+          echo "=================================================="
+          echo "🌐 BORE READY"
+          echo "👉 http://bore.pub:${BORE_PORT}/index.m3u8"
+          echo "=================================================="
+          
+          echo "⏳ Đang chờ FFmpeg tạo HLS..."
+          STREAM_READY=0
+
+          for i in {1..120}; do
+            if [ -f "/dev/shm/hls/hc/index.m3u8" ]; then
+              STREAM_READY=1
+              echo "✅ HLS Stream Ready!"
+              break
+            fi
+
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
+              echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
+              echo "----- FFmpeg log -----"
+              tail -n 100 /tmp/ffmpeg.log || true
+              echo "----------------------"
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [ "$STREAM_READY" -ne 1 ]; then
+            echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
+            tail -n 100 /tmp/ffmpeg.log || true
+            exit 1
+          fi
+
+          # 4. Timer 5h 59m (21540s)
+          START_TIME=$(date +%s)
+          LIMIT_SECONDS=21540
+
+          while true; do
+            NOW=$(date +%s)
+            ELAPSED=$(( NOW - START_TIME ))
+
+            if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
+              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
+              exit 0
+            fi
+
+            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
+              echo "❌ Server crashed! Log:"
+              cat /tmp/server.log
+              exit 1
+            fi
+
+            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then
+              echo "❌ FFmpeg crashed! Log:"
+              cat /tmp/ffmpeg.log
+              exit 1
+            fi
+
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
+              echo "❌ Bore Tunnel crashed! Log:"
+              cat /tmp/bore.log
+              exit 1
+            fi
+
+            sleep 10
+          done
