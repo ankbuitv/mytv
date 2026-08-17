@@ -1,9 +1,8 @@
-name: HLS Restream - Box Movie 1 (Auto-Fix Map & Cron 5h59m)
+name: HLS Restream - Hollywood Classics (Auto 1080p & Cron 5h59m)
 
 on:
   workflow_dispatch:
   schedule:
-    # Tự động khởi chạy lúc 05:59, 11:59, 17:59, 23:59 UTC (Cứ mỗi 6 tiếng)
     - cron: '59 5,11,17,23 * * *'
 
 jobs:
@@ -12,7 +11,7 @@ jobs:
     timeout-minutes: 370
 
     env:
-      MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
+      MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/HC/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
@@ -30,7 +29,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          mkdir -p /dev/shm/hls/bm1
+          mkdir -p /dev/shm/hls/hc
 
       - name: Create HLS Server
         shell: bash
@@ -40,7 +39,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const HLS_DIR = '/dev/shm/hls/bm1';
+          const HLS_DIR = '/dev/shm/hls/hc';
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
@@ -82,7 +81,7 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg (Auto Select Best 1080p Stream)
+      - name: Start Services & FFmpeg
         shell: bash
         run: |
           set -euo pipefail
@@ -91,7 +90,7 @@ jobs:
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg: Tự chọn luồng Video cao nhất (v:last) & Audio cao nhất (a:last)
+          # 2. FFmpeg Auto Best Stream
           CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
           
           nohup ffmpeg -hide_banner -loglevel warning \
@@ -109,17 +108,17 @@ jobs:
             -hls_time 2 \
             -hls_list_size 10 \
             -hls_flags delete_segments+omit_endlist+append_list+temp_file \
-            -hls_segment_filename "/dev/shm/hls/bm1/segment_%03d.ts" \
-            /dev/shm/hls/bm1/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
+            -hls_segment_filename "/dev/shm/hls/hc/segment_%03d.ts" \
+            /dev/shm/hls/hc/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Bore Tunnel (Port 30117)
-          nohup bore local 5000 --to bore.pub --port 30117 > /tmp/bore.log 2>&1 &
+          # 3. Bore Tunnel (Port 30118)
+          nohup bore local 5000 --to bore.pub --port 30118 > /tmp/bore.log 2>&1 &
           echo $! > /tmp/bore.pid
 
           echo "Waiting for HLS Stream..."
           for i in {1..30}; do
-            if [ -f /dev/shm/bm1/index.m3u8 ] || [ -f /dev/shm/hls/bm1/index.m3u8 ]; then
+            if [ -f /dev/shm/hls/hc/index.m3u8 ]; then
               echo "✅ HLS Stream Ready!"
               break
             fi
@@ -127,11 +126,11 @@ jobs:
           done
 
           echo "=================================================="
-          echo "✅ LINK STREAM HLS 1080P BOX MOVIE 1:"
-          echo "👉 http://bore.pub:30117/index.m3u8"
+          echo "✅ LINK STREAM HLS 1080P KÊNH HOLLYWOOD CLASSICS:"
+          echo "👉 http://bore.pub:30118/index.m3u8"
           echo "=================================================="
 
-          # 4. Timer đếm ngược đúng 5h 59m (21540s)
+          # 4. Timer 5h 59m (21540s)
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540
 
@@ -144,9 +143,8 @@ jobs:
               exit 0
             fi
 
-            # Kiếm tra nếu dịch vụ nào bị ngắt thì in log lỗi ra console trước khi exit
             if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
-              echo "❌ Node Server crashed! Log:"
+              echo "❌ Server crashed! Log:"
               cat /tmp/server.log
               exit 1
             fi
