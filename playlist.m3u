@@ -312,13 +312,13 @@ https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
 # ==========================================
 
 #EXTINF:-1 tvg-id="boxmovies" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Movies 1
-https://usatv.dpdns.org/usatv/Box%20Movie%201%20HD/index.m3u8
+http://chrtv.duckdns.org:30114/stream/box1
 
 #EXTINF:-1 tvg-id="boxhits" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Box Hits
-https://usatv.dpdns.org/usatv/Box%20Hits%20HD/index.m3u8
+http://chrtv.duckdns.org:30114/stream/bhits
 
 #EXTINF:-1 tvg-id="hollywood" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",Hollywood Classics
-https://usatv.dpdns.org/usatv/Hollywood%20Classics%20HD/index.m3u8
+http://chrtv.duckdns.org:30114/stream/hc
 
 
 #EXTINF:-1 tvg-id="hbo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/HBO_logo.svg/1024px-HBO_logo.svg.png" group-title="🎬 BOX - Giải trí",HBO
@@ -331,8 +331,8 @@ http://chrtv.duckdns.org:30211/hls/kenscom180/1080p.m3u8
 #KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 http://chrtv.duckdns.org:4000/hls/hbo/master.m3u8
 
-#EXTINF:-1 tvg-id="axn" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",AXN
-http://159.223.110.159:30117/stream.m3u8
+#EXTINF:-1 tvg-id="woman" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",Woman
+http://chrtv.duckdns.org:30114/stream/wo
 
 #EXTINF:-1 tvg-id="warner" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Warner_TV.svg/1024px-Warner_TV.svg.png" group-title="🎬 BOX - Giải trí",Warner TV
 http://chrtv.duckdns.org:30114/stream/warner
