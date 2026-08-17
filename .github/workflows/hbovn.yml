@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia 1080p (Cron Auto Restart)
+name: HLS Restream - HBO Asia (Transcode 2s) + SSHX Debug
 
 on:
   workflow_dispatch:
@@ -20,13 +20,15 @@ jobs:
       BORE_PORT: "30121"
       HLS_DIR: "/dev/shm/hls/hbo"
       HLS_SERVER_PORT: "5000"
-      MAP_V: "0:v:0"     # 1080p. Muốn nhẹ hơn đổi 0:v:1 (720p)
+      MAP_V: "0:v:0"          # 1080p. Lag nặng thì đổi 0:v:1 (720p)
       MAP_A: "0:a:0"
-      MODE: "auto"       # auto = copy trước, transcode dự phòng
+      MODE: "auto"            # auto = transcode trước, copy fallback
+      X264_PRESET: "veryfast" # 4 vCPU chạy khỏe; cần nhẹ hơn -> ultrafast
       LIVE_START_INDEX: "-6"
+      SSHX_NAME: "HBO-Restream"
 
     steps:
-      - name: Cài đặt công cụ
+      - name: Cài đặt công cụ (ffmpeg, bore, cloudflared, sshx)
         shell: bash
         run: |
           set -euo pipefail
@@ -34,10 +36,25 @@ jobs:
           sudo apt-get install -y -qq curl ffmpeg
           ffmpeg -version | head -1
 
+          # Bore tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
+
+          # Cloudflared quick tunnel (URL dự phòng)
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          sudo install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version || true
+
+          # SSHX web terminal
+          curl -sSf https://sshx.io/get | sh
+          SSHX_BIN="$(command -v sshx || true)"
+          if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.sshx/bin/sshx" ]; then SSHX_BIN="$HOME/.sshx/bin/sshx"; fi
+          if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.local/bin/sshx" ]; then SSHX_BIN="$HOME/.local/bin/sshx"; fi
+          if [ -z "$SSHX_BIN" ]; then echo "Khong tim thay sshx"; exit 1; fi
+          sudo install -m 755 "$SSHX_BIN" /usr/local/bin/sshx
+          sshx --version || true
 
           mkdir -p "${HLS_DIR}"
 
@@ -50,9 +67,9 @@ jobs:
             -show_entries stream=index,codec_name,codec_type,width,height,avg_frame_rate \
             -of compact=p=0:nk=0 \
             "$MPD_URL" 2>&1 | head -40 || true
-          echo "=== DASH demuxer hỗ trợ gì? ==="
-          ffmpeg -hide_banner -h demuxer=dash 2>&1 | grep -E 'live_start_index' \
-            && echo "Co live_start_index" || echo "Khong co live_start_index (ffmpeg 6.1)"
+          echo "=== Dash demuxer co live_start_index khong? ==="
+          ffmpeg -hide_banner -h demuxer=dash 2>&1 | grep -q 'live_start_index' \
+            && echo "CO" || echo "KHONG (ffmpeg 6.1 - bo qua)"
           echo "=== Xong ==="
 
       - name: Tạo HLS server
@@ -91,7 +108,6 @@ jobs:
                        : ext === '.ts'   ? 'video/mp2t'
                        : 'application/octet-stream';
 
-            // Hỗ trợ HTTP Range - nhiều player IPTV cần khi seek/buffer
             const range = req.headers.range;
             if (range) {
               const stat = fs.statSync(filePath);
@@ -122,7 +138,31 @@ jobs:
           sleep 1
           kill -0 "$(cat /tmp/server.pid)" && echo "HLS server OK"
 
-      - name: Restream chính
+      - name: SSHX - web terminal debug
+        shell: bash
+        run: |
+          nohup sshx --quiet --name "${SSHX_NAME}" --enable-readers > /tmp/sshx.log 2>&1 &
+          echo $! > /tmp/sshx.pid
+
+          SSHX_URL=""
+          for i in {1..30}; do
+            SSHX_URL=$(grep -oE 'https://sshx\.io/s/[^ ]+' /tmp/sshx.log 2>/dev/null | head -1 || true)
+            [ -n "$SSHX_URL" ] && break
+            if ! kill -0 "$(cat /tmp/sshx.pid 2>/dev/null)" 2>/dev/null; then
+              echo "SSHX khong khoi dong duoc:"; cat /tmp/sshx.log; break
+            fi
+            sleep 1
+          done
+
+          if [ -n "$SSHX_URL" ]; then
+            echo "$SSHX_URL" > /tmp/sshx.url
+            echo "=================================================="
+            echo "SSHX TERMINAL: ${SSHX_URL}"
+            echo "Mo link nay de vao terminal cua runner (xem log, chay lenh)"
+            echo "=================================================="
+          fi
+
+      - name: Restream chính (transcode 2s + tự phục hồi)
         shell: bash
         run: |
           set -euo pipefail
@@ -130,7 +170,7 @@ jobs:
           # CRLF thật sự cho header
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # live_start_index chỉ có ở ffmpeg mới (7.x+), kiểm tra trước khi dùng
+          # live_start_index chỉ có ffmpeg 7.x+, kiểm tra trước khi dùng
           LIVE_ARGS=""
           if ffmpeg -hide_banner -h demuxer=dash 2>&1 | grep -q 'live_start_index'; then
             LIVE_ARGS="-live_start_index ${LIVE_START_INDEX}"
@@ -148,13 +188,13 @@ jobs:
             local ARGS
 
             if [ "$MODE" = "copy" ]; then
-              # Giải mã ClearKey rồi remux thẳng -> không encode -> không tụt video
+              # Dự phòng: remux thẳng sau giải mã
               ARGS="-map ${MAP_V} -map ${MAP_A} -c copy"
             else
-              # Dự phòng: encode lại H.264
+              # Mặc định: transcode video (keyframe 2s -> segment 2s) + audio AAC
               ARGS="-map ${MAP_V} -map ${MAP_A} \
-                -c:v libx264 -preset veryfast -tune zerolatency \
-                -crf 19 -maxrate 5000k -bufsize 10000k \
+                -c:v libx264 -preset ${X264_PRESET} -tune zerolatency \
+                -crf 19 -maxrate 5500k -bufsize 11000k \
                 -pix_fmt yuv420p -fps_mode cfr \
                 -force_key_frames expr:gte(t,n_forced*2) -sc_threshold 0 \
                 -c:a aac -b:a 160k -ar 48000 -ac 2 -af aresample=async=1000"
@@ -165,8 +205,10 @@ jobs:
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 10 \
-              -rw_timeout 15000000 \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+              -reconnect_on_http_error 403,429,500,502,503,504 \
+              -reconnect_delay_max 10 \
+              -rw_timeout 12000000 \
               $LIVE_ARGS \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt \
@@ -196,25 +238,33 @@ jobs:
             return 1
           }
 
-          # ---------- 1. Khởi động lần đầu: copy trước, transcode dự phòng ----------
-          MODE_CURRENT="$MODE"
-          if [ "$MODE_CURRENT" = "auto" ]; then MODE_CURRENT="copy"; fi
-
-          start_ffmpeg "$MODE_CURRENT"
-          if ! wait_hls_ready 120; then
-            echo "Mode $MODE_CURRENT khong chay duoc, thu transcode..."
-            tail -n 40 /tmp/ffmpeg.log || true
-            if [ "$MODE" = "auto" ] && [ "$MODE_CURRENT" = "copy" ]; then
-              MODE_CURRENT="transcode"
-              start_ffmpeg "$MODE_CURRENT"
-              if ! wait_hls_ready 120; then
-                echo "Ca 2 mode deu fail!"
-                tail -n 40 /tmp/ffmpeg.log || true
-                exit 1
-              fi
-            else
-              exit 1
+          # Khởi động ffmpeg kèm tự đổi mode nếu fail
+          restart_ffmpeg_robust() {
+            start_ffmpeg "$MODE_CURRENT"
+            if wait_hls_ready 90; then
+              echo "OK - mode ${MODE_CURRENT}"
+              return 0
             fi
+            if [ "$MODE" = "auto" ]; then
+              if [ "$MODE_CURRENT" = "copy" ]; then MODE_CURRENT="transcode"; else MODE_CURRENT="copy"; fi
+              echo "Doi mode sang: ${MODE_CURRENT}"
+              start_ffmpeg "$MODE_CURRENT"
+              if wait_hls_ready 90; then
+                echo "OK - mode ${MODE_CURRENT}"
+                return 0
+              fi
+            fi
+            echo "FAIL - khong tao duoc HLS"
+            tail -n 40 /tmp/ffmpeg.log || true
+            return 1
+          }
+
+          # ---------- 1. Khởi động ffmpeg: transcode trước, copy fallback ----------
+          MODE_CURRENT="transcode"
+          if [ "$MODE" = "copy" ]; then MODE_CURRENT="copy"; fi
+
+          if ! restart_ffmpeg_robust; then
+            exit 1
           fi
 
           # ---------- 2. Bore tunnel port 30121 ----------
@@ -247,18 +297,39 @@ jobs:
             sleep 15
           done
 
-          if curl -sf -m 20 "http://bore.pub:${BORE_PORT}/index.m3u8" -o /dev/null; then
-            echo "Tunnel OK - playlist phuc vu duoc qua bore.pub:${BORE_PORT}"
-          else
-            echo "Canh bao: chua curl duoc playlist qua tunnel"
-          fi
+          # ---------- 3. Cloudflared quick tunnel (URL dự phòng) ----------
+          echo "Khoi dong cloudflared quick tunnel..."
+          nohup cloudflared tunnel --no-autoupdate \
+            --url "http://localhost:${HLS_SERVER_PORT}" \
+            > /tmp/cloudflared.log 2>&1 &
+          echo $! > /tmp/cloudflared.pid
 
+          CF_URL=""
+          for i in {1..60}; do
+            CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1 || true)
+            [ -n "$CF_URL" ] && break
+            if ! pid_alive /tmp/cloudflared.pid; then
+              echo "Cloudflared chet:"; tail -n 20 /tmp/cloudflared.log; break
+            fi
+            sleep 2
+          done
+
+          # ---------- 4. Tổng kết URL ----------
           echo "=================================================="
-          echo "URL: http://bore.pub:${BORE_PORT}/index.m3u8"
+          echo "URL BORE:       http://bore.pub:${BORE_PORT}/index.m3u8"
+          if [ -n "$CF_URL" ]; then
+            echo "URL CLOUDFLARE: ${CF_URL}/index.m3u8"
+          else
+            echo "URL CLOUDFLARE: (chua co - xem /tmp/cloudflared.log)"
+          fi
+          SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
+          if [ -n "$SSHX_URL" ]; then
+            echo "SSHX TERMINAL:  ${SSHX_URL}"
+          fi
           echo "Mode dang chay: ${MODE_CURRENT}"
           echo "=================================================="
 
-          # ---------- 3. Vòng giám sát ----------
+          # ---------- 5. Vòng giám sát ----------
           START_TIME=$(date +%s)
           LIMIT_SECONDS=20940 # 5h49m, thoát trước GitHub kill (350 phút)
 
@@ -277,33 +348,37 @@ jobs:
             if ! pid_alive /tmp/bore.pid; then
               echo "Bore tunnel chet!"; cat /tmp/bore.log; exit 1
             fi
+            if pid_alive /tmp/cloudflared.pid; then :; else
+              echo "Cloudflared chet, khoi dong lai..."
+              nohup cloudflared tunnel --no-autoupdate \
+                --url "http://localhost:${HLS_SERVER_PORT}" \
+                > /tmp/cloudflared.log 2>&1 &
+              echo $! > /tmp/cloudflared.pid
+            fi
+            if pid_alive /tmp/sshx.pid; then :; else
+              echo "SSHX chet, khoi dong lai..."
+              nohup sshx --quiet --name "${SSHX_NAME}" > /tmp/sshx.log 2>&1 &
+              echo $! > /tmp/sshx.pid
+              for i in {1..20}; do
+                U=$(grep -oE 'https://sshx\.io/s/[^ ]+' /tmp/sshx.log 2>/dev/null | head -1 || true)
+                [ -n "$U" ] && { echo "SSHX moi: $U"; echo "$U" > /tmp/sshx.url; break; }
+                sleep 1
+              done
+            fi
+
             if ! pid_alive /tmp/ffmpeg.pid; then
               echo "FFmpeg thoat, khoi dong lai..."
               tail -n 30 /tmp/ffmpeg.log || true
-
-              # Thử lại đúng mode hiện tại trước
-              start_ffmpeg "$MODE_CURRENT"
-              if wait_hls_ready 90; then
-                echo "Restart OK (mode $MODE_CURRENT)"
-              else
-                # Fail lặp -> đảo mode nếu đang auto
-                if [ "$MODE" = "auto" ]; then
-                  if [ "$MODE_CURRENT" = "copy" ]; then
-                    MODE_CURRENT="transcode"
-                  else
-                    MODE_CURRENT="copy"
-                  fi
-                  echo "Doi mode sang: ${MODE_CURRENT}"
-                  start_ffmpeg "$MODE_CURRENT"
-                  if ! wait_hls_ready 90; then
-                    echo "Khong tao duoc HLS o mode $MODE_CURRENT, thoat..."
-                    tail -n 50 /tmp/ffmpeg.log || true
-                    exit 1
-                  fi
-                else
-                  echo "Khong tao duoc HLS o mode $MODE_CURRENT, thoat..."
-                  tail -n 50 /tmp/ffmpeg.log || true
-                  exit 1
+              restart_ffmpeg_robust || exit 1
+            else
+              # Kiểm tra HLS còn tươi không (bắt ffmpeg tre do segment nguồn kẹt)
+              if [ -f "${HLS_DIR}/index.m3u8" ]; then
+                AGE=$(( $(date +%s) - $(stat -c %Y "${HLS_DIR}/index.m3u8") ))
+                if [ "$AGE" -gt 45 ]; then
+                  echo "HLS cu qua ${AGE}s - ffmpeg dang tre, restart..."
+                  kill "$(cat /tmp/ffmpeg.pid)" 2>/dev/null || true
+                  sleep 2
+                  restart_ffmpeg_robust || exit 1
                 fi
               fi
             fi
