@@ -39,85 +39,265 @@ jobs:
           cat > app.py <<'PYTHON'
           import os
           import requests
-          from flask import Flask, Response, request
+          from urllib.parse import urljoin, quote, unquote
+          from flask import Flask, Response, request, stream_with_context
 
           app = Flask(__name__)
 
-          WORKER_URL = "https://api.ankb.qzz.io" # Link Cloudflare Worker của bạn
-          MY_SECRET = os.environ.get("MY_SECRET", "")
+          DUCKDNS_DOMAIN = "chrtv"
+          DUCKDNS_TOKEN = "0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          TARGET_SERVER = "http://23.237.104.106:8080"
+          
+          # Các server nguồn từ bore.pub
+          BHITS_SERVER = "http://bore.pub:30119/index.m3u8"
+          BOX1_SERVER = "http://bore.pub:30117/index.m3u8"
+          WO_URL = "http://bore.pub:30120/index.m3u8"
+          HC_URL = "http://bore.pub:30118/index.m3u8"
+
+          AMAGI_STUDIO_C = (
+              "https://amg12058-c15studio-amg12058c1-lg-us-5787."
+              "playouts.now.amagi.tv/playlist.m3u8"
+          )
+
+          WARNER_TV = "http://190.61.90.17:40000/play/a0ho/index.m3u8"
+          PARAMOUNT = "http://206.212.244.63/137/index.m3u8"
+
+          KENSCOM_180 = (
+              "http://103.152.216.26:8443/live/"
+              "DUC3mlZ3O2Z0i4May6u1cA/1785547208/180.m3u8"
+          )
+          KENSCOM_191 = (
+              "http://103.152.216.26:8443/live/"
+              "DUC3mlZ3O2Z0i4May6u1cA/1785547208/191.m3u8"
+          )
+
+          TV360_9 = "https://vmttv.dpdns.org/tv360/?id=tv360-9"
+          TV360_10 = "https://vmttv.dpdns.org/tv360/?id=tv360-10"
+          DREAMWORKS = "https://cdn12.178.indevs.in/163189/dreamworks"
+
+          DISCOVERY_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "Discovery_Asia/HLSv3-FTA/Discovery_Asia.m3u8"
+          )
+          SOUTHEAST_ASIA = (
+              "http://cdn4.skygo.mn/live/disk1/"
+              "SoutheastAsia/HLSv3-FTA/SoutheastAsia.m3u8"
+          )
+
+          UA_CHROME = (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/151.0.0.0 Safari/537.36"
+          )
+
+          HEADERS_DEFAULT = {
+              "User-Agent": "VLC/3.0.20 LibVLC/3.0.20",
+              "Accept": "*/*",
+              "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+              "Connection": "keep-alive",
+          }
+
+          UA_DALVIK = "Dalvik/2.1.0"
 
           def get_public_base_url():
-              domain = os.environ.get("DUCKDNS_DOMAIN", "chrtv")
-              port = os.environ.get("BORE_PORT", "30114")
-              return os.environ.get("PUBLIC_BASE_URL", f"http://{domain}.duckdns.org:{port}")
+              return os.environ.get(
+                  "PUBLIC_BASE_URL",
+                  "http://chrtv.duckdns.org:30114",
+              )
+
+          def add_cors_headers(response):
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS, HEAD"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              return response
 
           @app.route("/")
           def home():
               return f"IPTV Engine Active! Base URL: {get_public_base_url()}", 200
 
-          @app.route("/playlist.m3u")
+          @app.route("/playlist.m3u", methods=["GET", "OPTIONS"])
           def get_playlist():
-              p = get_public_base_url()
-              m3u = f"""#EXTM3U
-          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
-          {p}/stream/tv360-9
-          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
-          {p}/stream/tv360-10
-          #EXTINF:-1 tvg-id="DreamWorks" group-title="Kids",DreamWorks HD
-          {p}/stream/dreamworks
-          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
-          {p}/stream/USA_HBO_ZONE/index.m3u8
-          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
-          {p}/stream/USA_DISCOVERY/index.m3u8
-          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
-          {p}/stream/warner
-          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
-          {p}/stream/paramount
-          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
-          {p}/stream/studioc
-          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
-          {p}/stream/180.m3u8
-          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
-          {p}/stream/191.m3u8
-          #EXTINF:-1 tvg-id="DiscoveryAsia" group-title="Asia",Discovery Asia HD
-          {p}/stream/asia
-          #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
-          {p}/stream/dsc
-          #EXTINF:-1 tvg-id="Hollywood" group-title="Cinema",Hollywood HD
-          {p}/stream/hc
-          #EXTINF:-1 tvg-id="Women" group-title="Cinema",Women HD
-          {p}/stream/wo
-          #EXTINF:-1 tvg-id="BoxMovie1" group-title="Box TV",Box Movie 1 HD
-          {p}/stream/box1
-          #EXTINF:-1 tvg-id="BoxHits" group-title="Box TV",Box Hits HD
-          {p}/stream/bhits"""
-              return Response(m3u.strip(), mimetype="application/x-mpegurl", headers={"Access-Control-Allow-Origin": "*"})
-
-          @app.route("/stream/<path:stream_path>", methods=["GET", "OPTIONS"])
-          def proxy_gateway(stream_path):
               if request.method == "OPTIONS":
-                  return Response(status=204, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "*"})
-              
-              sub_url = request.args.get("url", "")
-              target_endpoint = f"{WORKER_URL}/stream/{stream_path}"
-              if sub_url:
-                  target_endpoint += f"?url={sub_url}"
+                  return add_cors_headers(Response(status=204))
+
+              public_url = get_public_base_url()
+
+              m3u_content = f"""#EXTM3U
+          #EXTINF:-1 tvg-id="tv360plus9" group-title="Sự Kiện TV360",TV360+9 HD
+          {public_url}/stream/tv360-9
+          #EXTINF:-1 tvg-id="tv360plus10" group-title="Sự Kiện TV360",TV360+10 HD
+          {public_url}/stream/tv360-10
+          #EXTINF:-1 tvg-id="DreamWorks" group-title="Kids",DreamWorks HD
+          {public_url}/stream/dreamworks
+          #EXTINF:-1 tvg-id="HBO" group-title="US Live" tvg-logo="https://i.imgur.com/vHqQZ4u.png",HBO Movies HD (Proxy)
+          {public_url}/stream/USA_HBO_ZONE/index.m3u8
+          #EXTINF:-1 tvg-id="Discovery" group-title="US Live",Discovery Channel HD (Proxy)
+          {public_url}/stream/USA_DISCOVERY/index.m3u8
+          #EXTINF:-1 tvg-id="WarnerTV" group-title="US Live" tvg-logo="https://i.imgur.com/2Xy349p.png",Warner TV HD
+          {public_url}/stream/warner
+          #EXTINF:-1 tvg-id="Paramount" group-title="US Live" tvg-logo="https://i.imgur.com/Q23kLMl.png",Paramount Network HD
+          {public_url}/stream/paramount
+          #EXTINF:-1 tvg-id="StudioC" group-title="US Live",Amagi Studio C HD
+          {public_url}/stream/studioc
+          #EXTINF:-1 tvg-id="Live180" group-title="VN Live",KensCom Channel 180 HD
+          {public_url}/stream/180.m3u8
+          #EXTINF:-1 tvg-id="Live191" group-title="VN Live",KensCom Channel 191 HD
+          {public_url}/stream/191.m3u8
+          #EXTINF:-1 tvg-id="DiscoveryAsia" group-title="Asia",Discovery Asia HD
+          {public_url}/stream/asia
+          #EXTINF:-1 tvg-id="SoutheastAsia" group-title="Asia",Southeast Asia HD
+          {public_url}/stream/dsc
+          #EXTINF:-1 tvg-id="Hollywood" group-title="Cinema",Hollywood HD
+          {public_url}/stream/hc
+          #EXTINF:-1 tvg-id="Women" group-title="Cinema",Women HD
+          {public_url}/stream/wo
+          #EXTINF:-1 tvg-id="BoxMovie1" group-title="Box TV",Box Movie 1 HD
+          {public_url}/stream/box1
+          #EXTINF:-1 tvg-id="BoxHits" group-title="Box TV",Box Hits HD
+          {public_url}/stream/bhits"""
+
+              response = Response(m3u_content.strip(), mimetype="application/x-mpegurl")
+              return add_cors_headers(response)
+
+          def handle_hls_proxy(default_target_url, endpoint_path, custom_user_agent=None):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+
+              target_url = request.args.get("url") or default_target_url
+              target_url = unquote(target_url)
+
+              req_headers = HEADERS_DEFAULT.copy()
+              if custom_user_agent:
+                  req_headers["User-Agent"] = custom_user_agent
+
+              if "tv360" in target_url or "vmttv" in target_url:
+                  req_headers["User-Agent"] = UA_DALVIK
+
+              if "103.152.216.26" in target_url:
+                  req_headers["Host"] = "103.152.216.26:8443"
 
               try:
                   resp = requests.get(
-                      target_endpoint,
-                      headers={"X-API-KEY": MY_SECRET},
+                      target_url,
+                      headers=req_headers,
+                      timeout=12,
                       stream=True,
-                      timeout=15
+                      allow_redirects=True,
                   )
-                  return Response(
-                      resp.iter_content(chunk_size=16384),
-                      status=resp.status_code,
-                      mimetype=resp.headers.get("Content-Type", "application/x-mpegurl"),
-                      headers={"Access-Control-Allow-Origin": "*"}
+
+                  if resp.status_code != 200:
+                      return add_cors_headers(
+                          Response(f"Upstream Error: HTTP {resp.status_code}", status=resp.status_code)
+                      )
+
+                  final_url = resp.url
+                  content_type = resp.headers.get("Content-Type", "")
+
+                  is_m3u8 = (
+                      ".m3u8" in target_url
+                      or "m3u8" in content_type
+                      or resp.text.strip().startswith("#EXTM3U")
                   )
-              except Exception as e:
-                  return Response(f"Proxy Error: {str(e)}", status=502)
+
+                  if is_m3u8:
+                      lines = resp.text.splitlines()
+                      rewritten_lines = []
+
+                      for line in lines:
+                          line_str = line.strip()
+                          if not line_str or line_str.startswith("#"):
+                              rewritten_lines.append(line_str)
+                          else:
+                              full_url = urljoin(final_url, line_str)
+                              rewritten_lines.append(f"{endpoint_path}?url={quote(full_url)}")
+
+                      response = Response(
+                          "\n".join(rewritten_lines).strip(),
+                          status=200,
+                          mimetype="application/x-mpegurl",
+                      )
+                      response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                      return add_cors_headers(response)
+
+                  def generate():
+                      for chunk in resp.iter_content(chunk_size=16384):
+                          if chunk:
+                              yield chunk
+
+                  response = Response(stream_with_context(generate()), status=200, mimetype="video/mp2t")
+                  return add_cors_headers(response)
+
+              except Exception as exc:
+                  return add_cors_headers(Response(f"Proxy Exception: {str(exc)}", status=502))
+
+          @app.route("/stream/tv360-9", methods=["GET", "OPTIONS"])
+          def proxy_tv360_9():
+              return handle_hls_proxy(TV360_9, "/stream/tv360-9")
+
+          @app.route("/stream/tv360-10", methods=["GET", "OPTIONS"])
+          def proxy_tv360_10():
+              return handle_hls_proxy(TV360_10, "/stream/tv360-10")
+
+          @app.route("/stream/dreamworks", methods=["GET", "OPTIONS"])
+          def proxy_dreamworks():
+              return handle_hls_proxy(DREAMWORKS, "/stream/dreamworks")
+
+          @app.route("/stream/studioc", methods=["GET", "OPTIONS"])
+          def proxy_studioc():
+              return handle_hls_proxy(AMAGI_STUDIO_C, "/stream/studioc")
+
+          @app.route("/stream/warner", methods=["GET", "OPTIONS"])
+          def proxy_warner():
+              return handle_hls_proxy(WARNER_TV, "/stream/warner")
+
+          @app.route("/stream/paramount", methods=["GET", "OPTIONS"])
+          def proxy_paramount():
+              return handle_hls_proxy(PARAMOUNT, "/stream/paramount")
+
+          @app.route("/stream/180.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_180():
+              return handle_hls_proxy(KENSCOM_180, "/stream/180.m3u8")
+
+          @app.route("/stream/191.m3u8", methods=["GET", "OPTIONS"])
+          def proxy_191():
+              return handle_hls_proxy(KENSCOM_191, "/stream/191.m3u8")
+
+          @app.route("/stream/asia", methods=["GET", "OPTIONS"])
+          def proxy_asia():
+              return handle_hls_proxy(DISCOVERY_ASIA, "/stream/asia", custom_user_agent=UA_CHROME)
+
+          @app.route("/stream/dsc", methods=["GET", "OPTIONS"])
+          def proxy_dsc():
+              return handle_hls_proxy(SOUTHEAST_ASIA, "/stream/dsc", custom_user_agent=UA_CHROME)
+
+          @app.route("/stream/hc", methods=["GET", "OPTIONS"])
+          def proxy_hc():
+              return handle_hls_proxy(HC_URL, "/stream/hc")
+
+          @app.route("/stream/wo", methods=["GET", "OPTIONS"])
+          def proxy_wo():
+              return handle_hls_proxy(WO_URL, "/stream/wo")
+
+          @app.route("/stream/box1", methods=["GET", "OPTIONS"])
+          def proxy_box1():
+              return handle_hls_proxy(BOX1_SERVER, "/stream/box1")
+
+          @app.route("/stream/bhits", methods=["GET", "OPTIONS"])
+          def proxy_bhits():
+              return handle_hls_proxy(BHITS_SERVER, "/stream/bhits")
+
+          @app.route("/stream/<channel_id>/<path:subpath>", methods=["GET", "OPTIONS"])
+          def proxy_dynamic_23_237(channel_id, subpath):
+              if request.method == "OPTIONS":
+                  return add_cors_headers(Response(status=204))
+
+              if request.args.get("url"):
+                  target_url = unquote(request.args.get("url"))
+              else:
+                  target_url = f"{TARGET_SERVER}/{channel_id}/{subpath}"
+
+              return handle_hls_proxy(target_url, f"/stream/{channel_id}/{subpath}")
 
           if __name__ == "__main__":
               app.run(host="0.0.0.0", port=5000, threaded=True)
@@ -128,17 +308,14 @@ jobs:
 
       - name: Start Proxy Server & Smart Bore Tunnel
         shell: bash
-        env:
-          MY_SECRET: ${{ secrets.MY_SECRET }}
-          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
-          DUCKDNS_DOMAIN: ${{ secrets.DUCKDNS_DOMAIN }}
-          BORE_PORT: "30114"
         run: |
           cat > start_proxy.sh <<'BASH'
           #!/usr/bin/env bash
           set -Eeuo pipefail
 
-          BORE_PORT="${BORE_PORT:-30114}"
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT="30114"
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
@@ -155,6 +332,7 @@ jobs:
           BORE_PID=$!
           echo $BORE_PID > bore.pid
 
+          # Smart Retry Logic: Tự động thử lại nếu port bị kẹt từ job cũ
           SUCCESS=0
           for i in $(seq 1 60); do
               sleep 2
@@ -182,7 +360,7 @@ jobs:
           fi
 
           BORE_IP="$(dig +short bore.pub | tail -n1 || true)"
-          if [ -n "${BORE_IP}" ] && [ -n "${DUCKDNS_TOKEN:-}" ]; then
+          if [ -n "${BORE_IP}" ]; then
               echo "📡 Updating DuckDNS with Bore IP: ${BORE_IP}"
               curl -fsS "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}" || true
           fi
@@ -190,8 +368,19 @@ jobs:
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
           export PUBLIC_BASE_URL="${PUBLIC_URL}"
 
+          echo ""
+          echo "===================================================="
+          echo "🚀 IPTV PROXY ENGINE IS LIVE"
+          echo "===================================================="
+          echo "📺 Playlist    : ${PUBLIC_URL}/playlist.m3u"
+          echo "📺 Hollywood   : ${PUBLIC_URL}/stream/hc"
+          echo "📺 Women       : ${PUBLIC_URL}/stream/wo"
+          echo "📺 Box Movie 1 : ${PUBLIC_URL}/stream/box1"
+          echo "📺 Box Hits    : ${PUBLIC_URL}/stream/bhits"
+          echo "===================================================="
+          echo ""
 
-
+          # Chạy Gunicorn ở chế độ background để khởi chạy Loop giám sát sức khỏe
           gunicorn -w 8 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 --bind 0.0.0.0:5000 app:app > gunicorn.log 2>&1 &
           GUNICORN_PID=$!
           echo $GUNICORN_PID > gunicorn.pid
@@ -208,12 +397,14 @@ jobs:
                   exit 0
               fi
 
+              # Kiểm tra và khôi phục Bore Tunnel nếu ngắt kết nối
               if ! kill -0 $(cat bore.pid) 2>/dev/null; then
                   echo "⚠️ Bore Tunnel bị ngắt, đang tự kết nối lại..."
                   bore local 5000 --to bore.pub --port "${BORE_PORT}" > bore.log 2>&1 &
                   echo $! > bore.pid
               fi
 
+              # Kiểm tra sức khỏe Proxy Server
               if ! kill -0 $(cat gunicorn.pid) 2>/dev/null; then
                   echo "❌ Gunicorn Server crashed! Log:"
                   cat gunicorn.log
