@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (DASH MPD + ClearKey)
+name: HLS Restream - HBO Asia (MPD ClearKey + HLS Fallback)
 
 on:
   workflow_dispatch:
@@ -11,11 +11,12 @@ jobs:
     timeout-minutes: 350
 
     env:
-      # ==== NGUỒN MPD (Dùng ClearKey để giải mã) ====
+      # ==== NGUỒN MPD (Có ClearKey) ====
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
+      CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
       
-      # ==== NGUỒN HLS (Dự phòng - Bị Fairplay DRM nên đẩy xuống cuối) ====
+      # ==== NGUỒN HLS (Dự phòng) ====
       HLS_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/playlist.m3u8"
 
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -24,7 +25,7 @@ jobs:
       BORE_PORT: "30121"
       HLS_DIR: "/dev/shm/hls/hbo"
       HLS_SERVER_PORT: "5000"
-      MAP_V: "0:v:0"           # 1080p; CDN yếu thì đổi thành 0:v:1 (720p)
+      MAP_V: "0:v:0"
       MAP_A: "0:a:0"
       X264_PRESET: "veryfast"
       USE_BORE: "true"
@@ -157,8 +158,6 @@ jobs:
           start_ffmpeg() {
             local SRC="$1" MODE="$2"
             local INPUT_ARGS=""
-            
-            # Cờ sửa lỗi DTS timestamp và bù các frame mất mát
             local FIX_FLAGS="-fflags +genpts+discardcorrupt -avoid_negative_ts make_zero"
 
             if [ "$SRC" = "mpd" ]; then
@@ -171,7 +170,6 @@ jobs:
             if [ "$MODE" = "copy" ]; then
               ARGS="-map ${MAP_V} -map ${MAP_A} -c copy"
             else
-              # Tối ưu lại mã hóa video/audio nhẹ hơn cho runner
               ARGS="-map ${MAP_V} -map ${MAP_A} \
                 -c:v libx264 -preset ${X264_PRESET} -tune zerolatency \
                 -crf 23 -maxrate 4000k -bufsize 8000k \
@@ -215,13 +213,12 @@ jobs:
             return 1
           }
 
-          # Ưu tiên MPD ClearKey trước, loại bỏ HLS DRM hỏng
           COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
           COMBO_COUNT=${#COMBOS[@]}
-          CURRENT_IDX=0
+          export CURRENT_IDX=0
 
           restart_robust() {
-            local start_idx="$1"
+            local start_idx="${1:-0}"
             for ((i=start_idx; i<COMBO_COUNT; i++)); do
               local combo="${COMBOS[$i]}"
               local src="${combo%%:*}" mode="${combo##*:}"
