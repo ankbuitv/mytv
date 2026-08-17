@@ -1,4 +1,4 @@
-name: HLS Restream - Box Movie 1 (Auto-Fix Map & Cron 5h59m)
+name: HLS Restream - Box Movie 1 (Fixed Stream Specifier & Paths)
 
 on:
   workflow_dispatch:
@@ -82,7 +82,7 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg (Auto Select Best 1080p Stream)
+      - name: Start Services & FFmpeg
         shell: bash
         run: |
           set -euo pipefail
@@ -91,24 +91,24 @@ jobs:
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg: Tự chọn luồng Video cao nhất (v:last) & Audio cao nhất (a:last)
+          # 2. FFmpeg: Fix map stream (-map 0:v:0 và -map 0:a:0) + Copy Video chống ngốn CPU
           CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
           
           nohup ffmpeg -hide_banner -loglevel warning \
+            -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
             -cenc_decryption_key "$CLEARKEY_KEY" \
-            -fflags +genpts+discardcorrupt+nobuffer \
+            -fflags +genpts+discardcorrupt+igndts \
             -i "$MPD_URL" \
-            -map 0:v:last? -map 0:a:last? \
-            -c:v libx264 -preset ultrafast -tune zerolatency \
-            -crf 18 -maxrate 6000k -bufsize 12000k \
-            -g 50 -r 25 -pix_fmt yuv420p \
-            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
+            -map 0:v:0 -map 0:a:0? \
+            -c:v copy \
+            -bsf:v h264_mp4toannexb \
+            -c:a aac -b:a 128k -ar 44100 -ac 2 -af "aresample=async=1000" \
             -f hls \
-            -hls_time 2 \
-            -hls_list_size 10 \
-            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
+            -hls_time 3 \
+            -hls_list_size 8 \
+            -hls_flags delete_segments+omit_endlist+independent_segments \
             -hls_segment_filename "/dev/shm/hls/bm1/segment_%03d.ts" \
             /dev/shm/hls/bm1/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
@@ -133,7 +133,6 @@ jobs:
 
             PORT_READY=0
 
-            # Cho Bore tối đa 30 giây để bind remote port
             for i in {1..30}; do
               sleep 1
 
@@ -175,8 +174,9 @@ jobs:
           echo "⏳ Đang chờ FFmpeg tạo HLS..."
           STREAM_READY=0
 
+          # Sửa đường dẫn kiểm tra đúng chính xác: /dev/shm/hls/bm1/index.m3u8
           for i in {1..120}; do
-            if [ -f "/dev/shm/hls/hc/index.m3u8" ]; then
+            if [ -f "/dev/shm/hls/bm1/index.m3u8" ]; then
               STREAM_READY=1
               echo "✅ HLS Stream Ready!"
               break
@@ -185,7 +185,7 @@ jobs:
             if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
               echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
               echo "----- FFmpeg log -----"
-              tail -n 100 /tmp/ffmpeg.log || true
+              cat /tmp/ffmpeg.log || true
               echo "----------------------"
               exit 1
             fi
@@ -195,7 +195,7 @@ jobs:
 
           if [ "$STREAM_READY" -ne 1 ]; then
             echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
-            tail -n 100 /tmp/ffmpeg.log || true
+            cat /tmp/ffmpeg.log || true
             exit 1
           fi
 
