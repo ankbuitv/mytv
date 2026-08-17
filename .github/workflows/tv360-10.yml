@@ -112,7 +112,7 @@ jobs:
           # ====================================================
           # 7. CHẠY KÊNH TV360+9 - TỰ ĐỘNG CHECK LINK 30 PHÚT/LẦN
           # ====================================================
-          STREAM_URL_9="https://ec05-pop5-hht.tv360.vn/bpk-token/7z5aifmpj4vbljomliqpy6qecx7hubav/bpk-tv/449/output/449-audio_208000_eng_iv_3=206000-video_iv_3=5256400.m3u8"
+          STREAM_URL_9="https://vmttv.dpdns.org/tv360/?id=tv360-10"
           CURRENT_REAL_URL=""
           FFMPEG_PID=""
 
