@@ -15,7 +15,7 @@ jobs:
       TARGET_PORT: "30120"
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/WO/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
-      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
+      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       REFERER: "https://vtvprime.vn/"
 
     steps:
@@ -33,40 +33,45 @@ jobs:
 
           mkdir -p /dev/shm/hls/${CHANNEL_ID}
 
-      - name: "Kiểm tra kết nối MPD Manifest - Woman (Tối đa 2 phút)"
+      - name: "DEBUG SYSTEM & FFMPEG MPD - Woman"
         shell: bash
         run: |
-          set -euo pipefail
-          echo "⏳ Đang kiểm tra kết nối trực tiếp tới manifest MPD (Tối đa 2 phút)..."
-          
-          TIMEOUT=120
-          INTERVAL=5
-          ELAPSED=0
-          CONNECTED=0
+          set -u
 
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -A "${USER_AGENT}" \
-              -H "Referer: ${REFERER}" \
-              -H "Origin: https://vtvprime.vn" \
-              --connect-timeout 5 \
-              "${MPD_URL}" || echo "000")
+          echo "==================== 1. FFMPEG VERSION ===================="
+          ffmpeg -version | head -n 3
 
-            if [ "$HTTP_STATUS" -eq 200 ]; then
-              echo "✅ Kết nối thành công tới MPD trong ${ELAPSED}s! (HTTP 200)"
-              CONNECTED=1
-              break
-            fi
+          echo -e "\n==================== 2. CURL DOWNLOAD MPD ===================="
+          curl -4 -v -L \
+            -A "${USER_AGENT}" \
+            -H "Referer: ${REFERER}" \
+            -H "Origin: https://vtvprime.vn" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "${MPD_URL}" \
+            -o /tmp/test.mpd
 
-            echo "⚠️ Chưa kết nối được (HTTP $HTTP_STATUS). Thử lại sau ${INTERVAL}s... (${ELAPSED}/${TIMEOUT}s)"
-            sleep $INTERVAL
-            ELAPSED=$((ELAPSED + INTERVAL))
-          done
+          echo -e "\n==================== 3. CHECK LOCAL MPD FILE ===================="
+          ls -lh /tmp/test.mpd
+          head -c 500 /tmp/test.mpd
 
-          if [ $CONNECTED -ne 1 ]; then
-            echo "❌ Lỗi: Không thể kết nối tới MPD sau 2 phút! Server VTVPrime có thể đang chặn dải IP GitHub Actions."
-            exit 1
-          fi
+          echo -e "\n\n==================== 4. FFMPEG READ LOCAL MPD FILE ===================="
+          ffmpeg \
+            -hide_banner \
+            -loglevel verbose \
+            -i /tmp/test.mpd \
+            -t 5 \
+            -f null - || echo "⚠️ FFmpeg đọc local file có lỗi"
+
+          echo -e "\n==================== 5. FFMPEG DIRECT STREAM (NO -headers) ===================="
+          ffmpeg \
+            -hide_banner \
+            -loglevel verbose \
+            -user_agent "${USER_AGENT}" \
+            -referer "${REFERER}" \
+            -i "${MPD_URL}" \
+            -t 5 \
+            -f null - || echo "⚠️ FFmpeg direct stream có lỗi"
 
       - name: "Khởi chạy Node.js HLS Server - Woman"
         shell: bash
@@ -133,10 +138,6 @@ jobs:
 
           cat << 'EOF' > /tmp/run_ffmpeg.sh
           #!/usr/bin/env bash
-          set -euo pipefail
-
-          # Header chuẩn với Origin không có slash ở cuối
-          HEADERS=$'Referer: https://vtvprime.vn/\r\nOrigin: https://vtvprime.vn\r\n'
 
           while true; do
             echo "🚀 Starting FFmpeg stream (${CHANNEL_ID})..."
@@ -144,7 +145,7 @@ jobs:
             ffmpeg -hide_banner -loglevel info \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -user_agent "${USER_AGENT}" \
-              -headers "${HEADERS}" \
+              -referer "${REFERER}" \
               -cenc_decryption_key "${CLEARKEY_KEY}" \
               -i "${MPD_URL}" \
               -c copy \
@@ -222,13 +223,11 @@ jobs:
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
-            # Chạy khoảng 5 tiếng 59 phút
             if [ $(( NOW - START_TIME )) -ge 21540 ]; then
               echo "⏰ Đã đủ thời gian chạy workflow. Kết thúc tiến trình."
               exit 0
             fi
 
-            # Kiểm tra Bore Watchdog
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
               echo "⚠️ Phát hiện Bore tunnel ngắt kết nối. Đang khởi động lại..."
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
