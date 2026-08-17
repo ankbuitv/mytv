@@ -112,23 +112,92 @@ jobs:
             /dev/shm/hls/hc/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Bore Tunnel (Port 30118)
-          nohup bore local 5000 --to bore.pub --port 30118 > /tmp/bore.log 2>&1 &
-          echo $! > /tmp/bore.pid
+          
+                    # 3. Bore Tunnel - tự chờ remote port rảnh
+          BORE_PORT=30118
 
-          echo "Waiting for HLS Stream..."
-          for i in {1..30}; do
-            if [ -f /dev/shm/hls/hc/index.m3u8 ]; then
-              echo "✅ HLS Stream Ready!"
+          echo "🌐 Đang tìm bore.pub:${BORE_PORT}..."
+
+          while true; do
+            echo "🔍 Đang thử lấy bore.pub:${BORE_PORT}..."
+
+            rm -f /tmp/bore.log
+
+            bore local 5000 \
+              --to bore.pub \
+              --port "${BORE_PORT}" \
+              > /tmp/bore.log 2>&1 &
+
+            BORE_PID=$!
+            echo "$BORE_PID" > /tmp/bore.pid
+
+            PORT_READY=0
+
+            # Cho Bore tối đa 30 giây để bind remote port
+            for i in {1..30}; do
+              sleep 1
+
+              if grep -qiE \
+                "bound to remote port|bore.pub:${BORE_PORT}" \
+                /tmp/bore.log 2>/dev/null; then
+
+                PORT_READY=1
+                break
+              fi
+
+              if ! kill -0 "$BORE_PID" 2>/dev/null; then
+                break
+              fi
+            done
+
+            if [ "$PORT_READY" -eq 1 ]; then
+              echo "✅ Bore đã chiếm được port ${BORE_PORT}!"
               break
             fi
-            sleep 1
+
+            echo "⚠️ Chưa lấy được bore.pub:${BORE_PORT}"
+            echo "----- Bore log -----"
+            cat /tmp/bore.log 2>/dev/null || true
+            echo "--------------------"
+
+            kill "$BORE_PID" 2>/dev/null || true
+            wait "$BORE_PID" 2>/dev/null || true
+
+            echo "⏳ Chờ 15 giây rồi thử lại..."
+            sleep 15
           done
 
           echo "=================================================="
-          echo "✅ LINK STREAM HLS 1080P KÊNH HOLLYWOOD CLASSICS:"
-          echo "👉 http://bore.pub:30118/index.m3u8"
+          echo "🌐 BORE READY"
+          echo "👉 http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
+          
+          echo "⏳ Đang chờ FFmpeg tạo HLS..."
+          STREAM_READY=0
+
+          for i in {1..120}; do
+            if [ -f "/dev/shm/hls/hc/index.m3u8" ]; then
+              STREAM_READY=1
+              echo "✅ HLS Stream Ready!"
+              break
+            fi
+
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
+              echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
+              echo "----- FFmpeg log -----"
+              tail -n 100 /tmp/ffmpeg.log || true
+              echo "----------------------"
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [ "$STREAM_READY" -ne 1 ]; then
+            echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
+            tail -n 100 /tmp/ffmpeg.log || true
+            exit 1
+          fi
 
           # 4. Timer 5h 59m (21540s)
           START_TIME=$(date +%s)
