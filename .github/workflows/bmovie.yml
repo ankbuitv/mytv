@@ -87,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Start Node.js Server
+          # 1. Start Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
@@ -96,8 +96,8 @@ jobs:
             sleep 1
           done
 
-          # 2. Start FFmpeg với Auto-Retry Loop
-          cat << 'EOF' > /tmp/run_ffmpeg.sh
+          # 2. Start FFmpeg
+          cat << EOF > /tmp/run_ffmpeg.sh
           #!/usr/bin/env bash
           CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
 
@@ -105,11 +105,11 @@ jobs:
             echo "🚀 Starting FFmpeg stream..."
             ffmpeg -hide_banner -loglevel warning \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -user_agent "$USER_AGENT" \
-              -headers "$CUSTOM_HEADERS" \
-              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -user_agent "${USER_AGENT}" \
+              -headers "\$CUSTOM_HEADERS" \
+              -cenc_decryption_key "${CLEARKEY_KEY}" \
               -fflags +genpts+discardcorrupt+nobuffer \
-              -i "$MPD_URL" \
+              -i "${MPD_URL}" \
               -map 0:v:last? -map 0:a:last? \
               -c:v libx264 -preset ultrafast -tune zerolatency \
               -crf 18 -maxrate 6000k -bufsize 12000k \
@@ -131,7 +131,7 @@ jobs:
           nohup /tmp/run_ffmpeg.sh > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Bore Tunnel Smart Retry
+          # 3. Bore Tunnel
           echo "🌐 Connecting Bore Tunnel to port ${TARGET_PORT}..."
           bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
           BORE_PID=$!
@@ -148,7 +148,7 @@ jobs:
             fi
 
             if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" /tmp/bore.log 2>/dev/null; then
-              echo "⏳ Port ${TARGET_PORT} đang bận, đang thử lại lần $i..."
+              echo "⏳ Port ${TARGET_PORT} đang bận, thử lại..."
               kill -9 $BORE_PID 2>/dev/null || true
               > /tmp/bore.log
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
@@ -164,20 +164,27 @@ jobs:
           fi
 
           echo "Waiting for HLS Stream..."
-          for i in {1..30}; do
+          STREAM_READY=0
+          for i in {1..40}; do
             if [ -f /dev/shm/hls/bm1/index.m3u8 ]; then
               echo "✅ HLS Stream Ready!"
+              STREAM_READY=1
               break
             fi
             sleep 1
           done
+
+          if [ $STREAM_READY -ne 1 ]; then
+            echo "❌ FFmpeg không tạo được file index.m3u8. Log FFmpeg:"
+            cat /tmp/ffmpeg.log
+            exit 1
+          fi
 
           echo "=================================================="
           echo "✅ LINK STREAM HLS 1080P KÊNH BOX MOVIE 1:"
           echo "👉 http://bore.pub:${TARGET_PORT}/index.m3u8"
           echo "=================================================="
 
-          # 4. Loop giám sát 5h59m
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540
 
@@ -186,12 +193,12 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
+              echo "⏰ Đã chạy đủ 5h 59m, thoát..."
               exit 0
             fi
 
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "⚠️ Bore Tunnel rớt, đang thử kết nối lại..."
+              echo "⚠️ Bore Tunnel rớt, kết nối lại..."
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
             fi
