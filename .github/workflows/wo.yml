@@ -1,4 +1,4 @@
-name: HLS Restream - Woman
+name: "HLS Restream - Woman"
 
 on:
   workflow_dispatch:
@@ -17,10 +17,10 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      VN_PROXY: "" # Điền Proxy VN vào đây, ví dụ: "http://user:pass@1.2.3.4:8080"
+      VN_PROXY: "" # Điền Proxy VN vào đây (ví dụ: "http://user:pass@1.2.3.4:8080")
 
     steps:
-      - name: Install System Dependencies
+      - name: "Cài đặt gói phụ thuộc hệ thống - Woman"
         shell: bash
         run: |
           set -euo pipefail
@@ -34,7 +34,7 @@ jobs:
 
           mkdir -p /dev/shm/hls/${CHANNEL_ID}
 
-      - name: Create HLS Server
+      - name: "Tạo HLS Server - Woman"
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -80,7 +80,51 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg
+      - name: "Kiểm tra kết nối MPD cho Woman (Tối đa 2 phút)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "⏳ Đang kiểm tra kết nối tới manifest MPD (Tối đa 2 phút)..."
+          
+          TIMEOUT=120
+          INTERVAL=5
+          ELAPSED=0
+          CONNECTED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            if [ -n "${VN_PROXY:-}" ]; then
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -x "${VN_PROXY}" \
+                -A "${USER_AGENT}" \
+                -H "Referer: ${REFERER}" \
+                -H "Origin: https://vtvprime.vn/" \
+                --connect-timeout 5 \
+                "${MPD_URL}" || echo "000")
+            else
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -A "${USER_AGENT}" \
+                -H "Referer: ${REFERER}" \
+                -H "Origin: https://vtvprime.vn/" \
+                --connect-timeout 5 \
+                "${MPD_URL}" || echo "000")
+            fi
+
+            if [ "$HTTP_STATUS" -eq 200 ]; then
+              echo "✅ Kết nối thành công tới MPD trong ${ELAPSED}s! Bắt đầu chạy FFmpeg..."
+              CONNECTED=1
+              break
+            fi
+
+            echo "⚠️ Chưa kết nối được (Mã HTTP: $HTTP_STATUS). Thử lại sau ${INTERVAL}s... (${ELAPSED}/${TIMEOUT}s)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $CONNECTED -ne 1 ]; then
+            echo "❌ Lỗi: Không thể kết nối tới MPD sau 2 phút! Kiểm tra lại Proxy VN hoặc Server VTVPrime."
+            exit 1
+          fi
+
+      - name: "Khởi chạy Bore & FFmpeg cho Woman"
         shell: bash
         run: |
           set -euo pipefail
@@ -97,29 +141,40 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          PROXY_ARG=()
-          if [ -n "${VN_PROXY:-}" ]; then
-            PROXY_ARG=("-http_proxy" "${VN_PROXY}")
-          fi
-
           HEADERS=$'Referer: https://vtvprime.vn/\r\nOrigin: https://vtvprime.vn/\r\n'
 
           while true; do
             echo "🚀 Starting FFmpeg stream (${CHANNEL_ID})..."
-            ffmpeg -hide_banner -loglevel warning \
-              "${PROXY_ARG[@]}" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -user_agent "${USER_AGENT}" \
-              -headers "${HEADERS}" \
-              -cenc_decryption_key "${CLEARKEY_KEY}" \
-              -i "${MPD_URL}" \
-              -c copy \
-              -f hls \
-              -hls_time 4 \
-              -hls_list_size 5 \
-              -hls_flags delete_segments+omit_endlist+temp_file \
-              -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
-              "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" || true
+            if [ -n "${VN_PROXY:-}" ]; then
+              ffmpeg -hide_banner -loglevel warning \
+                -http_proxy "${VN_PROXY}" \
+                -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+                -user_agent "${USER_AGENT}" \
+                -headers "${HEADERS}" \
+                -cenc_decryption_key "${CLEARKEY_KEY}" \
+                -i "${MPD_URL}" \
+                -c copy \
+                -f hls \
+                -hls_time 4 \
+                -hls_list_size 5 \
+                -hls_flags delete_segments+omit_endlist+temp_file \
+                -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
+                "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" || true
+            else
+              ffmpeg -hide_banner -loglevel warning \
+                -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+                -user_agent "${USER_AGENT}" \
+                -headers "${HEADERS}" \
+                -cenc_decryption_key "${CLEARKEY_KEY}" \
+                -i "${MPD_URL}" \
+                -c copy \
+                -f hls \
+                -hls_time 4 \
+                -hls_list_size 5 \
+                -hls_flags delete_segments+omit_endlist+temp_file \
+                -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
+                "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" || true
+            fi
 
             echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
             sleep 3
