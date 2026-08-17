@@ -92,7 +92,7 @@ jobs:
           echo $! > /tmp/server.pid
 
           # 2. FFmpeg: Ép map 0:3 (Stream V3 1080p) và 0:4 (Audio A0)
-          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
+          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://mytv.com.vn\r\n"
           
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
