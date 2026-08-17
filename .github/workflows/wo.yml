@@ -87,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Start Node.js Server & Chờ sẵn sàng trên port 5000
+          # 1. Start Node.js Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
@@ -96,32 +96,43 @@ jobs:
             sleep 1
           done
 
-          # 2. FFmpeg với cờ Reconnect tự khôi phục luồng MPD
-          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
-          
-          nohup ffmpeg -hide_banner -loglevel warning \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -user_agent "$USER_AGENT" \
-            -headers "$CUSTOM_HEADERS" \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -fflags +genpts+discardcorrupt+nobuffer \
-            -i "$MPD_URL" \
-            -map 0:v:last? -map 0:a:last? \
-            -c:v libx264 -preset ultrafast -tune zerolatency \
-            -crf 18 -maxrate 6000k -bufsize 12000k \
-            -g 50 -r 25 -pix_fmt yuv420p \
-            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
-            -f hls \
-            -hls_time 2 \
-            -hls_list_size 10 \
-            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
-            -hls_segment_filename "/dev/shm/hls/wo/segment_%03d.ts" \
-            /dev/shm/hls/wo/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
+          # 2. Start FFmpeg với Auto-Retry Loop
+          cat << 'EOF' > /tmp/run_ffmpeg.sh
+          #!/usr/bin/env bash
+          CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
+
+          while true; do
+            echo "🚀 Starting FFmpeg stream..."
+            ffmpeg -hide_banner -loglevel warning \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -user_agent "$USER_AGENT" \
+              -headers "$CUSTOM_HEADERS" \
+              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -fflags +genpts+discardcorrupt+nobuffer \
+              -i "$MPD_URL" \
+              -map 0:v:last? -map 0:a:last? \
+              -c:v libx264 -preset ultrafast -tune zerolatency \
+              -crf 18 -maxrate 6000k -bufsize 12000k \
+              -g 50 -r 25 -pix_fmt yuv420p \
+              -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 10 \
+              -hls_flags delete_segments+omit_endlist+append_list+temp_file \
+              -hls_segment_filename "/dev/shm/hls/wo/segment_%03d.ts" \
+              /dev/shm/hls/wo/index.m3u8
+
+            echo "⚠️ FFmpeg exited! Retrying in 3 seconds..."
+            sleep 3
+          done
+          EOF
+
+          chmod +x /tmp/run_ffmpeg.sh
+          nohup /tmp/run_ffmpeg.sh > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Bore Tunnel Smart Retry (Giữ port 30120, tự thử lại nếu port kẹt)
+          # 3. Bore Tunnel Smart Retry
           echo "🌐 Connecting Bore Tunnel to port ${TARGET_PORT}..."
-          
           bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
           BORE_PID=$!
           echo $BORE_PID > /tmp/bore.pid
@@ -137,7 +148,7 @@ jobs:
             fi
 
             if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" /tmp/bore.log 2>/dev/null; then
-              echo "⏳ Port ${TARGET_PORT} đang bị giữ bởi job cũ, đang thử lại lần $i..."
+              echo "⏳ Port ${TARGET_PORT} đang bận, đang thử lại lần $i..."
               kill -9 $BORE_PID 2>/dev/null || true
               > /tmp/bore.log
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
@@ -147,7 +158,7 @@ jobs:
           done
 
           if [ $SUCCESS -ne 1 ]; then
-            echo "❌ Không thể lấy lại port ${TARGET_PORT} sau 2 phút chờ đợi!"
+            echo "❌ Không thể lấy port ${TARGET_PORT}!"
             cat /tmp/bore.log
             exit 1
           fi
@@ -166,7 +177,7 @@ jobs:
           echo "👉 http://bore.pub:${TARGET_PORT}/index.m3u8"
           echo "=================================================="
 
-          # 4. Timer đếm ngược 5h 59m (21540s) & Giám sát hệ thống
+          # 4. Loop giám sát 5h59m
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540
 
@@ -179,22 +190,15 @@ jobs:
               exit 0
             fi
 
-            # Tự khôi phục Bore Tunnel nếu bị ngắt kết nối giữa chừng
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "⚠️ Bore Tunnel bị ngắt, đang tự động kết nối lại..."
+              echo "⚠️ Bore Tunnel rớt, đang thử kết nối lại..."
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
             fi
 
             if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
-              echo "❌ Server crashed! Log:"
+              echo "❌ Server crashed!"
               cat /tmp/server.log
-              exit 1
-            fi
-
-            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then
-              echo "❌ FFmpeg crashed! Log:"
-              cat /tmp/ffmpeg.log
               exit 1
             fi
 
