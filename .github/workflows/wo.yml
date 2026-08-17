@@ -1,4 +1,4 @@
-name: "HLS Restream - Woman"
+name: HLS Restream - Woman (Auto 1080p & Cron 5h59m)
 
 on:
   workflow_dispatch:
@@ -11,82 +11,42 @@ jobs:
     timeout-minutes: 370
 
     env:
-      CHANNEL_ID: "wo"
-      TARGET_PORT: "30120"
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/WO/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
-      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
 
     steps:
-      - name: "Cài đặt gói phụ thuộc hệ thống - Woman"
+      - name: Install System Dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg netcat-openbsd
+          sudo apt-get install -y -qq curl nodejs ffmpeg
 
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          mkdir -p /dev/shm/hls/${CHANNEL_ID}
+          mkdir -p /dev/shm/hls/wo
 
-      - name: "DEBUG SYSTEM & FFMPEG MPD - Woman"
+      - name: Create HLS Server
         shell: bash
         run: |
-          set -u
-
-          echo "==================== 1. FFMPEG VERSION ===================="
-          ffmpeg -version | head -n 3
-
-          echo -e "\n==================== 2. CURL DOWNLOAD MPD ===================="
-          curl -4 -v -L \
-            -A "${USER_AGENT}" \
-            -H "Referer: ${REFERER}" \
-            -H "Origin: https://vtvprime.vn" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            "${MPD_URL}" \
-            -o /tmp/test.mpd
-
-          echo -e "\n==================== 3. CHECK LOCAL MPD FILE ===================="
-          ls -lh /tmp/test.mpd
-          head -c 500 /tmp/test.mpd
-
-          echo -e "\n\n==================== 4. FFMPEG READ LOCAL MPD FILE ===================="
-          ffmpeg \
-            -hide_banner \
-            -loglevel verbose \
-            -i /tmp/test.mpd \
-            -t 5 \
-            -f null - || echo "⚠️ FFmpeg đọc local file có lỗi"
-
-          echo -e "\n==================== 5. FFMPEG DIRECT STREAM (NO -headers) ===================="
-          ffmpeg \
-            -hide_banner \
-            -loglevel verbose \
-            -user_agent "${USER_AGENT}" \
-            -referer "${REFERER}" \
-            -i "${MPD_URL}" \
-            -t 5 \
-            -f null - || echo "⚠️ FFmpeg direct stream có lỗi"
-
-      - name: "Khởi chạy Node.js HLS Server - Woman"
-        shell: bash
-        run: |
-          set -euo pipefail
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
-          const channelId = process.env.CHANNEL_ID;
-          const HLS_DIR = `/dev/shm/hls/${channelId}`;
+
+          const HLS_DIR = '/dev/shm/hls/wo';
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Connection', 'keep-alive');
+
             if (req.method === 'OPTIONS') {
               res.writeHead(204);
               return res.end();
@@ -94,6 +54,7 @@ jobs:
 
             let fileName = req.url.split('?')[0].replace('/', '');
             if (!fileName || fileName === '') fileName = 'index.m3u8';
+
             const filePath = path.join(HLS_DIR, fileName);
 
             if (!fs.existsSync(filePath)) {
@@ -120,118 +81,84 @@ jobs:
           });
           EOF
 
+      - name: Start Services & FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Start Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          for i in {1..10}; do
-            if nc -z localhost 5000; then
-              echo "✅ Local HLS Server đang lắng nghe tại cổng 5000"
+          # 2. FFmpeg Auto Best Stream
+          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
+          
+          nohup ffmpeg -hide_banner -loglevel warning \
+            -user_agent "$USER_AGENT" \
+            -headers "$CUSTOM_HEADERS" \
+            -cenc_decryption_key "$CLEARKEY_KEY" \
+            -fflags +genpts+discardcorrupt+nobuffer \
+            -i "$MPD_URL" \
+            -map 0:v:last? -map 0:a:last? \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -crf 18 -maxrate 6000k -bufsize 12000k \
+            -g 50 -r 25 -pix_fmt yuv420p \
+            -c:a aac -b:a 160k -ar 48000 -ac 2 -af "aresample=async=1000" \
+            -f hls \
+            -hls_time 2 \
+            -hls_list_size 10 \
+            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
+            -hls_segment_filename "/dev/shm/hls/wo/segment_%03d.ts" \
+            /dev/shm/hls/wo/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
+          echo $! > /tmp/ffmpeg.pid
+
+          # 3. Bore Tunnel (Port 30120)
+          nohup bore local 5000 --to bore.pub --port 30120 > /tmp/bore.log 2>&1 &
+          echo $! > /tmp/bore.pid
+
+          echo "Waiting for HLS Stream..."
+          for i in {1..30}; do
+            if [ -f /dev/shm/hls/wo/index.m3u8 ]; then
+              echo "✅ HLS Stream Ready!"
               break
             fi
             sleep 1
           done
 
-      - name: "Khởi chạy FFmpeg Stream - Woman"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cat << 'EOF' > /tmp/run_ffmpeg.sh
-          #!/usr/bin/env bash
-
-          while true; do
-            echo "🚀 Starting FFmpeg stream (${CHANNEL_ID})..."
-            
-            ffmpeg -hide_banner -loglevel info \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -user_agent "${USER_AGENT}" \
-              -referer "${REFERER}" \
-              -cenc_decryption_key "${CLEARKEY_KEY}" \
-              -i "${MPD_URL}" \
-              -c copy \
-              -f hls \
-              -hls_time 4 \
-              -hls_list_size 5 \
-              -hls_flags delete_segments+omit_endlist+temp_file \
-              -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
-              "/dev/shm/hls/${CHANNEL_ID}/index.m3u8"
-
-            EXIT_CODE=$?
-            echo "⚠️ FFmpeg đã thoát với mã lỗi: ${EXIT_CODE}. Đang thử lại sau 3 giây..."
-            sleep 3
-          done
-          EOF
-
-          chmod +x /tmp/run_ffmpeg.sh
-          nohup /tmp/run_ffmpeg.sh > /tmp/ffmpeg.log 2>&1 &
-
-          echo "⏳ Chờ FFmpeg khởi tạo luồng và ghi file index.m3u8..."
-          STREAM_READY=0
-          for i in {1..40}; do
-            if [ -s "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" ]; then
-              STREAM_READY=1
-              echo "✅ FFmpeg đã tạo thành công file index.m3u8!"
-              break
-            fi
-            sleep 2
-          done
-
-          if [ $STREAM_READY -ne 1 ]; then
-            echo "❌ Lỗi: FFmpeg không thể tạo luồng HLS. Dưới đây là chi tiết log FFmpeg:"
-            echo "--------------------- FFMPEG LOG ---------------------"
-            cat /tmp/ffmpeg.log
-            echo "------------------------------------------------------"
-            exit 1
-          fi
-
-      - name: "Mở Tunnel Bore & Giám sát - Woman"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "🚀 Khởi động Bore Tunnel tới bore.pub:${TARGET_PORT}..."
-          bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-          BORE_PID=$!
-          echo $BORE_PID > /tmp/bore.pid
-
-          SUCCESS=0
-          for i in {1..30}; do
-            sleep 2
-            if grep -q -e "bound to remote port" -e "bore.pub:${TARGET_PORT}" /tmp/bore.log 2>/dev/null; then
-              SUCCESS=1
-              break
-            fi
-            if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" /tmp/bore.log 2>/dev/null; then
-              kill -9 $BORE_PID 2>/dev/null || true
-              > /tmp/bore.log
-              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-              BORE_PID=$!
-              echo $BORE_PID > /tmp/bore.pid
-            fi
-          done
-
-          if [ $SUCCESS -ne 1 ]; then
-            echo "❌ Không thể kết nối Bore Tunnel:"
-            cat /tmp/bore.log
-            exit 1
-          fi
-
           echo "=================================================="
-          echo "✅ STREAM ĐÃ SẴN SÀNG: http://bore.pub:${TARGET_PORT}/index.m3u8"
+          echo "✅ LINK STREAM HLS 1080P KÊNH WOMAN:"
+          echo "👉 http://bore.pub:30120/index.m3u8"
           echo "=================================================="
 
+          # 4. Timer 5h 59m (21540s)
           START_TIME=$(date +%s)
+          LIMIT_SECONDS=21540
+
           while true; do
             NOW=$(date +%s)
-            if [ $(( NOW - START_TIME )) -ge 21540 ]; then
-              echo "⏰ Đã đủ thời gian chạy workflow. Kết thúc tiến trình."
+            ELAPSED=$(( NOW - START_TIME ))
+
+            if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
+              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
               exit 0
             fi
 
+            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
+              echo "❌ Server crashed! Log:"
+              cat /tmp/server.log
+              exit 1
+            fi
+
+            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then
+              echo "❌ FFmpeg crashed! Log:"
+              cat /tmp/ffmpeg.log
+              exit 1
+            fi
+
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "⚠️ Phát hiện Bore tunnel ngắt kết nối. Đang khởi động lại..."
-              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
-              echo $! > /tmp/bore.pid
+              echo "❌ Bore Tunnel crashed! Log:"
+              cat /tmp/bore.log
+              exit 1
             fi
 
             sleep 10
