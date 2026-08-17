@@ -16,6 +16,7 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
+      TARGET_PORT: "30119"
 
     steps:
       - name: Install System Dependencies
@@ -23,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
+          sudo apt-get install -y -qq curl nodejs ffmpeg netcat-openbsd
 
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
@@ -87,14 +88,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Server
+          # 1. Start Node.js Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg: Ép map 0:3 (Stream V3 1080p) và 0:4 (Audio A0)
+          # Chờ Node.js server chạy sẵn sàng trên port 5000
+          for i in {1..10}; do
+            if nc -z localhost 5000; then break; fi
+            sleep 1
+          done
+
+          # 2. Start FFmpeg với chế độ Reconnect chống rớt luồng MPD
           CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
           
           nohup ffmpeg -hide_banner -loglevel warning \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
             -cenc_decryption_key "$CLEARKEY_KEY" \
@@ -113,9 +121,40 @@ jobs:
             /dev/shm/hls/boxhits/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Bore Tunnel
-          nohup bore local 5000 --to bore.pub --port 30119 > /tmp/bore.log 2>&1 &
-          echo $! > /tmp/bore.pid
+          # 3. Bore Tunnel Smart Retry (Vòng lặp chờ tới khi lấy được Port 30119)
+          echo "🌐 Connecting Bore Tunnel to port ${TARGET_PORT}..."
+          
+          bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
+          BORE_PID=$!
+          echo $BORE_PID > /tmp/bore.pid
+
+          # Chờ cho đến khi Bore kết nối thành công và giữ được port
+          SUCCESS=0
+          for i in {1..60}; do
+            sleep 2
+            if grep -q "bound to remote port ${TARGET_PORT}" /tmp/bore.log 2>/dev/null || \
+               grep -q "bore.pub:${TARGET_PORT}" /tmp/bore.log 2>/dev/null; then
+              echo "✅ Bore Tunnel successfully connected to port ${TARGET_PORT}!"
+              SUCCESS=1
+              break
+            fi
+
+            # Nếu port bị trùng hoặc văng ra, tiến hành kill process và thử lại
+            if ! kill -0 $BORE_PID 2>/dev/null || grep -q "address already in use" /tmp/bore.log 2>/dev/null; then
+              echo "⏳ Port ${TARGET_PORT} đang bị giữ bởi job cũ, đang thử lại lần $i..."
+              kill -9 $BORE_PID 2>/dev/null || true
+              > /tmp/bore.log
+              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
+              BORE_PID=$!
+              echo $BORE_PID > /tmp/bore.pid
+            fi
+          done
+
+          if [ $SUCCESS -ne 1 ]; then
+            echo "❌ Không thể lấy lại port ${TARGET_PORT} sau 2 phút chờ đợi!"
+            cat /tmp/bore.log
+            exit 1
+          fi
 
           echo "Waiting for HLS 1080p Stream..."
           for i in {1..30}; do
@@ -128,10 +167,10 @@ jobs:
 
           echo "=================================================="
           echo "✅ LINK STREAM HLS 1080P CHUẨN NÉT GỐC (V3):"
-          echo "👉 http://bore.pub:30119/index.m3u8"
+          echo "👉 http://bore.pub:${TARGET_PORT}/index.m3u8"
           echo "=================================================="
 
-          # 4. Timer 5h 50m (21000s)
+          # 4. Timer 5h 50m (21000s) & Monitor Loop
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21000
 
@@ -144,9 +183,24 @@ jobs:
               exit 0
             fi
 
-            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then exit 1; fi
-            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then exit 1; fi
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then exit 1; fi
+            # Tự phục hồi Bore Tunnel nếu lỡ rớt kết nối giữa chừng
+            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
+              echo "⚠️ Bore Tunnel bị ngắt, đang tự động kết nối lại..."
+              bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
+              echo $! > /tmp/bore.pid
+            fi
+
+            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then 
+              echo "❌ Node.js server crashed!"
+              cat /tmp/server.log
+              exit 1
+            fi
+            
+            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then 
+              echo "❌ FFmpeg process crashed!"
+              cat /tmp/ffmpeg.log
+              exit 1
+            fi
             
             sleep 10
           done
