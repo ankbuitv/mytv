@@ -233,6 +233,28 @@ jobs:
             return 1
           }
 
+          # Cố định khai báo biến trước để tránh lỗi 'unbound variable' của set -u
+          COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
+          COMBO_COUNT=${#COMBOS[@]}
+          CURRENT_IDX=0
+
+          restart_robust() {
+            local start_idx="${1:-0}"
+            local i
+            for ((i=start_idx; i<COMBO_COUNT; i++)); do
+              local combo="${COMBOS[$i]}"
+              local src="${combo%%:*}" mode="${combo##*:}"
+              echo "Thu: src=${src} mode=${mode}"
+              start_ffmpeg "$src" "$mode"
+              if wait_hls_ready 90; then
+                CURRENT_IDX=$i
+                return 0
+              fi
+              tail -n 15 /tmp/ffmpeg.log || true
+            done
+            return 1
+          }
+
           # ---------- 1. Khởi động ffmpeg ----------
           if ! restart_robust 0; then
             echo "Tat ca combo deu fail!"
@@ -276,12 +298,15 @@ jobs:
 
           # ---------- 4. Tổng kết ----------
           SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
-          COMBO="${COMBOS[$CURRENT_IDX]}"
+          
+          # Fix triệt để lỗi unbound variable khi lấy combo active
+          SELECTED_COMBO="${COMBOS[${CURRENT_IDX}:-0]}"
+          
           echo "=================================================="
           [ -n "$CF_URL" ] && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
           [ -n "$BORE_URL" ] && echo "URL DU PHONG (bore):      ${BORE_URL}"
           [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL: ${SSHX_URL}"
-          echo "Dang chay: ${COMBO}"
+          echo "Dang chay: ${SELECTED_COMBO}"
           echo "Status:    http://localhost:${HLS_SERVER_PORT}/status"
           echo "=================================================="
           {
@@ -289,7 +314,7 @@ jobs:
             [ -n "$CF_URL" ] && echo "- URL chinh: ${CF_URL}/index.m3u8"
             [ -n "$BORE_URL" ] && echo "- URL phu: ${BORE_URL}"
             [ -n "$SSHX_URL" ] && echo "- SSHX: ${SSHX_URL}"
-            echo "- combo: ${COMBO}"
+            echo "- combo: ${SELECTED_COMBO}"
           } >> "$GITHUB_STEP_SUMMARY"
 
           # ---------- 5. Watchdog ----------
