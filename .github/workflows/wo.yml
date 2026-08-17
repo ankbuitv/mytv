@@ -17,7 +17,6 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      VN_PROXY: "" # Điền Proxy VN vào đây (ví dụ: "http://user:pass@1.2.3.4:8080")
 
     steps:
       - name: "Cài đặt gói phụ thuộc hệ thống - Woman"
@@ -34,9 +33,45 @@ jobs:
 
           mkdir -p /dev/shm/hls/${CHANNEL_ID}
 
-      - name: "Tạo HLS Server - Woman"
+      - name: "Kiểm tra kết nối MPD Manifest - Woman (Tối đa 2 phút)"
         shell: bash
         run: |
+          set -euo pipefail
+          echo "⏳ Đang kiểm tra kết nối trực tiếp tới manifest MPD (Tối đa 2 phút)..."
+          
+          TIMEOUT=120
+          INTERVAL=5
+          ELAPSED=0
+          CONNECTED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -A "${USER_AGENT}" \
+              -H "Referer: ${REFERER}" \
+              -H "Origin: https://vtvprime.vn" \
+              --connect-timeout 5 \
+              "${MPD_URL}" || echo "000")
+
+            if [ "$HTTP_STATUS" -eq 200 ]; then
+              echo "✅ Kết nối thành công tới MPD trong ${ELAPSED}s! (HTTP 200)"
+              CONNECTED=1
+              break
+            fi
+
+            echo "⚠️ Chưa kết nối được (HTTP $HTTP_STATUS). Thử lại sau ${INTERVAL}s... (${ELAPSED}/${TIMEOUT}s)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $CONNECTED -ne 1 ]; then
+            echo "❌ Lỗi: Không thể kết nối tới MPD sau 2 phút! Server VTVPrime có thể đang chặn dải IP GitHub Actions."
+            exit 1
+          fi
+
+      - name: "Khởi chạy Node.js HLS Server - Woman"
+        shell: bash
+        run: |
+          set -euo pipefail
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
@@ -80,103 +115,48 @@ jobs:
           });
           EOF
 
-      - name: "Kiểm tra kết nối MPD cho Woman (Tối đa 2 phút)"
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "⏳ Đang kiểm tra kết nối tới manifest MPD (Tối đa 2 phút)..."
-          
-          TIMEOUT=120
-          INTERVAL=5
-          ELAPSED=0
-          CONNECTED=0
-
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            if [ -n "${VN_PROXY:-}" ]; then
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -x "${VN_PROXY}" \
-                -A "${USER_AGENT}" \
-                -H "Referer: ${REFERER}" \
-                -H "Origin: https://vtvprime.vn/" \
-                --connect-timeout 5 \
-                "${MPD_URL}" || echo "000")
-            else
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                -A "${USER_AGENT}" \
-                -H "Referer: ${REFERER}" \
-                -H "Origin: https://vtvprime.vn/" \
-                --connect-timeout 5 \
-                "${MPD_URL}" || echo "000")
-            fi
-
-            if [ "$HTTP_STATUS" -eq 200 ]; then
-              echo "✅ Kết nối thành công tới MPD trong ${ELAPSED}s! Bắt đầu chạy FFmpeg..."
-              CONNECTED=1
-              break
-            fi
-
-            echo "⚠️ Chưa kết nối được (Mã HTTP: $HTTP_STATUS). Thử lại sau ${INTERVAL}s... (${ELAPSED}/${TIMEOUT}s)"
-            sleep $INTERVAL
-            ELAPSED=$((ELAPSED + INTERVAL))
-          done
-
-          if [ $CONNECTED -ne 1 ]; then
-            echo "❌ Lỗi: Không thể kết nối tới MPD sau 2 phút! Kiểm tra lại Proxy VN hoặc Server VTVPrime."
-            exit 1
-          fi
-
-      - name: "Khởi chạy Bore & FFmpeg cho Woman"
-        shell: bash
-        run: |
-          set -euo pipefail
-
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
           for i in {1..10}; do
-            if nc -z localhost 5000; then break; fi
+            if nc -z localhost 5000; then
+              echo "✅ Local HLS Server đang lắng nghe tại cổng 5000"
+              break
+            fi
             sleep 1
           done
+
+      - name: "Khởi chạy FFmpeg Stream - Woman"
+        shell: bash
+        run: |
+          set -euo pipefail
 
           cat << 'EOF' > /tmp/run_ffmpeg.sh
           #!/usr/bin/env bash
           set -euo pipefail
 
-          HEADERS=$'Referer: https://vtvprime.vn/\r\nOrigin: https://vtvprime.vn/\r\n'
+          # Header chuẩn với Origin không có slash ở cuối
+          HEADERS=$'Referer: https://vtvprime.vn/\r\nOrigin: https://vtvprime.vn\r\n'
 
           while true; do
             echo "🚀 Starting FFmpeg stream (${CHANNEL_ID})..."
-            if [ -n "${VN_PROXY:-}" ]; then
-              ffmpeg -hide_banner -loglevel warning \
-                -http_proxy "${VN_PROXY}" \
-                -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-                -user_agent "${USER_AGENT}" \
-                -headers "${HEADERS}" \
-                -cenc_decryption_key "${CLEARKEY_KEY}" \
-                -i "${MPD_URL}" \
-                -c copy \
-                -f hls \
-                -hls_time 4 \
-                -hls_list_size 5 \
-                -hls_flags delete_segments+omit_endlist+temp_file \
-                -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
-                "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" || true
-            else
-              ffmpeg -hide_banner -loglevel warning \
-                -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-                -user_agent "${USER_AGENT}" \
-                -headers "${HEADERS}" \
-                -cenc_decryption_key "${CLEARKEY_KEY}" \
-                -i "${MPD_URL}" \
-                -c copy \
-                -f hls \
-                -hls_time 4 \
-                -hls_list_size 5 \
-                -hls_flags delete_segments+omit_endlist+temp_file \
-                -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
-                "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" || true
-            fi
+            
+            ffmpeg -hide_banner -loglevel info \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -user_agent "${USER_AGENT}" \
+              -headers "${HEADERS}" \
+              -cenc_decryption_key "${CLEARKEY_KEY}" \
+              -i "${MPD_URL}" \
+              -c copy \
+              -f hls \
+              -hls_time 4 \
+              -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist+temp_file \
+              -hls_segment_filename "/dev/shm/hls/${CHANNEL_ID}/segment_%03d.ts" \
+              "/dev/shm/hls/${CHANNEL_ID}/index.m3u8"
 
-            echo "⚠️ FFmpeg exited. Retrying in 3 seconds..."
+            EXIT_CODE=$?
+            echo "⚠️ FFmpeg đã thoát với mã lỗi: ${EXIT_CODE}. Đang thử lại sau 3 giây..."
             sleep 3
           done
           EOF
@@ -184,12 +164,37 @@ jobs:
           chmod +x /tmp/run_ffmpeg.sh
           nohup /tmp/run_ffmpeg.sh > /tmp/ffmpeg.log 2>&1 &
 
+          echo "⏳ Chờ FFmpeg khởi tạo luồng và ghi file index.m3u8..."
+          STREAM_READY=0
+          for i in {1..40}; do
+            if [ -s "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" ]; then
+              STREAM_READY=1
+              echo "✅ FFmpeg đã tạo thành công file index.m3u8!"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ $STREAM_READY -ne 1 ]; then
+            echo "❌ Lỗi: FFmpeg không thể tạo luồng HLS. Dưới đây là chi tiết log FFmpeg:"
+            echo "--------------------- FFMPEG LOG ---------------------"
+            cat /tmp/ffmpeg.log
+            echo "------------------------------------------------------"
+            exit 1
+          fi
+
+      - name: "Mở Tunnel Bore & Giám sát - Woman"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🚀 Khởi động Bore Tunnel tới bore.pub:${TARGET_PORT}..."
           bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
           BORE_PID=$!
           echo $BORE_PID > /tmp/bore.pid
 
           SUCCESS=0
-          for i in {1..60}; do
+          for i in {1..30}; do
             sleep 2
             if grep -q -e "bound to remote port" -e "bore.pub:${TARGET_PORT}" /tmp/bore.log 2>/dev/null; then
               SUCCESS=1
@@ -205,37 +210,30 @@ jobs:
           done
 
           if [ $SUCCESS -ne 1 ]; then
+            echo "❌ Không thể kết nối Bore Tunnel:"
             cat /tmp/bore.log
             exit 1
           fi
 
-          STREAM_READY=0
-          for i in {1..40}; do
-            if [ -f "/dev/shm/hls/${CHANNEL_ID}/index.m3u8" ]; then
-              STREAM_READY=1
-              break
-            fi
-            sleep 1
-          done
-
-          if [ $STREAM_READY -ne 1 ]; then
-            cat /tmp/ffmpeg.log
-            exit 1
-          fi
-
           echo "=================================================="
-          echo "✅ LINK STREAM SẴN SÀNG: http://bore.pub:${TARGET_PORT}/index.m3u8"
+          echo "✅ STREAM ĐÃ SẴN SÀNG: http://bore.pub:${TARGET_PORT}/index.m3u8"
           echo "=================================================="
 
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
+            # Chạy khoảng 5 tiếng 59 phút
             if [ $(( NOW - START_TIME )) -ge 21540 ]; then
+              echo "⏰ Đã đủ thời gian chạy workflow. Kết thúc tiến trình."
               exit 0
             fi
+
+            # Kiểm tra Bore Watchdog
             if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
+              echo "⚠️ Phát hiện Bore tunnel ngắt kết nối. Đang khởi động lại..."
               bore local 5000 --to bore.pub --port "${TARGET_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
             fi
+
             sleep 10
           done
