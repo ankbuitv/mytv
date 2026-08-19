@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Light & Fast (Zero CPU Transcode)
+name: IPTV Stream Server - Light & Fast (Zero CPU Stream Copy)
 
 on:
   schedule:
@@ -17,7 +17,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
+          # Đã BỎ cache: 'pip' ở đây để tránh lỗi không tìm thấy requirements.txt
 
       - name: Install System Dependencies
         run: |
@@ -106,7 +106,6 @@ jobs:
           echo '\''#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD'\'' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-          # Hạ bớt worker xuống 2 để chạy cực êm trên 2 vCPU
           gunicorn -w 2 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
           sleep 2
 
@@ -123,7 +122,6 @@ jobs:
           while true; do
             echo "🎬 Remuxing MPD to HLS (Copy Mode)..."
             
-            # Cấu hình FFmpeg nhẹ nhất thế giới: -c copy (Không tốn CPU)
             ffmpeg -y -hide_banner -loglevel warning \
               -headers "User-Agent: $UA"$'\r\n'"Accept: */*"$'\r\n' \
               -i "$STREAM_MPD" \
