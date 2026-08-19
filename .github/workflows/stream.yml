@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Light & Fast (Zero CPU Stream Copy)
+name: IPTV Stream Server - Fixed DASH 404 & Zero CPU
 
 on:
   schedule:
@@ -17,13 +17,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          # Đã BỎ cache: 'pip' ở đây để tránh lỗi không tìm thấy requirements.txt
 
       - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl dnsutils
-          pip install --no-cache-dir flask flask-cors gunicorn
+          pip install --no-cache-dir flask flask-cors gunicorn streamlink
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -47,7 +46,7 @@ jobs:
           CORS(app, resources={r"/*": {"origins": "*"}})
 
           @app.route("/")
-          def index(): return "IPTV Stream Server Running (Direct Remux Mode)!", 200
+          def index(): return "IPTV Stream Server Running!", 200
 
           @app.route("/playlist.m3u")
           def playlist(): 
@@ -110,27 +109,34 @@ jobs:
           sleep 2
 
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (ZERO-CPU STREAM COPY)!"
+          echo "🚀 CHRTV STREAM READY!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
           echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
           UA="VLC/3.0.20 LibVLC/3.0.20 (QtEmbedded; U; Linux; C) MAG200 stb app"
+          
+          # Link MPD của bro (Nếu token hết hạn bro chỉ cần thay chuỗi token mới vào biến này)
           STREAM_MPD="http://136.239.158.10:6610/001/2/ch00000090990000001065/manifest.mpd?AuthInfo=v87HD9rEhwHiAdYyrP20Tg5pgSMSITY%2FHYvvCWJRp%2BosKg8aLji3LHWqHUI%2FwQyJytokK1MIobcue1ImXa0ZEA%3D%3D&version=v1.0&BreakPoint=0&virtualDomain=001.live_hls.zte.com&programid=ch00000000000000001085&contentid=ch00000000000000001085&videoid=ch00000090990000001065&recommendtype=0&userid=1362658369654&boid=001&stbid=02%3A00%3A00%3A00%3A00%3A00&terminalflag=1&profilecode=&usersessionid=UVJL5F87UVBXXX&NeedJITP=1&JITPMediaType=DASH&JITPDRMType=NO"
 
           while true; do
-            echo "🎬 Remuxing MPD to HLS (Copy Mode)..."
+            echo "🎬 Fetching DASH Stream via Streamlink + Zero-CPU FFmpeg Remux..."
             
+            # Streamlink chịu trách nhiệm bóc MPD -> FFmpeg chỉ Stream Copy (-c copy) nên CPU 0%
+            streamlink --http-header "User-Agent=$UA" \
+                       --http-header "Accept=*/*" \
+                       --stream-segment-threads 2 \
+                       --retry-streams 3 \
+                       --stdout "$STREAM_MPD" best | \
             ffmpeg -y -hide_banner -loglevel warning \
-              -headers "User-Agent: $UA"$'\r\n'"Accept: */*"$'\r\n' \
-              -i "$STREAM_MPD" \
+              -i pipe:0 \
               -c copy \
               -f hls -hls_time 3 -hls_list_size 5 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
               -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
             
-            echo "⚠️ Connection reset or source stream down, retrying in 3s..."
+            echo "⚠️ Stream pipe broke or Token expired, retrying in 3s..."
             sleep 3
           done
           """
