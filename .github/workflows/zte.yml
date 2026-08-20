@@ -9,64 +9,67 @@ jobs:
   run-proxy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. Tải Bore CLI
+      - name: 1. Tải Bore CLI & Cài Python Requests
         run: |
           wget https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
           tar -xf bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
           sudo mv bore /usr/local/bin/
+          pip3 install requests
 
-      - name: 2. Chạy Python Streaming Proxy (Chuyên trị Trình duyệt)
+      - name: 2. Chạy Python Robust Streaming Proxy
         run: |
           cat << 'EOF' > proxy.py
           from http.server import HTTPServer, BaseHTTPRequestHandler
-          import urllib.request
+          import requests
 
-          class StreamingProxyHandler(BaseHTTPRequestHandler):
+          class RobustProxyHandler(BaseHTTPRequestHandler):
               def do_GET(self):
                   path = self.path.replace('/zte/', '/')
                   target_url = f"http://136.239.158.10:6610{path}"
                   
-                  # Ép bắt buộc 2 Header chuẩn của STB ZTE cho TẤT CẢ các file (.m3u8 và .ts)
-                  req = urllib.request.Request(target_url)
-                  req.add_header('User-Agent', 'ZTE-STB-Android/1.0')
-                  req.add_header('X-Requested-With', 'com.zte.iptv.epg')
-                  req.add_header('Accept', '*/*')
+                  # Header STB ZTE Chuẩn
+                  headers = {
+                      'User-Agent': 'ZTE-STB-Android/1.0',
+                      'X-Requested-With': 'com.zte.iptv.epg',
+                      'Accept': '*/*'
+                  }
                   
                   try:
-                      with urllib.request.urlopen(req, timeout=10) as response:
-                          self.send_response(response.status)
-                          # Bơm Header mở khóa CORS cho Trình duyệt web
-                          self.send_header('Access-Control-Allow-Origin', '*')
-                          self.send_header('Access-Control-Allow-Headers', '*')
+                      # Dùng requests để giữ nguyên nguyên bản Query Param
+                      resp = requests.get(target_url, headers=headers, stream=True, timeout=10)
+                      
+                      self.send_response(resp.status_code)
+                      
+                      # CORS cho Trình duyệt
+                      self.send_header('Access-Control-Allow-Origin', '*')
+                      self.send_header('Access-Control-Allow-Headers', '*')
+                      
+                      if '.m3u8' in path:
+                          self.send_header('Content-Type', 'application/x-mpegURL')
+                      elif '.ts' in path:
+                          self.send_header('Content-Type', 'video/mp2t')
+                      else:
+                          self.send_header('Content-Type', resp.headers.get('Content-Type', 'application/octet-stream'))
                           
-                          # Set Content-Type chuẩn
-                          if '.m3u8' in path:
-                              self.send_header('Content-Type', 'application/x-mpegURL')
-                          elif '.ts' in path:
-                              self.send_header('Content-Type', 'video/mp2t')
-                          else:
-                              self.send_header('Content-Type', response.headers.get('Content-Type', 'application/octet-stream'))
-                          
-                          self.end_headers()
-                          
-                          # Kỹ thuật Stream Buffer: Đọc từng chunk 64KB đẩy trực tiếp ra Trình duyệt (Chống Lag/Delay)
-                          while True:
-                              chunk = response.read(65536)
-                              if not chunk:
-                                  break
+                      self.end_headers()
+                      
+                      # Stream từng chunk 64KB trực tiếp ra Trình duyệt
+                      for chunk in resp.iter_content(chunk_size=65536):
+                          if chunk:
                               self.wfile.write(chunk)
+                              
                   except Exception as e:
+                      print(f"Error handling request: {e}")
                       self.send_error(500, str(e))
 
               def do_OPTIONS(self):
-                  # Trả lời CORS Preflight cho Browser
                   self.send_response(200)
                   self.send_header('Access-Control-Allow-Origin', '*')
                   self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
                   self.send_header('Access-Control-Allow-Headers', '*')
                   self.end_headers()
 
-          server = HTTPServer(('0.0.0.0', 8080), StreamingProxyHandler)
+          server = HTTPServer(('0.0.0.0', 8080), RobustProxyHandler)
           server.serve_forever()
           EOF
 
