@@ -1,0 +1,304 @@
+name: stb-setup - Loop MP4 HLS Server
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # SETUP PYTHON
+      # ==========================================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # ==========================================================
+      # INSTALL DEPENDENCIES
+      # ==========================================================
+      - name: Install System & Python Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl dnsutils
+          pip install --no-cache-dir flask flask-cors gunicorn
+
+      # ==========================================================
+      # SETUP BORE + SSHX
+      # ==========================================================
+      - name: Setup Bore Tunnel & SSHX
+        run: |
+          curl -sL "https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz" | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/bore
+          curl -sSf https://sshx.io/get | sh
+
+      # ==========================================================
+      # PREPARE RAM DISK
+      # ==========================================================
+      - name: Create Workspace & RAM Disk
+        run: |
+          rm -rf /dev/shm/hls
+          mkdir -p /dev/shm/hls
+          rm -rf hls
+          ln -s /dev/shm/hls hls
+          df -h /dev/shm
+
+      # ==========================================================
+      # CHECK VIDEO SOURCE
+      # ==========================================================
+      - name: Check MP4 Source
+        run: |
+          VIDEO="./stb-setup.mp4"
+
+          if [ ! -f "$VIDEO" ]; then
+            echo "❌ Không tìm thấy: $VIDEO"
+            echo "Hãy đặt file stb-setup.mp4 ở root repository."
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "🎬 SOURCE VIDEO: stb-setup.mp4"
+          echo "=========================================="
+          ls -lh "$VIDEO"
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_name,codec_type,width,height,r_frame_rate -of default=noprint_wrappers=1 "$VIDEO"
+
+      # ==========================================================
+      # GENERATE FLASK SERVER
+      # ==========================================================
+      - name: Generate HLS Server
+        run: |
+          cat > app.py <<'PY'
+          from flask import Flask, send_from_directory, abort, make_response
+          from flask_cors import CORS
+          import os
+
+          app = Flask(__name__)
+          CORS(app, resources={r"/*": {"origins": "*"}})
+
+          HLS_DIR = "/dev/shm/hls"
+
+          @app.route("/")
+          def index():
+              return ("stb-setup HLS Stream Server Running!", 200)
+
+          @app.route("/playlist.m3u")
+          def playlist():
+              playlist_path = os.path.join(HLS_DIR, "playlist.m3u")
+              if not os.path.exists(playlist_path):
+                  return abort(404)
+              return send_from_directory(HLS_DIR, "playlist.m3u", mimetype="application/x-mpegurl")
+
+          @app.route("/hls/<path:filename>")
+          def serve_hls(filename):
+              file_path = os.path.join(HLS_DIR, filename)
+              if not os.path.isfile(file_path):
+                  return abort(404)
+
+              response = make_response(send_from_directory(HLS_DIR, filename))
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              response.headers["Connection"] = "keep-alive"
+              response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+              response.headers["Pragma"] = "no-cache"
+
+              if filename.endswith(".ts"):
+                  response.headers["Content-Type"] = "video/mp2t"
+              elif filename.endswith(".m3u8"):
+                  response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
+
+              return response
+
+          @app.route("/hls/<path:filename>", methods=["OPTIONS"])
+          def hls_options(filename):
+              response = make_response("", 204)
+              response.headers["Access-Control-Allow-Origin"] = "*"
+              response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+              response.headers["Access-Control-Allow-Headers"] = "*"
+              return response
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=30115, threaded=True)
+          PY
+
+      # ==========================================================
+      # GENERATE LOCAL PLAYLIST
+      # ==========================================================
+      - name: Generate Playlist
+        run: |
+          cat > /dev/shm/hls/playlist.m3u <<'EOF'
+          #EXTM3U
+          #EXTINF:-1 tvg-id="stb-setup" tvg-name="stb-setup" group-title="stb-setup",stb-setup
+          /hls/index.m3u8
+          EOF
+
+      # ==========================================================
+      # GENERATE STREAM SCRIPT
+      # ==========================================================
+      - name: Generate Stream Script
+        run: |
+          cat > start_stream.sh <<'BASH'
+          #!/bin/bash
+          set +e
+
+          # ======================================================
+          # CONFIG
+          # ======================================================
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="${DUCKDNS_TOKEN}"
+
+          LOCAL_PORT=30115
+          BORE_PORT=30115
+
+          VIDEO="./stb-setup.mp4"
+          HLS_DIR="/dev/shm/hls"
+
+          # ======================================================
+          # START SSHX
+          # ======================================================
+          echo "💻 Starting SSHX Web Terminal..."
+          sshx > sshx.log 2>&1 &
+          sleep 4
+
+          SSHX_URL=$(grep "https://sshx.io/s/" sshx.log | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+          # ======================================================
+          # START BORE
+          # ======================================================
+          echo "🌐 Starting Bore Tunnel on Port $BORE_PORT..."
+          (
+            while true; do
+              bore local "$LOCAL_PORT" --to bore.pub --port "$BORE_PORT" >> bore.log 2>&1
+              echo "⚠️ Bore disconnected."
+              sleep 3
+            done
+          ) &
+          sleep 5
+
+          # ======================================================
+          # FIND BORE PUBLIC IP
+          # ======================================================
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          echo "🌐 Bore IP: $BORE_IP"
+
+          # ======================================================
+          # UPDATE DUCKDNS
+          # ======================================================
+          echo "🌐 Updating DuckDNS..."
+          if [ -n "$BORE_IP" ]; then
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+          else
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}"
+          fi
+          echo
+
+          # ======================================================
+          # PUBLIC URL
+          # ======================================================
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          # ======================================================
+          # GENERATE PUBLIC PLAYLIST
+          # ======================================================
+          cat > "${HLS_DIR}/playlist.m3u" <<EOF
+          #EXTM3U
+          #EXTINF:-1 tvg-id="stb-setup" tvg-name="stb-setup" group-title="stb-setup",stb-setup
+          ${PUBLIC_URL}/hls/index.m3u8
+          EOF
+
+          # ======================================================
+          # START GUNICORN
+          # ======================================================
+          echo "🚀 Starting Gunicorn on Port $LOCAL_PORT..."
+          gunicorn \
+            -w 4 \
+            --threads 4 \
+            --access-logfile - \
+            --error-logfile - \
+            --keep-alive 30 \
+            --worker-tmp-dir /dev/shm \
+            -b "0.0.0.0:${LOCAL_PORT}" \
+            app:app &
+
+          sleep 3
+
+          # ======================================================
+          # CHECK SERVER
+          # ======================================================
+          echo "🔎 Checking local server..."
+          curl -I "http://127.0.0.1:${LOCAL_PORT}/hls/index.m3u8" || true
+
+          # ======================================================
+          # INFO
+          # ======================================================
+          echo
+          echo "===================================================="
+          echo "🚀 STB-SETUP STREAM READY"
+          echo "===================================================="
+          echo "💻 SSHX: ${SSHX_URL}"
+          echo "🌐 Public URL: ${PUBLIC_URL}"
+          echo "📺 HLS: ${PUBLIC_URL}/hls/index.m3u8"
+          echo "📋 M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "🔌 Local Port: ${LOCAL_PORT}"
+          echo "🔁 Source MP4: ${VIDEO}"
+          echo "===================================================="
+
+          # ======================================================
+          # FFMPEG INFINITE LOOP
+          # ======================================================
+          while true; do
+            echo
+            echo "🎬 Starting FFmpeg Stream Loop..."
+            ffmpeg \
+              -y \
+              -hide_banner \
+              -loglevel warning \
+              -re \
+              -stream_loop -1 \
+              -i "$VIDEO" \
+              -map 0:v:0 \
+              -map 0:a:0? \
+              -c:v libx264 \
+              -preset veryfast \
+              -tune zerolatency \
+              -profile:v main \
+              -pix_fmt yuv420p \
+              -c:a aac \
+              -b:a 128k \
+              -ar 48000 \
+              -g 60 \
+              -keyint_min 60 \
+              -sc_threshold 0 \
+              -f hls \
+              -hls_time 6 \
+              -hls_list_size 10 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_segment_filename "${HLS_DIR}/segment_%05d.ts" \
+              "${HLS_DIR}/index.m3u8"
+
+            echo "⚠️ FFmpeg stopped. Restarting in 2s..."
+            sleep 2
+          done
+          BASH
+
+          chmod +x start_stream.sh
+
+      # ==========================================================
+      # START EVERYTHING
+      # ==========================================================
+      - name: Execute stb-setup Stream
+        env:
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
+        run: |
+          ./start_stream.sh
