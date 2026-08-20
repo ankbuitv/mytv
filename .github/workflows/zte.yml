@@ -1,0 +1,52 @@
+name: ZTE IPTV Nginx Proxy
+
+on:
+  workflow_dispatch: # Bấm nút Run Workflow thủ công trên GitHub
+
+jobs:
+  run-proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Cài đặt Nginx & Bore CLI
+        run: |
+          sudo apt-get update && sudo apt-get install -y nginx
+          wget https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xf bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
+          sudo mv bore /usr/local/bin/
+
+      - name: 2. Tạo File Cấu hình Nginx Filter Header
+        run: |
+          cat << 'EOF' | sudo tee /etc/nginx/sites-available/default
+          server {
+              listen 8080;
+
+              location /zte/ {
+                  proxy_pass http://136.239.158.10:6610/;
+                  
+                  # Ép Header STB Chuẩn
+                  proxy_set_header User-Agent "ZTE-STB-Android/1.0";
+                  proxy_set_header X-Requested-With "com.zte.iptv.epg";
+                  proxy_set_header Host "136.239.158.10:6610";
+
+                  # Triệt hạ hoàn toàn Header rác từ Browser (Gây lỗi 403)
+                  proxy_set_header Origin "";
+                  proxy_set_header Referer "";
+                  proxy_set_header Sec-Fetch-Mode "";
+                  proxy_set_header Sec-Fetch-Site "";
+                  proxy_set_header Sec-Fetch-Dest "";
+
+                  # Mở khóa CORS cho Trình duyệt
+                  add_header 'Access-Control-Allow-Origin' '*' always;
+                  add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+                  add_header 'Access-Control-Allow-Headers' '*' always;
+              }
+          }
+          EOF
+          sudo systemctl restart nginx
+
+      - name: 3. Khởi chạy Bore Tunnel & Expose Port
+        run: |
+          echo "=========================================================="
+          echo "Đang khởi tạo Tunnel qua bore.pub..."
+          echo "=========================================================="
+          bore local 8080 --to bore.pub
