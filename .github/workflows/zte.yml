@@ -1,4 +1,4 @@
-name: ZTE IPTV High-Speed Streaming Proxy
+name: ZTE IPTV Zero-Lag Proxy
 
 on:
   workflow_dispatch:
@@ -16,18 +16,26 @@ jobs:
           sudo mv bore /usr/local/bin/
           pip3 install requests
 
-      - name: 2. Chạy Python Robust Streaming Proxy
+      - name: 2. Chạy Python M3U8-Rewriter Proxy (TS Direct)
         run: |
           cat << 'EOF' > proxy.py
           from http.server import HTTPServer, BaseHTTPRequestHandler
           import requests
+          import re
 
-          class RobustProxyHandler(BaseHTTPRequestHandler):
+          class FastProxyHandler(BaseHTTPRequestHandler):
               def do_GET(self):
                   path = self.path.replace('/zte/', '/')
                   target_url = f"http://136.239.158.10:6610{path}"
                   
-                  # Header STB ZTE Chuẩn
+                  # 1. NẾU BROWSER KÉO FILE .TS -> CHUYỂN HƯỚNG DIRECT VỀ ZTE (KHÔNG QUA PROXY)
+                  if '.ts' in path:
+                      self.send_response(302)
+                      self.send_header('Location', target_url)
+                      self.end_headers()
+                      return
+
+                  # 2. XỬ LÝ FILE .M3U8 -> REWRITE ĐƯỜNG DẪN BÊN TRONG THÀNH LINK DIRECT ZTE
                   headers = {
                       'User-Agent': 'ZTE-STB-Android/1.0',
                       'X-Requested-With': 'com.zte.iptv.epg',
@@ -35,31 +43,31 @@ jobs:
                   }
                   
                   try:
-                      # Dùng requests để giữ nguyên nguyên bản Query Param
-                      resp = requests.get(target_url, headers=headers, stream=True, timeout=10)
+                      resp = requests.get(target_url, headers=headers, timeout=10)
+                      content = resp.text
                       
-                      self.send_response(resp.status_code)
+                      # Lấy Base URL của folder hiện tại trên ZTE
+                      base_dir = target_url.rsplit('/', 1)[0] + '/'
                       
-                      # CORS cho Trình duyệt
+                      # Rewrite toàn bộ sub-playlist và file .ts tương đối thành Absolute URL trỏ thẳng ZTE
+                      lines = content.splitlines()
+                      new_lines = []
+                      for line in lines:
+                          line_str = line.strip()
+                          if line_str and not line_str.startswith('#'):
+                              if not line_str.startswith('http'):
+                                  line = base_dir + line_str
+                          new_lines.append(line)
+                      
+                      modified_content = '\n'.join(new_lines)
+                      
+                      self.send_response(200)
                       self.send_header('Access-Control-Allow-Origin', '*')
-                      self.send_header('Access-Control-Allow-Headers', '*')
-                      
-                      if '.m3u8' in path:
-                          self.send_header('Content-Type', 'application/x-mpegURL')
-                      elif '.ts' in path:
-                          self.send_header('Content-Type', 'video/mp2t')
-                      else:
-                          self.send_header('Content-Type', resp.headers.get('Content-Type', 'application/octet-stream'))
-                          
+                      self.send_header('Content-Type', 'application/x-mpegURL')
                       self.end_headers()
+                      self.wfile.write(modified_content.encode('utf-8'))
                       
-                      # Stream từng chunk 64KB trực tiếp ra Trình duyệt
-                      for chunk in resp.iter_content(chunk_size=65536):
-                          if chunk:
-                              self.wfile.write(chunk)
-                              
                   except Exception as e:
-                      print(f"Error handling request: {e}")
                       self.send_error(500, str(e))
 
               def do_OPTIONS(self):
@@ -69,7 +77,7 @@ jobs:
                   self.send_header('Access-Control-Allow-Headers', '*')
                   self.end_headers()
 
-          server = HTTPServer(('0.0.0.0', 8080), RobustProxyHandler)
+          server = HTTPServer(('0.0.0.0', 8080), FastProxyHandler)
           server.serve_forever()
           EOF
 
