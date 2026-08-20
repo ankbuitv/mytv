@@ -1,89 +1,69 @@
-name: ZTE IPTV Zero-Lag Proxy
+cat << 'EOF' > proxy.py
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '*/5 * * * *'
+class PerfectProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = self.path.replace('/zte/', '/')
+        target_url = f"http://136.239.158.10:6610{path}"
+        
+        # 1. FILE .TS -> BROWSER TẢI TRỰC TIẾP TỪ ZTE GỐC (DIRECT, KHÔNG QUA PROXY -> KHÔNG LAG)
+        if '.ts' in path:
+            self.send_response(302)
+            self.send_header('Location', target_url)
+            self.end_headers()
+            return
 
-jobs:
-  run-proxy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. Tải Bore CLI & Cài Python Requests
-        run: |
-          wget https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
-          tar -xf bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
-          sudo mv bore /usr/local/bin/
-          pip3 install requests
+        # 2. BẤT KỲ FILE .M3U8 NÀO (Master hay Sub-Playlist) -> PHẢI CHẠY QUA PROXY ĐỂ FAKE HEADER
+        headers = {
+            'User-Agent': 'ZTE-STB-Android/1.0',
+            'X-Requested-With': 'com.zte.iptv.epg',
+            'Accept': '*/*'
+        }
+        
+        try:
+            resp = requests.get(target_url, headers=headers, timeout=10)
+            content = resp.text
+            
+            # Rewrite toàn bộ link con bên trong M3U8:
+            # - Nếu là file .m3u8 con -> Bắt đi qua Proxy tiếp (/zte/)
+            # - Nếu là file .ts -> Cho đi trực tiếp IP ZTE
+            lines = content.splitlines()
+            new_lines = []
+            
+            # Lấy Proxy Base Domain hiện tại (ví dụ: http://159.223.110.159:55828/zte/001/2/ch00000090990000001065/)
+            proxy_dir = self.path.rsplit('/', 1)[0] + '/'
+            zte_dir = "http://136.239.158.10:6610" + path.rsplit('/', 1)[0] + "/"
 
-      - name: 2. Chạy Python M3U8-Rewriter Proxy (TS Direct)
-        run: |
-          cat << 'EOF' > proxy.py
-          from http.server import HTTPServer, BaseHTTPRequestHandler
-          import requests
-          import re
+            for line in lines:
+                line_str = line.strip()
+                if line_str and not line_str.startswith('#'):
+                    if '.m3u8' in line_str:
+                        # Ép Sub-playlist đi qua Proxy
+                        line = proxy_dir + line_str if not line_str.startswith('http') else line_str
+                    elif '.ts' in line_str:
+                        # Ép file .ts đi thẳng ZTE gốc
+                        line = zte_dir + line_str if not line_str.startswith('http') else line_str
+                new_lines.append(line)
+            
+            modified_content = '\n'.join(new_lines)
+            
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Type', 'application/x-mpegURL')
+            self.end_headers()
+            self.wfile.write(modified_content.encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
 
-          class FastProxyHandler(BaseHTTPRequestHandler):
-              def do_GET(self):
-                  path = self.path.replace('/zte/', '/')
-                  target_url = f"http://136.239.158.10:6610{path}"
-                  
-                  # 1. NẾU BROWSER KÉO FILE .TS -> CHUYỂN HƯỚNG DIRECT VỀ ZTE (KHÔNG QUA PROXY)
-                  if '.ts' in path:
-                      self.send_response(302)
-                      self.send_header('Location', target_url)
-                      self.end_headers()
-                      return
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', '*')
+        self.end_headers()
 
-                  # 2. XỬ LÝ FILE .M3U8 -> REWRITE ĐƯỜNG DẪN BÊN TRONG THÀNH LINK DIRECT ZTE
-                  headers = {
-                      'User-Agent': 'ZTE-STB-Android/1.0',
-                      'X-Requested-With': 'com.zte.iptv.epg',
-                      'Accept': '*/*'
-                  }
-                  
-                  try:
-                      resp = requests.get(target_url, headers=headers, timeout=10)
-                      content = resp.text
-                      
-                      # Lấy Base URL của folder hiện tại trên ZTE
-                      base_dir = target_url.rsplit('/', 1)[0] + '/'
-                      
-                      # Rewrite toàn bộ sub-playlist và file .ts tương đối thành Absolute URL trỏ thẳng ZTE
-                      lines = content.splitlines()
-                      new_lines = []
-                      for line in lines:
-                          line_str = line.strip()
-                          if line_str and not line_str.startswith('#'):
-                              if not line_str.startswith('http'):
-                                  line = base_dir + line_str
-                          new_lines.append(line)
-                      
-                      modified_content = '\n'.join(new_lines)
-                      
-                      self.send_response(200)
-                      self.send_header('Access-Control-Allow-Origin', '*')
-                      self.send_header('Content-Type', 'application/x-mpegURL')
-                      self.end_headers()
-                      self.wfile.write(modified_content.encode('utf-8'))
-                      
-                  except Exception as e:
-                      self.send_error(500, str(e))
-
-              def do_OPTIONS(self):
-                  self.send_response(200)
-                  self.send_header('Access-Control-Allow-Origin', '*')
-                  self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-                  self.send_header('Access-Control-Allow-Headers', '*')
-                  self.end_headers()
-
-          server = HTTPServer(('0.0.0.0', 8080), FastProxyHandler)
-          server.serve_forever()
-          EOF
-
-          python3 proxy.py &
-          sleep 2
-
-      - name: 3. Khởi chạy Bore Tunnel (Port 55828)
-        run: |
-          bore local 8080 --to bore.pub --port 55828
+server = HTTPServer(('0.0.0.0', 8080), PerfectProxyHandler)
+server.serve_forever()
+EOF
