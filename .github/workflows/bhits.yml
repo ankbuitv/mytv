@@ -1,4 +1,4 @@
-name: HLS Restream - BOX HITS (Optimized)
+name: HLS Restream - BOX HITS (Cron Auto Restart)
 
 on:
   workflow_dispatch:
@@ -15,20 +15,21 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
+      BORE_PORT: "30119"
       HLS_DIR: "/dev/shm/hls/boxhits"
 
     steps:
-      - name: Install System Dependencies & Cloudflared
+      - name: Install System Dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl nodejs ffmpeg
-          
-          # Cài đặt Cloudflared
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          rm cloudflared.deb
+
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
+          tar -xzf /tmp/bore.tar.gz -C /tmp
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
+          rm -f /tmp/bore.tar.gz /tmp/bore
 
           mkdir -p "${HLS_DIR}"
 
@@ -46,6 +47,7 @@ jobs:
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Connection', 'keep-alive');
 
             if (req.method === 'OPTIONS') {
               res.writeHead(204);
@@ -77,26 +79,27 @@ jobs:
           });
 
           server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Server HTTP đã bật cổng 5000...');
+            console.log('🚀 Server started on port 5000...');
           });
           EOF
 
-      - name: Start Services, FFmpeg & Cloudflare Tunnel
+      - name: Start Services & FFmpeg
         shell: bash
         run: |
           set -euo pipefail
 
-          # 1. Chạy Node.js Server
+          # 1. Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg: COPY LUỒNG (Không Mã Hóa Lại -> Giảm 95% CPU, hết lag)
+          # 2. FFmpeg: Đã tối ưu - Bỏ Re-encode, Stream Passthrough
           CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
           
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
             -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+            -reconnect_on_http_error 403,429,500,502,503,504 \
             -reconnect_delay_max 5 \
             -cenc_decryption_key "$CLEARKEY_KEY" \
             -i "$MPD_URL" \
@@ -105,38 +108,70 @@ jobs:
             -f hls \
             -hls_time 4 \
             -hls_list_size 6 \
-            -hls_flags delete_segments+omit_endlist \
+            -hls_flags delete_segments+omit_endlist+append_list+temp_file \
             -hls_segment_filename "${HLS_DIR}/segment_%03d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 3. Chạy Cloudflare Tunnel (Miễn phí, Tốc độ cao)
-          nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cloudflared.log 2>&1 &
-          echo $! > /tmp/cf.pid
+          # 3. Bore Tunnel
+          echo "🌐 Đang kết nối bore.pub:${BORE_PORT}..."
 
-          echo "⏳ Đang chờ Cloudflare Tunnel lấy URL public..."
-          CF_URL=""
-          for i in {1..30}; do
-            sleep 2
-            CF_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -n 1 || true)
-            if [ -n "$CF_URL" ]; then break; fi
+          while true; do
+            rm -f /tmp/bore.log
+            bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
+            BORE_PID=$!
+            echo "$BORE_PID" > /tmp/bore.pid
+
+            PORT_READY=0
+            for i in {1..30}; do
+              sleep 1
+              if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
+                PORT_READY=1
+                break
+              fi
+              if ! kill -0 "$BORE_PID" 2>/dev/null; then break; fi
+            done
+
+            if [ "$PORT_READY" -eq 1 ]; then
+              echo "✅ Bore đã kết nối thành công port ${BORE_PORT}!"
+              break
+            fi
+
+            echo "⚠️ Chưa lấy được bore.pub:${BORE_PORT}, thử lại..."
+            kill "$BORE_PID" 2>/dev/null || true
+            sleep 15
           done
 
           echo "=================================================="
-          echo "👉 LINK XEM MỚI CỦA BẠN:"
-          echo "${CF_URL}/index.m3u8"
+          echo "👉 http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
+          
+          echo "⏳ Đang chờ FFmpeg tạo HLS..."
+          STREAM_READY=0
 
-          # 4. Kiểm tra luồng video sẵn sàng
-          for i in {1..60}; do
+          for i in {1..120}; do
             if [ -f "${HLS_DIR}/index.m3u8" ]; then
+              STREAM_READY=1
               echo "✅ HLS Stream Ready!"
               break
             fi
+
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
+              echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
+              tail -n 100 /tmp/ffmpeg.log || true
+              exit 1
+            fi
+
             sleep 1
           done
 
-          # 5. Vòng lặp duy trì Workflow 5h 59m
+          if [ "$STREAM_READY" -ne 1 ]; then
+            echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
+            tail -n 100 /tmp/ffmpeg.log || true
+            exit 1
+          fi
+
+          # 4. Timer 5h 59m (21540s)
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540
 
@@ -145,17 +180,29 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hoàn thành 5h59m, thoát để nhường Cron mới..."
+              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
               exit 0
             fi
 
-            # Tự xoá segment cũ tránh đầy đĩa RAM
-            find "${HLS_DIR}" -maxdepth 1 -name 'segment_*.ts' -mmin +3 -delete 2>/dev/null || true
+            # Tự dọn rác segment cũ quá 5 phút
+            find "${HLS_DIR}" -maxdepth 1 -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
+
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+              echo "❌ Server crashed! Log:"
+              cat /tmp/server.log
+              exit 1
+            fi
 
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg lỗi/chết! Log:"
+              echo "❌ FFmpeg crashed! Log:"
               cat /tmp/ffmpeg.log
               exit 1
+            fi
+
+            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
+              echo "❌ Bore Tunnel crashed! Khởi động lại Bore..."
+              bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
+              echo $! > /tmp/bore.pid
             fi
 
             sleep 10
