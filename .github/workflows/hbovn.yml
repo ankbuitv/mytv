@@ -213,27 +213,7 @@ jobs:
             return 1
           }
 
-          COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
-          COMBO_COUNT=${#COMBOS[@]}
-          export CURRENT_IDX=0
-
-          restart_robust() {
-            local start_idx="${1:-0}"
-            for ((i=start_idx; i<COMBO_COUNT; i++)); do
-              local combo="${COMBOS[$i]}"
-              local src="${combo%%:*}" mode="${combo##*:}"
-              echo "Thu: src=${src} mode=${mode}"
-              start_ffmpeg "$src" "$mode"
-              if wait_hls_ready 90; then
-                CURRENT_IDX=$i
-                return 0
-              fi
-              tail -n 15 /tmp/ffmpeg.log || true
-            done
-            return 1
-          }
-
-          # Cố định khai báo biến trước để tránh lỗi 'unbound variable' của set -u
+          # Khai báo mảng + biến trạng thái
           COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
           COMBO_COUNT=${#COMBOS[@]}
           CURRENT_IDX=0
@@ -299,8 +279,9 @@ jobs:
           # ---------- 4. Tổng kết ----------
           SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
           
-          # Fix triệt để lỗi unbound variable khi lấy combo active
-          SELECTED_COMBO="${COMBOS[${CURRENT_IDX}:-0]}"
+          # Sửa triệt để lỗi syntax :-0 trong index mảng Bash
+          IDX="${CURRENT_IDX:-0}"
+          SELECTED_COMBO="${COMBOS[$IDX]}"
           
           echo "=================================================="
           [ -n "$CF_URL" ] && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
@@ -375,7 +356,7 @@ jobs:
               LAST_HEALTH=$NOW
               M3U8_AGE="NA"; SEGS="NA"
               [ -f "${HLS_DIR}/index.m3u8" ] && M3U8_AGE=$(( NOW - $(stat -c %Y "${HLS_DIR}/index.m3u8") ))s
-              SEGS=$(ls "${HLS_DIR}"/seg_*.ts 2>/dev/null | wc -l)
+              SEGS=$(ls "${HLS_DIR}"/seg_*.ts 2>/dev/null | wc -l || echo 0)
               echo "[HEALTH] up=${ELAPSED}s combo=${COMBOS[$CURRENT_IDX]} hls_age=${M3U8_AGE} segs=${SEGS}"
             fi
 
