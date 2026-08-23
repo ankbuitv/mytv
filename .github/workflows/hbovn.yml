@@ -140,6 +140,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Khai báo mảng COMBOS cố định ngay đầu script
+          declare -a COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
+          COMBO_COUNT=${#COMBOS[@]}
+          CURRENT_IDX=0
+
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
           HLS_LIVE_ARGS=""
@@ -213,11 +218,6 @@ jobs:
             return 1
           }
 
-          # Khai báo mảng + biến trạng thái
-          COMBOS=("mpd:transcode" "mpd:copy" "hls:transcode" "hls:copy")
-          COMBO_COUNT=${#COMBOS[@]}
-          CURRENT_IDX=0
-
           restart_robust() {
             local start_idx="${1:-0}"
             local i
@@ -279,9 +279,9 @@ jobs:
           # ---------- 4. Tổng kết ----------
           SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
           
-          # Sửa triệt để lỗi syntax :-0 trong index mảng Bash
+          # Truy xuất an toàn tuyệt đối với set -u
           IDX="${CURRENT_IDX:-0}"
-          SELECTED_COMBO="${COMBOS[$IDX]}"
+          SELECTED_COMBO="${COMBOS[$IDX]:-mpd:transcode}"
           
           echo "=================================================="
           [ -n "$CF_URL" ] && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
@@ -357,7 +357,8 @@ jobs:
               M3U8_AGE="NA"; SEGS="NA"
               [ -f "${HLS_DIR}/index.m3u8" ] && M3U8_AGE=$(( NOW - $(stat -c %Y "${HLS_DIR}/index.m3u8") ))s
               SEGS=$(ls "${HLS_DIR}"/seg_*.ts 2>/dev/null | wc -l || echo 0)
-              echo "[HEALTH] up=${ELAPSED}s combo=${COMBOS[$CURRENT_IDX]} hls_age=${M3U8_AGE} segs=${SEGS}"
+              ACTIVE_COMBO="${COMBOS[$CURRENT_IDX]:-mpd:transcode}"
+              echo "[HEALTH] up=${ELAPSED}s combo=${ACTIVE_COMBO} hls_age=${M3U8_AGE} segs=${SEGS}"
             fi
 
             sleep 10
