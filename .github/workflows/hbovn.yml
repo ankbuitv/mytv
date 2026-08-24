@@ -9,7 +9,9 @@ on:
 
 permissions:
   contents: read
-  workflows: write   # nếu self-trigger bị 403 -> Settings > Actions > Workflow permissions => Read and write
+  # "actions: write" = quyền của GITHUB_TOKEN để trigger workflow khác (repository_dispatch).
+  # Lưu ý: KHÔNG có key "workflows" trong permissions của workflow file (schema reject ngay).
+  actions: write     # nếu self-trigger bị 403 -> Settings > Actions > Workflow permissions => Read and write
 
 concurrency:
   group: hls-hbo
@@ -23,6 +25,11 @@ jobs:
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
+      # KID của key hiện tại - chỉ để ĐỐI SOÁT khi key rotate.
+      # FFmpeg KHÔNG bắt buộc KID khi manifest chỉ có 1 key (chạy ffprobe chỉ với key là chứng cứ).
+      # Nếu sau này decrypt lỗi (manifest có NHIỀU KID), đổi dòng -cenc_decryption_key thành:
+      #   -cenc_decryption_key "$CLEARKEY_KID:$CLEARKEY_KEY"
+      CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
@@ -117,6 +124,9 @@ jobs:
           printf '%s\n' "$TUNNEL_CREDENTIALS" > /home/runner/.cloudflared/credentials.json
           chmod 600 /home/runner/.cloudflared/credentials.json
 
+          # Chu y: dong "service" duoi day phai giu dung 4 khoang trong (ko co dau "-"),
+          # vi no la THANH PHAN CON cua "- hostname". Do chinh la cau truc chuan cua
+          # tien ich cloudflared - khong phai loi indent.
           printf '%s\n' \
             "tunnel: ${TUNNEL_ID}" \
             "credentials-file: /home/runner/.cloudflared/credentials.json" \
