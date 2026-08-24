@@ -68,7 +68,6 @@ jobs:
             exit 1
           fi
 
-          # Ghi file credentials & config cho Cloudflared
           echo "$TUNNEL_CREDENTIALS" > ~/.cloudflared/credentials.json
 
           cat << EOF > ~/.cloudflared/config.yml
@@ -79,7 +78,6 @@ jobs:
             - service: http://localhost:8080
           EOF
 
-          # Khởi chạy tunnel cố định
           nohup cloudflared tunnel run > /tmp/tunnel.log 2>&1 &
           
           echo "=================================================="
@@ -88,12 +86,12 @@ jobs:
           echo "https://hbo.ankb.qzz.io/index.m3u8"
           echo "=================================================="
 
-      - name: FFmpeg Remux Timestamp Fix
+      - name: FFmpeg Transcode Audio Sync Fix
         shell: bash
         run: |
           set -euo pipefail
 
-          CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
+          CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: ${ORIGIN}"$'\r\n'
 
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
@@ -103,12 +101,13 @@ jobs:
             -i "${MPD_URL}" \
             -map 0:v:0 -map 0:a:0 \
             -c:v copy \
-            -c:a copy \
             -bsf:v h264_mp4toannexb \
-            -max_muxing_queue_size 10240 \
+            -c:a aac -b:a 128k -ar 48000 -ac 2 \
+            -af "aresample=async=1" \
+            -max_muxing_queue_size 20480 \
             -f hls \
-            -hls_time 2 \
-            -hls_list_size 5 \
+            -hls_time 3 \
+            -hls_list_size 8 \
             -hls_flags delete_segments+omit_endlist+split_by_time \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
@@ -118,6 +117,6 @@ jobs:
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
 
-            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +2 -delete 2>/dev/null || true
-            sleep 5
+            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +4 -delete 2>/dev/null || true
+            sleep 10
           done
