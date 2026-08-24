@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Supabase CDN)
+name: HLS Restream - HBO Asia (Cloudflare Tunnel Engine)
 
 on:
   workflow_dispatch:
@@ -14,152 +14,102 @@ jobs:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
       CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
-      
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/dev/shm/hls_hbo"
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
     steps:
-      - name: System Tuning & Install Tools
+      - name: Install Optimized FFmpeg & Cloudflared
         shell: bash
         run: |
           set -euo pipefail
+          
+          # Tối ưu RAM buffer Linux kernel
+          sudo sysctl -w net.core.rmem_max=33554432
+          sudo sysctl -w net.core.wmem_max=33554432
 
-          # Install FFmpeg
+          # Cài FFmpeg bản mới nhất
           curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
 
+          # Cài Caddy Webserver siêu nhẹ để làm CDN Server
+          sudo apt-get update && sudo apt-get install -y caddy
+
+          # Cài Cloudflared (Tunnel cực nhanh không lo bóp băng thông)
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
           mkdir -p "${HLS_DIR}"
 
-      - name: Tạo Script Sync REST API trực tiếp
+      - name: Start Webserver & Cloudflare Tunnel
         shell: bash
         run: |
-          cat << 'EOF' > /tmp/upload_supabase.js
-          const fs = require('fs');
-          const path = require('path');
-          const https = require('https');
+          set -euo pipefail
 
-          const supabaseUrl = process.env.SUPABASE_URL;
-          const supabaseKey = process.env.SUPABASE_KEY;
-          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls_hbo';
-          const BUCKET = 'hbo';
-
-          if (!supabaseUrl || !supabaseKey) {
-            console.error("Thiếu SUPABASE_URL hoặc SUPABASE_KEY!");
-            process.exit(1);
+          # Cấu hình Caddy phục vụ HLS với CORS & no-cache chuẩn
+          cat << 'EOF' > /tmp/Caddyfile
+          :8080 {
+              root * /dev/shm/hls_hbo
+              file_server
+              header Access-Control-Allow-Origin *
+              header Cache-Control "no-cache, no-store, must-revalidate"
           }
-
-          function uploadFile(filePath) {
-            return new Promise((resolve) => {
-              const fileName = path.basename(filePath);
-              const fileBuffer = fs.readFileSync(filePath);
-              const isM3u8 = fileName.endsWith('.m3u8');
-              const contentType = isM3u8 ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
-              
-              const targetUrl = new URL(`${supabaseUrl}/storage/v1/object/${BUCKET}/${fileName}`);
-              
-              const options = {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${supabaseKey}`,
-                  'apiKey': supabaseKey,
-                  'Content-Type': contentType,
-                  'Cache-Control': isM3u8 ? 'no-cache' : 'max-age=3600',
-                  'x-upsert': 'true',
-                  'Content-Length': fileBuffer.length
-                }
-              };
-
-              const req = https.request(targetUrl, options, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                  if (res.statusCode >= 200 && res.statusCode < 300) {
-                    // Upload thành công
-                  } else {
-                    console.error(`Lỗi upload ${fileName} (${res.statusCode}): ${data}`);
-                  }
-                  resolve();
-                });
-              });
-
-              req.on('error', (e) => {
-                console.error(`Request error ${fileName}:`, e.message);
-                resolve();
-              });
-
-              req.write(fileBuffer);
-              req.end();
-            });
-          }
-
-          const uploaded = new Set();
-          setInterval(async () => {
-            if (!fs.existsSync(HLS_DIR)) return;
-            const files = fs.readdirSync(HLS_DIR);
-            
-            for (const file of files) {
-              const fullPath = path.join(HLS_DIR, file);
-              if (file.endsWith('.m3u8')) {
-                await uploadFile(fullPath);
-              } else if (file.endsWith('.ts') && !uploaded.has(file)) {
-                await uploadFile(fullPath);
-                uploaded.add(file);
-              }
-            }
-            if (uploaded.size > 50) uploaded.clear();
-          }, 2000);
           EOF
+          caddy start --config /tmp/Caddyfile
 
-      - name: Restream & Sync
+          # Mở tunnel Cloudflare
+          cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+          
+          echo "Đang khởi tạo Cloudflare Tunnel..."
+          sleep 5
+          TUNNEL_URL=""
+          for i in {1..30}; do
+            TUNNEL_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/tunnel.log | head -n 1 || true)
+            if [ -n "$TUNNEL_URL" ]; then break; fi
+            sleep 1
+          done
+
+          echo "=================================================="
+          echo "LINK HLS STREAM TRỰC TIẾP (CỰC MƯỢT):"
+          echo "${TUNNEL_URL}/index.m3u8"
+          echo "=================================================="
+
+      - name: FFmpeg Remux chuẩn Timestamp (Fix Lệch Tiếng & Xé Hình)
         shell: bash
         run: |
           set -euo pipefail
 
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # FFmpeg Copy luồng chuẩn
+          # Fix lỗi Timestamp, buộc tạo Keyframe chuẩn 2 giây, align Audio/Video
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
             -cenc_decryption_key "${CLEARKEY_KEY}" \
-            -fflags +genpts+discardcorrupt -avoid_negative_ts make_zero \
+            -fflags +genpts+igndts+discardcorrupt -avoid_negative_ts make_zero \
             -i "${MPD_URL}" \
             -map 0:v:0 -map 0:a:0 \
             -c:v copy \
             -c:a copy \
-            -max_muxing_queue_size 16384 \
+            -bsf:v h264_mp4toannexb \
+            -max_muxing_queue_size 10240 \
             -f hls \
-            -hls_time 4 \
-            -hls_list_size 6 \
-            -hls_flags delete_segments+omit_endlist \
+            -hls_time 2 \
+            -hls_list_size 5 \
+            -hls_flags delete_segments+omit_endlist+split_by_time \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
-          echo $! > /tmp/ffmpeg.pid
 
-          for i in {1..60}; do
-            if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS stream ready!"; break; fi
-            sleep 1
-          done
-
-          nohup node /tmp/upload_supabase.js > /tmp/uploader.log 2>&1 &
-          echo $! > /tmp/uploader.pid
-
-          echo "=================================================="
-          echo "URL PLAYLIST SUPABASE:"
-          echo "https://gipthkjizdpcbneaggpd.supabase.co/storage/v1/object/public/hbo/index.m3u8"
-          echo "=================================================="
-
+          # Duy trì runner & dọn RAM
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
-            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +3 -delete 2>/dev/null || true
-            sleep 10
+
+            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +2 -delete 2>/dev/null || true
+            sleep 5
           done
