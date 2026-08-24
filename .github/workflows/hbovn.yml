@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (MPD ClearKey + HLS Fallback)
+name: HLS Restream - HBO Asia (MPD ClearKey + Bore Tunnel)
 
 on:
   workflow_dispatch:
@@ -29,11 +29,10 @@ jobs:
       MAP_A: "0:a:0"
       X264_PRESET: "ultrafast"
       USE_BORE: "true"
-      USE_CLOUDFLARED: "true"
       SSHX_NAME: "HBO-Restream"
 
     steps:
-      - name: Cài đặt công cụ (ffmpeg tĩnh, bore, cloudflared, sshx)
+      - name: Cài đặt công cụ (ffmpeg tĩnh, bore, sshx)
         shell: bash
         run: |
           set -euo pipefail
@@ -51,10 +50,6 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
-          sudo install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared
-          cloudflared --version || true
-
           curl -sSf https://sshx.io/get | sh || true
           SSHX_BIN="$(command -v sshx || true)"
           if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.local/bin/sshx" ]; then SSHX_BIN="$HOME/.local/bin/sshx"; fi
@@ -65,7 +60,7 @@ jobs:
 
           mkdir -p "${HLS_DIR}"
 
-      - name: Tạo HLS server
+      - name: Tạo HLS server (Node.js)
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -100,8 +95,6 @@ jobs:
             if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
 
             const stat = fs.statSync(filePath);
-            
-            // Đẩy Cache-Control phù hợp cho file m3u8 và file ts
             const cacheHeader = fileName.endsWith('.m3u8') ? 'no-cache, no-store, must-revalidate' : 'public, max-age=3600';
 
             const headers = { 
@@ -132,7 +125,7 @@ jobs:
           sleep 1
           kill -0 "$(cat /tmp/server.pid)" && echo "HLS server OK"
 
-      - name: SSHX - web terminal debug
+      - name: SSHX - Web terminal debug
         shell: bash
         run: |
           nohup sshx --quiet --name "${SSHX_NAME}" > /tmp/sshx.log 2>&1 &
@@ -191,18 +184,18 @@ jobs:
             if [ "$MODE" = "copy" ]; then
               ARGS="-map ${MAP_V} -map ${MAP_A} -c copy"
             else
-              # FIX LỖI KHỰNG: Ép cứng FPS 25, GOP=50 (Keyframe đúng 2 giây/lần), preset ultrafast nhẹ CPU
+              # Ép cấu hình mượt chuẩn đã test
               ARGS="-map ${MAP_V} -map ${MAP_A} \
-                -c:v libx264 -preset ultrafast -tune zerolatency \
+                -c:v libx264 -preset ${X264_PRESET} -tune zerolatency \
                 -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
                 -crf 23 -maxrate 3500k -bufsize 7000k \
                 -pix_fmt yuv420p \
-                -c:a aac -b:a 128k -ar 48000 -ac 2 -af aresample=async=1000"
+                -c:a aac -b:a 128k -ar 48000 -ac 2 \
+                -af aresample=async=1000:min_hard_comp=0.100000:first_pts=0"
             fi
 
             rm -f "${HLS_DIR}"/*.m3u8 "${HLS_DIR}"/*.ts
 
-            # FIX LỖI KHỰNG: hls_time=4s, bỏ temp_file, tăng buffer queue
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -260,7 +253,7 @@ jobs:
             exit 1
           fi
 
-          # ---------- 2. Bore tunnel (dự phòng) ----------
+          # ---------- 2. Bore tunnel ----------
           BORE_URL=""
           if [ "${USE_BORE}" = "true" ]; then
             for try in {1..10}; do
@@ -281,42 +274,25 @@ jobs:
             [ -z "$BORE_URL" ] && echo "Bo qua bore"
           fi
 
-          # ---------- 3. Cloudflared quick tunnel (URL chính) ----------
-          CF_URL=""
-          if [ "${USE_CLOUDFLARED}" = "true" ]; then
-            nohup cloudflared tunnel --no-autoupdate \
-              --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cloudflared.log 2>&1 &
-            echo $! > /tmp/cloudflared.pid
-            for i in {1..60}; do
-              CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1 || true)
-              [ -n "$CF_URL" ] && break
-              if ! pid_alive /tmp/cloudflared.pid; then echo "cloudflared chet:"; tail -n 20 /tmp/cloudflared.log; break; fi
-              sleep 2
-            done
-          fi
-
-          # ---------- 4. Tổng kết ----------
+          # ---------- 3. Tổng kết ----------
           SSHX_URL=$(cat /tmp/sshx.url 2>/dev/null || true)
-          
           IDX="${CURRENT_IDX:-0}"
           SELECTED_COMBO="${COMBOS[$IDX]:-mpd:transcode}"
           
           echo "=================================================="
-          [ -n "$CF_URL" ] && echo "URL CHINH  (Cloudflare): ${CF_URL}/index.m3u8"
-          [ -n "$BORE_URL" ] && echo "URL DU PHONG (bore):      ${BORE_URL}"
-          [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL: ${SSHX_URL}"
-          echo "Dang chay: ${SELECTED_COMBO}"
-          echo "Status:    http://localhost:${HLS_SERVER_PORT}/status"
+          [ -n "$BORE_URL" ] && echo "URL PLAYLIST (bore): ${BORE_URL}"
+          [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL:       ${SSHX_URL}"
+          echo "Dang chay:            ${SELECTED_COMBO}"
+          echo "Status:               http://localhost:${HLS_SERVER_PORT}/status"
           echo "=================================================="
           {
             echo "### HBO Restream"
-            [ -n "$CF_URL" ] && echo "- URL chinh: ${CF_URL}/index.m3u8"
-            [ -n "$BORE_URL" ] && echo "- URL phu: ${BORE_URL}"
+            [ -n "$BORE_URL" ] && echo "- URL Playlist: ${BORE_URL}"
             [ -n "$SSHX_URL" ] && echo "- SSHX: ${SSHX_URL}"
-            echo "- combo: ${SELECTED_COMBO}"
+            echo "- Combo: ${SELECTED_COMBO}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # ---------- 5. Watchdog ----------
+          # ---------- 4. Watchdog ----------
           START_TIME=$(date +%s)
           LIMIT_SECONDS=20940
           LAST_HEALTH=0
@@ -325,7 +301,7 @@ jobs:
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_TIME))
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "Het gio, thoát nhường cron job moi..."
+              echo "Het gio, thoat nhương cron job moi..."
               exit 0
             fi
 
@@ -336,12 +312,6 @@ jobs:
             if [ "${USE_BORE}" = "true" ] && [ -n "$BORE_URL" ] && ! pid_alive /tmp/bore.pid; then
               nohup bore local "${HLS_SERVER_PORT}" --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
               echo $! > /tmp/bore.pid
-            fi
-
-            if [ "${USE_CLOUDFLARED}" = "true" ] && ! pid_alive /tmp/cloudflared.pid; then
-              nohup cloudflared tunnel --no-autoupdate \
-                --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cloudflared.log 2>&1 &
-              echo $! > /tmp/cloudflared.pid
             fi
 
             if ! pid_alive /tmp/sshx.pid; then
