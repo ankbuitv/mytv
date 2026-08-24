@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Fixed Sync & Audio)
+name: HLS Restream - HBO Asia (Fixed Sync & 4s GOP)
 
 on:
   workflow_dispatch:
@@ -56,8 +56,12 @@ jobs:
           :8080 {
               root * /dev/shm/hls_hbo
               file_server
-              header Access-Control-Allow-Origin *
-              header Cache-Control "no-cache, no-store, must-revalidate"
+              header {
+                  Access-Control-Allow-Origin *
+                  Cache-Control "no-cache, no-store, must-revalidate, max-age=0"
+                  Pragma "no-cache"
+                  Expires "0"
+              }
           }
           EOF
           caddy start --config /tmp/Caddyfile
@@ -79,7 +83,7 @@ jobs:
 
           nohup cloudflared tunnel run > /tmp/tunnel.log 2>&1 &
 
-      - name: FFmpeg Transcode Audio & Sync Fix
+      - name: FFmpeg Match Native 4s GOP & Strict Sync
         shell: bash
         run: |
           set -euo pipefail
@@ -87,6 +91,7 @@ jobs:
           HEADERS=$(printf "Referer: %s\r\nOrigin: %s\r\n" "$REFERER" "$ORIGIN")
 
           nohup ffmpeg -hide_banner -loglevel warning \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$USER_AGENT" \
             -headers "$HEADERS" \
             -cenc_decryption_key "$CLEARKEY_KEY" \
@@ -96,11 +101,12 @@ jobs:
             -map 0:v:0 -map 0:a:0 \
             -c:v copy -bsf:v h264_mp4toannexb \
             -c:a aac -b:a 128k -ar 48000 -ac 2 \
-            -max_muxing_queue_size 20480 \
+            -af "aresample=async=1:first_pts=0" \
+            -max_interleave_delta 0 \
             -f hls \
             -hls_time 4 \
             -hls_list_size 6 \
-            -hls_flags delete_segments+omit_endlist \
+            -hls_flags delete_segments+omit_endlist+independent_segments \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
 
