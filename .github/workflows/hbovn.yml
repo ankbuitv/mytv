@@ -1,23 +1,35 @@
-name: HLS Restream - HBO Asia (Fixed Tunnel & Service)
+name: HLS Restream - HBO Asia (Hardened v3)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '59 5,11,17,23 * * *'
+  repository_dispatch:
+    types: [hbo_restream_next]     # để run tự trigger run kế tiếp (không có khoảng trống)
+  schedule:                        # an toàn dự phòng nếu chuỗi self-trigger bị đứt
+    - cron: '55 5,11,17,23 * * *'  # UTC = 12:55/18:55/00:55/06:55 giờ VN
+
+permissions:
+  contents: read
+  workflows: write   # nếu self-trigger bị 403 -> Settings > Actions > Workflow permissions => Read and write
+
+concurrency:
+  group: hls-hbo
+  cancel-in-progress: false
 
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
 
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
-      CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/tmp/hls_hbo"
+      # 0:v:1 = 720p ~2Mbps (KHUYẾN NGHỊ - nhẹ nhất cho tunnel/runner)
+      # 0:v:0 = 1080p ~4.4Mbps | 0:v:2 = 360p ~0.4Mbps
+      STREAM_MAP: "0:v:1"
       TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
       TUNNEL_ID: ${{ secrets.TUNNEL_ID }}
 
@@ -26,105 +38,241 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo sysctl -w net.core.rmem_max=33554432
-          sudo sysctl -w net.core.wmem_max=33554432
+          sudo sysctl -w net.core.rmem_max=33554432 || true
+          sudo sysctl -w net.core.wmem_max=33554432 || true
 
           curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
+          ffmpeg -version | head -n 1
 
-          sudo apt-get update && sudo apt-get install -y caddy
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq caddy
 
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb && rm -f cloudflared.deb
+          curl -fsSL --retry 3 -o /tmp/cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb && rm -f /tmp/cloudflared.deb
 
-          # Tạo thư mục và cấp quyền công cộng 777 để Caddy không bị Permission Denied
-          mkdir -p "${HLS_DIR}" ~/.cloudflared
-          chmod -R 777 "${HLS_DIR}"
+          mkdir -p /tmp/hls_hbo /home/runner/.cloudflared
+          chmod -R 777 /tmp/hls_hbo
 
-      - name: Start Webserver & Cloudflare Fixed Tunnel
+      - name: Preflight - Check Source (MPD)
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          for i in 1 2 3 4 5; do
+            if curl -fsS -m 20 \
+              -H "User-Agent: $USER_AGENT" \
+              -H "Referer: $REFERER" \
+              -H "Origin: $ORIGIN" \
+              -o /tmp/manifest.xml "$MPD_URL"; then
+              echo "OK: MPD load duoc (lan $i)"
+              exit 0
+            fi
+            echo "Thi $i that bai - cho 15s"
+            sleep 15
+          done
+          echo "::warning::Khong lay duoc MPD sau 5 lan (ngon nguon co the dang hang) - van khoi dong, watchdog se xu ly"
 
-          sudo systemctl stop caddy || true
+      - name: Start Caddy + Cloudflare Tunnel
+        shell: bash
+        run: |
+          set -uo pipefail
 
-          # Ghi Caddyfile chuẩn
-          echo "{" > /tmp/Caddyfile
-          echo "    admin off" >> /tmp/Caddyfile
-          echo "}" >> /tmp/Caddyfile
-          echo ":8080 {" >> /tmp/Caddyfile
-          echo "    root * ${HLS_DIR}" >> /tmp/Caddyfile
-          echo "    file_server" >> /tmp/Caddyfile
-          echo "    header Access-Control-Allow-Origin *" >> /tmp/Caddyfile
-          echo "    header Cache-Control \"no-cache, no-store, must-revalidate\"" >> /tmp/Caddyfile
-          echo "}" >> /tmp/Caddyfile
+          sudo systemctl stop caddy 2>/dev/null || true
+          pkill -x caddy 2>/dev/null || true
+          sleep 1
 
-          caddy start --config /tmp/Caddyfile
+          printf '%s\n' \
+            '{' \
+            '    admin off' \
+            '}' \
+            ':8080 {' \
+            '    root * /tmp/hls_hbo' \
+            '    file_server' \
+            '    header Access-Control-Allow-Origin *' \
+            '    header Cache-Control "no-cache, no-store, must-revalidate"' \
+            '    log {' \
+            '        output file /tmp/caddy_access.log' \
+            '        format json' \
+            '    }' \
+            '}' > /tmp/Caddyfile
+          echo "=== Caddyfile ==="
+          cat /tmp/Caddyfile
 
-          if [ -z "$TUNNEL_CREDENTIALS" ] || [ -z "$TUNNEL_ID" ]; then
-            echo "LỖI: Chưa cài TUNNEL_CREDENTIALS hoặc TUNNEL_ID trong Secrets!"
+          nohup caddy run --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 &
+          sleep 4
+          if ! grep -q "serving initial configuration" /tmp/caddy.log; then
+            echo "::error::Caddy khong khoi dong duoc"
+            cat /tmp/caddy.log || true
             exit 1
           fi
 
-          # Ghi Credentials File
-          echo "$TUNNEL_CREDENTIALS" > ~/.cloudflared/credentials.json
+          if [ -z "${TUNNEL_CREDENTIALS:-}" ] || [ -z "${TUNNEL_ID:-}" ]; then
+            echo "::error::Thieu TUNNEL_CREDENTIALS hoac TUNNEL_ID trong Secrets"
+            exit 1
+          fi
+          printf '%s\n' "$TUNNEL_CREDENTIALS" > /home/runner/.cloudflared/credentials.json
+          chmod 600 /home/runner/.cloudflared/credentials.json
 
-          # Ghi config.yml cho Cloudflared
-          echo "tunnel: ${TUNNEL_ID}" > ~/.cloudflared/config.yml
-          echo "credentials-file: /home/runner/.cloudflared/credentials.json" >> ~/.cloudflared/config.yml
-          echo "" >> ~/.cloudflared/config.yml
-          echo "ingress:" >> ~/.cloudflared/config.yml
-          echo "  - hostname: hbo.ankb.qzz.io" >> ~/.cloudflared/config.yml
-          echo "    service: http://localhost:8080" >> ~/.cloudflared/config.yml
-          echo "  - service: http_status:404" >> ~/.cloudflared/config.yml
+          printf '%s\n' \
+            "tunnel: ${TUNNEL_ID}" \
+            "credentials-file: /home/runner/.cloudflared/credentials.json" \
+            "" \
+            "ingress:" \
+            "  - hostname: hbo.ankb.qzz.io" \
+            "    service: http://localhost:8080" \
+            "  - service: http_status:404" \
+            > /home/runner/.cloudflared/config.yml
+          echo "=== config.yml ==="
+          cat /home/runner/.cloudflared/config.yml
 
-          # Bật Tunnel
           nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+          for i in $(seq 1 12); do
+            grep -q "Registered tunnel connection" /tmp/tunnel.log 2>/dev/null && break
+            sleep 5
+          done
+          if ! grep -q "Registered tunnel connection" /tmp/tunnel.log 2>/dev/null; then
+            echo "::error::Cloudflared chua dang ky tunnel"
+            tail -n 30 /tmp/tunnel.log || true
+            exit 1
+          fi
+          echo "=== TUNNEL OK ==="
 
-          echo "Đang chờ Cloudflare Tunnel khởi tạo..."
-          sleep 5
-
-          # In log ra màn hình Action để debug nếu có lỗi
-          echo "=== LOG CLOUDFLARED ==="
-          cat /tmp/tunnel.log | head -n 30 || true
-
-      - name: FFmpeg Match Native 4s GOP & Strict Sync
+      - name: FFmpeg Restream + Watchdog (heart of the job)
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+
+          HLS_DIR=/tmp/hls_hbo
+          MAX_LIFE=21000     # ~350 phut: exit that bai truoc cap 360 phut cua job
+          STALE_AFTER=20     # 20s khong co .ts moi => input bi tre, kill doi
+          BOOT_GRACE=120     # suong an toan cho luot khoi dong dau
 
           HEADERS=$(printf "Referer: %s\r\nOrigin: %s\r\n" "$REFERER" "$ORIGIN")
 
-          nohup ffmpeg -hide_banner -loglevel warning \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -user_agent "$USER_AGENT" \
-            -headers "$HEADERS" \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -analyzeduration 10000000 -probesize 10000000 \
-            -fflags +genpts+igndts+discardcorrupt -avoid_negative_ts make_zero \
-            -i "$MPD_URL" \
-            -map 0:v:0 -map 0:a:0 \
-            -c:v copy -bsf:v h264_mp4toannexb \
-            -c:a aac -b:a 128k -ar 48000 -ac 2 \
-            -af "aresample=async=1:first_pts=0" \
-            -max_interleave_delta 0 \
-            -f hls \
-            -hls_time 4 \
-            -hls_list_size 6 \
-            -hls_flags delete_segments+omit_endlist+independent_segments \
-            -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
-            "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
+          start_ffmpeg() {
+            # Xoa sach: tranh thanh phan seg_XXX cu (da bi xoa) bat dong ten khi restart
+            rm -rf "$HLS_DIR"
+            mkdir -p "$HLS_DIR"
+            chmod 777 "$HLS_DIR"
+            nohup ffmpeg -hide_banner -loglevel warning \
+              -rw_timeout 30000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -user_agent "$USER_AGENT" \
+              -headers "$HEADERS" \
+              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -analyzeduration 10000000 -probesize 10000000 \
+              -fflags +genpts \
+              -avoid_negative_ts make_zero \
+              -i "$MPD_URL" \
+              -map "$STREAM_MAP" -map 0:a:0 \
+              -c:v copy -bsf:v h264_mp4toannexb \
+              -c:a copy \
+              -flush_packets 1 \
+              -f hls -hls_segment_type mpegts \
+              -hls_time 4 -hls_list_size 15 \
+              -hls_flags delete_segments,omit_endlist,independent_segments,program_date_time \
+              -hls_segment_filename "$HLS_DIR/seg_%05d.ts" \
+              "$HLS_DIR/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
+            FF_STARTED=$(date +%s)
+          }
 
-          START_TIME=$(date +%s)
+          start_caddy() {
+            nohup caddy run --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 &
+          }
+
+          LOOP_START=$(date +%s)
+          CYCLES=0
+          RESTARTS=0
+          start_ffmpeg
+          echo "FFmpeg da khoi dong, cho playlist dau..."
+
+          for i in $(seq 1 30); do
+            [ -s "$HLS_DIR/index.m3u8" ] && break
+            sleep 2
+          done
+          if [ -s "$HLS_DIR/index.m3u8" ]; then
+            echo "=== PLAYLIST OK ==="
+            head -n 12 "$HLS_DIR/index.m3u8"
+          else
+            echo "::warning::Chua co playlist sau 60s"
+            tail -n 30 /tmp/ffmpeg.log 2>/dev/null || true
+          fi
+
           while true; do
             NOW=$(date +%s)
-            if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
+            CYCLES=$((CYCLES + 1))
+            if [ $((NOW - LOOP_START)) -ge $MAX_LIFE ]; then
+              echo "Dat gio han ($MAX_LIFE s) - dang dung that bai"
+              break
+            fi
 
-            # Đảm bảo quyền file cho Caddy liên tục
-            chmod -R 777 "${HLS_DIR}" 2>/dev/null || true
-            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +4 -delete 2>/dev/null || true
-            sleep 10
+            # 1) ffmpeg mat => in nguyen nhan + restart
+            if ! pgrep -x ffmpeg >/dev/null; then
+              RESTARTS=$((RESTARTS + 1))
+              echo "=== FFMPEG DEAD (restart #$RESTARTS) ==="
+              tail -n 40 /tmp/ffmpeg.log 2>/dev/null || true
+              start_ffmpeg
+              continue
+            fi
+
+            # 2) ffmpeg song nhung TRE (TCP half-open / CDN ruc rut) => kill de restart
+            if [ $((NOW - FF_STARTED)) -gt $BOOT_GRACE ]; then
+              LAST_TS=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1 | cut -d. -f1)
+              if [ -z "$LAST_TS" ]; then
+                echo "=== FFMPEG song nhung ${BOOT_GRACE}s vung vung khong co .ts nao - kill ==="
+                tail -n 40 /tmp/ffmpeg.log 2>/dev/null || true
+                pkill -x ffmpeg || true
+              elif [ $((NOW - LAST_TS)) -gt $STALE_AFTER ]; then
+                echo "=== STALE: $((NOW - LAST_TS))s khong co .ts moi - kill ffmpeg ==="
+                pkill -x ffmpeg || true
+              fi
+            fi
+
+            # 3) caddy mat => restart
+            if ! pgrep -x caddy >/dev/null; then
+              echo "=== CADDY DEAD - restarting ==="
+              start_caddy
+            fi
+
+            # 4) cloudflared mat => restart + kiem tra dang ky
+            if ! pgrep -x cloudflared >/dev/null; then
+              echo "=== CLOUDFLARED DEAD - restarting ==="
+              nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+              sleep 8
+              grep -m 1 "Registered tunnel connection" /tmp/tunnel.log 2>/dev/null || echo "::warning::Tunnel chua dang ky lai"
+            fi
+
+            # 5) quyen + danh .ts le + heartbeat de log Actions khong im leng
+            chmod -R 777 "$HLS_DIR" 2>/dev/null || true
+            find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -mmin +5 -delete 2>/dev/null || true
+            if [ $((CYCLES % 12)) -eq 0 ]; then
+              SEG_COUNT=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' 2>/dev/null | wc -l)
+              LATEST=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -printf '%f\n' 2>/dev/null | sort | tail -n 1)
+              echo "HEARTBEAT: $SEG_COUNT segments | moi nhat: ${LATEST:-none} | restarts: $RESTARTS"
+            fi
+
+            sleep 5
           done
+
+          pkill -x ffmpeg 2>/dev/null || true
+          sleep 3
+
+      - name: Self-Reschedule - trigger run ke (mat ket noi gap rong 10 phut)
+        if: success()
+        shell: bash
+        run: |
+          set -uo pipefail
+          CODE=$(curl -s -o /tmp/dispatch.json -w "%{http_code}" -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d '{"event_type":"hbo_restream_next"}' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches")
+          echo "Dispatch HTTP $CODE"
+          cat /tmp/dispatch.json 2>/dev/null || true
+          if [ "$CODE" != "204" ]; then
+            echo "::warning::Khong tu-trigger duoc - run sau se do schedule cron am to"
+          fi
