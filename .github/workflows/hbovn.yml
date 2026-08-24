@@ -28,28 +28,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Socket buffers
-          sudo sysctl -w net.core.rmem_max=33554432
-          sudo sysctl -w net.core.wmem_max=33554432
-
-          # Install FFmpeg & Node fetch helper
+          # Install FFmpeg
           curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
 
-          npm install -g @supabase/supabase-js
-
           mkdir -p "${HLS_DIR}"
 
-      - name: Tạo Uploader Sync lên Supabase
+      - name: Tạo Script Sync REST API trực tiếp
         shell: bash
         run: |
           cat << 'EOF' > /tmp/upload_supabase.js
-          const { createClient } = require('@supabase/supabase-js');
           const fs = require('fs');
           const path = require('path');
+          const https = require('https');
 
           const supabaseUrl = process.env.SUPABASE_URL;
           const supabaseKey = process.env.SUPABASE_KEY;
@@ -57,30 +51,54 @@ jobs:
           const BUCKET = 'hbo';
 
           if (!supabaseUrl || !supabaseKey) {
-            console.error("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong Secrets!");
+            console.error("Thiếu SUPABASE_URL hoặc SUPABASE_KEY!");
             process.exit(1);
           }
 
-          const supabase = createClient(supabaseUrl, supabaseKey);
+          function uploadFile(filePath) {
+            return new Promise((resolve) => {
+              const fileName = path.basename(filePath);
+              const fileBuffer = fs.readFileSync(filePath);
+              const isM3u8 = fileName.endsWith('.m3u8');
+              const contentType = isM3u8 ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
+              
+              const targetUrl = new URL(`${supabaseUrl}/storage/v1/object/${BUCKET}/${fileName}`);
+              
+              const options = {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${supabaseKey}`,
+                  'apiKey': supabaseKey,
+                  'Content-Type': contentType,
+                  'Cache-Control': isM3u8 ? 'no-cache' : 'max-age=3600',
+                  'x-upsert': 'true',
+                  'Content-Length': fileBuffer.length
+                }
+              };
 
-          async function uploadFile(filePath) {
-            const fileName = path.basename(filePath);
-            const fileBuffer = fs.readFileSync(filePath);
-            const contentType = fileName.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
-            const cacheControl = fileName.endsWith('.m3u8') ? '0' : '3600';
-
-            const { error } = await supabase.storage
-              .from(BUCKET)
-              .upload(fileName, fileBuffer, {
-                contentType: contentType,
-                cacheControl: cacheControl,
-                upsert: true
+              const req = https.request(targetUrl, options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                  if (res.statusCode >= 200 && res.statusCode < 300) {
+                    // Upload thành công
+                  } else {
+                    console.error(`Lỗi upload ${fileName} (${res.statusCode}): ${data}`);
+                  }
+                  resolve();
+                });
               });
 
-            if (error) console.error(`Lỗi upload ${fileName}:`, error.message);
+              req.on('error', (e) => {
+                console.error(`Request error ${fileName}:`, e.message);
+                resolve();
+              });
+
+              req.write(fileBuffer);
+              req.end();
+            });
           }
 
-          // Monitor & Sync RAM folder
           const uploaded = new Set();
           setInterval(async () => {
             if (!fs.existsSync(HLS_DIR)) return;
@@ -95,19 +113,18 @@ jobs:
                 uploaded.add(file);
               }
             }
-
             if (uploaded.size > 50) uploaded.clear();
           }, 2000);
           EOF
 
-      - name: Restream & Uploader Sync
+      - name: Restream & Sync
         shell: bash
         run: |
           set -euo pipefail
 
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # Giữ nguyên Video & Audio gốc (copy 100%, không bị mất tiếng hay giật hình)
+          # FFmpeg Copy luồng chuẩn
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
@@ -126,27 +143,23 @@ jobs:
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # Chờ tạo HLS
           for i in {1..60}; do
             if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS stream ready!"; break; fi
             sleep 1
           done
 
-          # Chạy Uploader Sync Supabase
           nohup node /tmp/upload_supabase.js > /tmp/uploader.log 2>&1 &
           echo $! > /tmp/uploader.pid
 
           echo "=================================================="
-          echo "URL PLAYLIST SUPABASE CỐ ĐỊNH:"
+          echo "URL PLAYLIST SUPABASE:"
           echo "https://gipthkjizdpcbneaggpd.supabase.co/storage/v1/object/public/hbo/index.m3u8"
           echo "=================================================="
 
-          # Watchdog duy trì & dọn RAM local
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
-
             find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +3 -delete 2>/dev/null || true
             sleep 10
           done
