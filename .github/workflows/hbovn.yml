@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Fixed Domain CF Tunnel)
+name: HLS Restream - HBO Asia (Fixed Sync & Audio)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
           sudo sysctl -w net.core.rmem_max=33554432
           sudo sysctl -w net.core.wmem_max=33554432
 
@@ -79,36 +78,29 @@ jobs:
           EOF
 
           nohup cloudflared tunnel run > /tmp/tunnel.log 2>&1 &
-          
-          echo "=================================================="
-          echo "Cloudflare Tunnel đang kết nối với ID: ${TUNNEL_ID}"
-          echo "Link Stream HLS cố định vĩnh viễn:"
-          echo "https://hbo.ankb.qzz.io/index.m3u8"
-          echo "=================================================="
 
-      - name: FFmpeg Transcode Audio Sync Fix
+      - name: FFmpeg Transcode Audio & Sync Fix
         shell: bash
         run: |
           set -euo pipefail
 
-          CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: ${ORIGIN}"$'\r\n'
+          HEADERS=$(printf "Referer: %s\r\nOrigin: %s\r\n" "$REFERER" "$ORIGIN")
 
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
-            -headers "$CUSTOM_HEADERS" \
-            -cenc_decryption_key "${CLEARKEY_KEY}" \
+            -headers "$HEADERS" \
+            -cenc_decryption_key "$CLEARKEY_KEY" \
+            -analyzeduration 10000000 -probesize 10000000 \
             -fflags +genpts+igndts+discardcorrupt -avoid_negative_ts make_zero \
-            -i "${MPD_URL}" \
+            -i "$MPD_URL" \
             -map 0:v:0 -map 0:a:0 \
-            -c:v copy \
-            -bsf:v h264_mp4toannexb \
+            -c:v copy -bsf:v h264_mp4toannexb \
             -c:a aac -b:a 128k -ar 48000 -ac 2 \
-            -af "aresample=async=1" \
             -max_muxing_queue_size 20480 \
             -f hls \
-            -hls_time 3 \
-            -hls_list_size 8 \
-            -hls_flags delete_segments+omit_endlist+split_by_time \
+            -hls_time 4 \
+            -hls_list_size 6 \
+            -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
 
