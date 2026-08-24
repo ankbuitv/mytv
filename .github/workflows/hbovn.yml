@@ -17,7 +17,7 @@ jobs:
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
-      HLS_DIR: "/dev/shm/hls_hbo"
+      HLS_DIR: "/tmp/hls_hbo"
       TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
       TUNNEL_ID: ${{ secrets.TUNNEL_ID }}
 
@@ -40,7 +40,9 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb && rm -f cloudflared.deb
 
+          # Tạo thư mục và cấp quyền công cộng 777 để Caddy không bị Permission Denied
           mkdir -p "${HLS_DIR}" ~/.cloudflared
+          chmod -R 777 "${HLS_DIR}"
 
       - name: Start Webserver & Cloudflare Fixed Tunnel
         shell: bash
@@ -49,9 +51,17 @@ jobs:
 
           sudo systemctl stop caddy || true
 
-          # Tạo Caddyfile chuẩn không bị dính space của YAML
-          printf "{\n    admin off\n}\n:8080 {\n    root * %s\n    file_server\n    header {\n        Access-Control-Allow-Origin *\n        Cache-Control \"no-cache, no-store, must-revalidate, max-age=0\"\n    }\n}\n" "${HLS_DIR}" > /tmp/Caddyfile
-          
+          # Ghi Caddyfile chuẩn
+          echo "{" > /tmp/Caddyfile
+          echo "    admin off" >> /tmp/Caddyfile
+          echo "}" >> /tmp/Caddyfile
+          echo ":8080 {" >> /tmp/Caddyfile
+          echo "    root * ${HLS_DIR}" >> /tmp/Caddyfile
+          echo "    file_server" >> /tmp/Caddyfile
+          echo "    header Access-Control-Allow-Origin *" >> /tmp/Caddyfile
+          echo "    header Cache-Control \"no-cache, no-store, must-revalidate\"" >> /tmp/Caddyfile
+          echo "}" >> /tmp/Caddyfile
+
           caddy start --config /tmp/Caddyfile
 
           if [ -z "$TUNNEL_CREDENTIALS" ] || [ -z "$TUNNEL_ID" ]; then
@@ -59,13 +69,27 @@ jobs:
             exit 1
           fi
 
+          # Ghi Credentials File
           echo "$TUNNEL_CREDENTIALS" > ~/.cloudflared/credentials.json
 
-          # Tạo config.yml chuẩn có catch-all HTTP 404
-          printf "tunnel: %s\ncredentials-file: /home/runner/.cloudflared/credentials.json\n\ningress:\n  - service: http://localhost:8080\n  - service: http_status:404\n" "${TUNNEL_ID}" > ~/.cloudflared/config.yml
+          # Ghi config.yml cho Cloudflared
+          echo "tunnel: ${TUNNEL_ID}" > ~/.cloudflared/config.yml
+          echo "credentials-file: /home/runner/.cloudflared/credentials.json" >> ~/.cloudflared/config.yml
+          echo "" >> ~/.cloudflared/config.yml
+          echo "ingress:" >> ~/.cloudflared/config.yml
+          echo "  - hostname: hbo.ankb.qzz.io" >> ~/.cloudflared/config.yml
+          echo "    service: http://localhost:8080" >> ~/.cloudflared/config.yml
+          echo "  - service: http_status:404" >> ~/.cloudflared/config.yml
 
-          nohup cloudflared tunnel run > /tmp/tunnel.log 2>&1 &
-          sleep 3
+          # Bật Tunnel
+          nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+
+          echo "Đang chờ Cloudflare Tunnel khởi tạo..."
+          sleep 5
+
+          # In log ra màn hình Action để debug nếu có lỗi
+          echo "=== LOG CLOUDFLARED ==="
+          cat /tmp/tunnel.log | head -n 30 || true
 
       - name: FFmpeg Match Native 4s GOP & Strict Sync
         shell: bash
@@ -99,6 +123,8 @@ jobs:
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
 
+            # Đảm bảo quyền file cho Caddy liên tục
+            chmod -R 777 "${HLS_DIR}" 2>/dev/null || true
             find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +4 -delete 2>/dev/null || true
             sleep 10
           done
