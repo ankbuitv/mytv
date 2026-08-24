@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Localtunnel Fixed Domain)
+name: HLS Restream - HBO Asia (Optimized Rate Control)
 
 on:
   workflow_dispatch:
@@ -18,24 +18,29 @@ jobs:
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
-      HLS_DIR: "/dev/shm/hls/hbo"
+      HLS_DIR: "/dev/shm/hls_hbo"
       HLS_SERVER_PORT: "5000"
-      SUBDOMAIN: "chrtv-hboasia"
       SSHX_NAME: "HBO-Restream"
 
     steps:
-      - name: Setup Node.js & Cài đặt công cụ
+      - name: System Tuning & Install Tools
         shell: bash
         run: |
           set -euo pipefail
-          sudo npm install -g localtunnel
 
+          # Kernel socket buffers for high-speed streaming
+          sudo sysctl -w net.core.rmem_max=33554432
+          sudo sysctl -w net.core.wmem_max=33554432
+
+          # FFmpeg + Cloudflared
           curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
-            && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
+
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb && rm -f cloudflared.deb
 
           curl -sSf https://sshx.io/get | sh || true
           SSHX_BIN="$(command -v sshx || true)"
@@ -46,22 +51,22 @@ jobs:
 
           mkdir -p "${HLS_DIR}"
 
-      - name: Tạo HLS server (Node.js)
+      - name: High-Performance RAM HLS Server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
-          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls/hbo';
+          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls_hbo';
           const PORT = parseInt(process.env.HLS_SERVER_PORT || '5000', 10);
+          
           const mime = p => p.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : p.endsWith('.ts') ? 'video/mp2t' : 'application/octet-stream';
           
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', '*');
-            res.setHeader('bypass-tunnel-reminder', 'true');
             
             if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
             
@@ -73,42 +78,36 @@ jobs:
             if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
 
             const stat = fs.statSync(filePath);
-            const cacheHeader = fileName.endsWith('.m3u8') ? 'no-cache, no-store, must-revalidate' : 'public, max-age=3600';
+            const isPlaylist = fileName.endsWith('.m3u8');
 
             const headers = { 
               'Content-Type': mime(filePath), 
               'Accept-Ranges': 'bytes', 
               'Content-Length': stat.size,
-              'Cache-Control': cacheHeader
+              'Cache-Control': isPlaylist ? 'no-cache, no-store, must-revalidate' : 'public, max-age=3600',
+              'Connection': 'keep-alive'
             };
 
             if (req.method === 'HEAD') { res.writeHead(200, headers); return res.end(); }
+            
             res.writeHead(200, headers);
-            fs.createReadStream(filePath).pipe(res);
+            fs.createReadStream(filePath, { highWaterMark: 512 * 1024 }).pipe(res);
           });
-          server.listen(PORT, '0.0.0.0', () => console.log('HLS server listening on ' + PORT));
+
+          server.listen(PORT, '0.0.0.0', () => console.log('HLS Server running on port ' + PORT));
           EOF
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
           sleep 1
 
-      - name: SSHX - Web terminal
-        shell: bash
-        run: |
-          nohup sshx --quiet --name "${SSHX_NAME}" > /tmp/sshx.log 2>&1 &
-          echo $! > /tmp/sshx.pid
-          sleep 2
-          SSHX_URL=$(grep -oE 'https://sshx\.io/s/[^ ]+' /tmp/sshx.log 2>/dev/null | head -1 || true)
-          [ -n "$SSHX_URL" ] && echo "SSHX TERMINAL: ${SSHX_URL}"
-
-      - name: Restream chính & Localtunnel Cố Định Domain
+      - name: Start Transcode Stream & Cloudflare Tunnel
         shell: bash
         run: |
           set -euo pipefail
 
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # Khởi chạy FFmpeg chuẩn
+          # Đã nén nhẹ bitrate (1800k) + preset ultrafast để tunnel tải mượt không bao giờ giật/đứng
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
@@ -116,55 +115,50 @@ jobs:
             -fflags +genpts+discardcorrupt -avoid_negative_ts make_zero \
             -i "${MPD_URL}" \
             -map 0:v:0 -map 0:a:0 \
-            -c:v copy \
-            -c:a aac -b:a 128k -ar 48000 -af "aresample=async=1000:min_hard_comp=0.100000:first_pts=0" \
-            -max_muxing_queue_size 8192 \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -b:v 1800k -maxrate 2200k -bufsize 4000k -g 50 -keyint_min 50 \
+            -c:a aac -b:a 128k -ar 48000 \
             -f hls \
-            -hls_time 4 \
-            -hls_list_size 6 \
+            -hls_time 3 \
+            -hls_list_size 8 \
             -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # Chờ HLS tạo file thành công
+          # Đợi sinh file HLS
           for i in {1..60}; do
-            if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS Ready!"; break; fi
+            if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS Stream ready!"; break; fi
             sleep 1
           done
 
-          # Lấy IP Public để qua mặt màn hình xác thực Tunnel Password của Localtunnel (nếu mở bằng trình duyệt)
-          PUBLIC_IP=$(curl -s https://api.ipify.org || echo "N/A")
+          # Cloudflare Tunnel
+          rm -f /tmp/cf.log
+          nohup cloudflared tunnel --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cf.log 2>&1 &
+          echo $! > /tmp/cf.pid
 
-          # Khởi chạy Localtunnel cố định domain
-          rm -f /tmp/lt.log
-          nohup lt --port "${HLS_SERVER_PORT}" --subdomain "${SUBDOMAIN}" > /tmp/lt.log 2>&1 &
-          echo $! > /tmp/lt.pid
+          CF_URL=""
+          for i in {1..30}; do
+            CF_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf.log 2>/dev/null | head -1 || true)
+            [ -n "$CF_URL" ] && break
+            sleep 1
+          done
 
           echo "=================================================="
-          echo "URL PLAYLIST CỐ ĐỊNH: https://${SUBDOMAIN}.loca.lt/index.m3u8"
-          echo "Tunnel Password (nếu web bắt nhập): ${PUBLIC_IP}"
+          [ -n "$CF_URL" ] && echo "URL PLAYLIST STABLE: ${CF_URL}/index.m3u8"
           echo "=================================================="
-          {
-            echo "### HBO Restream"
-            echo "- URL Playlist: https://${SUBDOMAIN}.loca.lt/index.m3u8"
-            echo "- Tunnel Password: ${PUBLIC_IP}"
-          } >> "$GITHUB_STEP_SUMMARY"
 
-          # Watchdog duy trì process
+          # Keep-alive loop
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
 
-            # Tự dọn segment cũ
-            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +4 -delete 2>/dev/null || true
+            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +2 -delete 2>/dev/null || true
 
-            # Tự khôi phục Localtunnel nếu bị rớt
-            if ! kill -0 "$(cat /tmp/lt.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Localtunnel rớt, đang kết nối lại..."
-              nohup lt --port "${HLS_SERVER_PORT}" --subdomain "${SUBDOMAIN}" > /tmp/lt.log 2>&1 &
-              echo $! > /tmp/lt.pid
+            if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
+              nohup cloudflared tunnel --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cf.log 2>&1 &
+              echo $! > /tmp/cf.pid
             fi
 
             sleep 10
