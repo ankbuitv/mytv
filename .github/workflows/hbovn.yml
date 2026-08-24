@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Optimized Rate Control)
+name: HLS Restream - HBO Asia (Supabase CDN)
 
 on:
   workflow_dispatch:
@@ -19,8 +19,8 @@ jobs:
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/dev/shm/hls_hbo"
-      HLS_SERVER_PORT: "5000"
-      SSHX_NAME: "HBO-Restream"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
     steps:
       - name: System Tuning & Install Tools
@@ -28,86 +28,86 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Kernel socket buffers for high-speed streaming
+          # Socket buffers
           sudo sysctl -w net.core.rmem_max=33554432
           sudo sysctl -w net.core.wmem_max=33554432
 
-          # FFmpeg + Cloudflared
+          # Install FFmpeg & Node fetch helper
           curl -fL --retry 3 -m 300 -o /tmp/ff.tar.xz \
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
 
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb && rm -f cloudflared.deb
-
-          curl -sSf https://sshx.io/get | sh || true
-          SSHX_BIN="$(command -v sshx || true)"
-          if [ -z "$SSHX_BIN" ] && [ -x "$HOME/.local/bin/sshx" ]; then SSHX_BIN="$HOME/.local/bin/sshx"; fi
-          if [ -n "$SSHX_BIN" ] && [ "$SSHX_BIN" != "/usr/local/bin/sshx" ]; then
-            sudo install -m 755 "$SSHX_BIN" /usr/local/bin/sshx
-          fi
+          npm install -g @supabase/supabase-js
 
           mkdir -p "${HLS_DIR}"
 
-      - name: High-Performance RAM HLS Server
+      - name: Tạo Uploader Sync lên Supabase
         shell: bash
         run: |
-          cat << 'EOF' > /tmp/hls_server.js
-          const http = require('http');
+          cat << 'EOF' > /tmp/upload_supabase.js
+          const { createClient } = require('@supabase/supabase-js');
           const fs = require('fs');
           const path = require('path');
+
+          const supabaseUrl = process.env.SUPABASE_URL;
+          const supabaseKey = process.env.SUPABASE_KEY;
           const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls_hbo';
-          const PORT = parseInt(process.env.HLS_SERVER_PORT || '5000', 10);
-          
-          const mime = p => p.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : p.endsWith('.ts') ? 'video/mp2t' : 'application/octet-stream';
-          
-          const server = http.createServer((req, res) => {
-            res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', '*');
+          const BUCKET = 'hbo';
+
+          if (!supabaseUrl || !supabaseKey) {
+            console.error("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong Secrets!");
+            process.exit(1);
+          }
+
+          const supabase = createClient(supabaseUrl, supabaseKey);
+
+          async function uploadFile(filePath) {
+            const fileName = path.basename(filePath);
+            const fileBuffer = fs.readFileSync(filePath);
+            const contentType = fileName.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
+            const cacheControl = fileName.endsWith('.m3u8') ? '0' : '3600';
+
+            const { error } = await supabase.storage
+              .from(BUCKET)
+              .upload(fileName, fileBuffer, {
+                contentType: contentType,
+                cacheControl: cacheControl,
+                upsert: true
+              });
+
+            if (error) console.error(`Lỗi upload ${fileName}:`, error.message);
+          }
+
+          // Monitor & Sync RAM folder
+          const uploaded = new Set();
+          setInterval(async () => {
+            if (!fs.existsSync(HLS_DIR)) return;
+            const files = fs.readdirSync(HLS_DIR);
             
-            if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-            
-            const urlPath = req.url.split('?')[0];
-            let fileName = urlPath.replace('/', '');
-            if (!fileName) fileName = 'index.m3u8';
-            const filePath = path.join(HLS_DIR, fileName);
+            for (const file of files) {
+              const fullPath = path.join(HLS_DIR, file);
+              if (file.endsWith('.m3u8')) {
+                await uploadFile(fullPath);
+              } else if (file.endsWith('.ts') && !uploaded.has(file)) {
+                await uploadFile(fullPath);
+                uploaded.add(file);
+              }
+            }
 
-            if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
-
-            const stat = fs.statSync(filePath);
-            const isPlaylist = fileName.endsWith('.m3u8');
-
-            const headers = { 
-              'Content-Type': mime(filePath), 
-              'Accept-Ranges': 'bytes', 
-              'Content-Length': stat.size,
-              'Cache-Control': isPlaylist ? 'no-cache, no-store, must-revalidate' : 'public, max-age=3600',
-              'Connection': 'keep-alive'
-            };
-
-            if (req.method === 'HEAD') { res.writeHead(200, headers); return res.end(); }
-            
-            res.writeHead(200, headers);
-            fs.createReadStream(filePath, { highWaterMark: 512 * 1024 }).pipe(res);
-          });
-
-          server.listen(PORT, '0.0.0.0', () => console.log('HLS Server running on port ' + PORT));
+            if (uploaded.size > 50) uploaded.clear();
+          }, 2000);
           EOF
-          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-          echo $! > /tmp/server.pid
-          sleep 1
 
-      - name: Start Transcode Stream & Cloudflare Tunnel
+      - name: Restream & Uploader Sync
         shell: bash
         run: |
           set -euo pipefail
 
           CUSTOM_HEADERS=$'Referer: '${REFERER}$'\r\nOrigin: '${ORIGIN}$'\r\n'
 
-          # Đã nén nhẹ bitrate (1800k) + preset ultrafast để tunnel tải mượt không bao giờ giật/đứng
+          # Giữ nguyên Video & Audio gốc (copy 100%, không bị mất tiếng hay giật hình)
           nohup ffmpeg -hide_banner -loglevel warning \
             -user_agent "$USER_AGENT" \
             -headers "$CUSTOM_HEADERS" \
@@ -115,51 +115,38 @@ jobs:
             -fflags +genpts+discardcorrupt -avoid_negative_ts make_zero \
             -i "${MPD_URL}" \
             -map 0:v:0 -map 0:a:0 \
-            -c:v libx264 -preset ultrafast -tune zerolatency \
-            -b:v 1800k -maxrate 2200k -bufsize 4000k -g 50 -keyint_min 50 \
-            -c:a aac -b:a 128k -ar 48000 \
+            -c:v copy \
+            -c:a copy \
+            -max_muxing_queue_size 16384 \
             -f hls \
-            -hls_time 3 \
-            -hls_list_size 8 \
+            -hls_time 4 \
+            -hls_list_size 6 \
             -hls_flags delete_segments+omit_endlist \
             -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
             "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # Đợi sinh file HLS
+          # Chờ tạo HLS
           for i in {1..60}; do
-            if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS Stream ready!"; break; fi
+            if [ -s "${HLS_DIR}/index.m3u8" ]; then echo "HLS stream ready!"; break; fi
             sleep 1
           done
 
-          # Cloudflare Tunnel
-          rm -f /tmp/cf.log
-          nohup cloudflared tunnel --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cf.log 2>&1 &
-          echo $! > /tmp/cf.pid
-
-          CF_URL=""
-          for i in {1..30}; do
-            CF_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf.log 2>/dev/null | head -1 || true)
-            [ -n "$CF_URL" ] && break
-            sleep 1
-          done
+          # Chạy Uploader Sync Supabase
+          nohup node /tmp/upload_supabase.js > /tmp/uploader.log 2>&1 &
+          echo $! > /tmp/uploader.pid
 
           echo "=================================================="
-          [ -n "$CF_URL" ] && echo "URL PLAYLIST STABLE: ${CF_URL}/index.m3u8"
+          echo "URL PLAYLIST SUPABASE CỐ ĐỊNH:"
+          echo "https://gipthkjizdpcbneaggpd.supabase.co/storage/v1/object/public/hbo/index.m3u8"
           echo "=================================================="
 
-          # Keep-alive loop
+          # Watchdog duy trì & dọn RAM local
           START_TIME=$(date +%s)
           while true; do
             NOW=$(date +%s)
             if [ $((NOW - START_TIME)) -ge 20940 ]; then exit 0; fi
 
-            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +2 -delete 2>/dev/null || true
-
-            if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
-              nohup cloudflared tunnel --url "http://localhost:${HLS_SERVER_PORT}" > /tmp/cf.log 2>&1 &
-              echo $! > /tmp/cf.pid
-            fi
-
+            find "${HLS_DIR}" -maxdepth 1 -name 'seg_*.ts' -mmin +3 -delete 2>/dev/null || true
             sleep 10
           done
