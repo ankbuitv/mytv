@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Cloudflare Tunnel Engine)
+name: HLS Restream - HBO Asia (Fixed Domain CF Tunnel)
 
 on:
   workflow_dispatch:
@@ -18,6 +18,8 @@ jobs:
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/dev/shm/hls_hbo"
+      TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
+      TUNNEL_ID: ${{ secrets.TUNNEL_ID }}
 
     steps:
       - name: System Tuning & Install Tools
@@ -39,9 +41,9 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb && rm -f cloudflared.deb
 
-          mkdir -p "${HLS_DIR}"
+          mkdir -p "${HLS_DIR}" ~/.cloudflared
 
-      - name: Start Webserver & Cloudflare Tunnel
+      - name: Start Webserver & Cloudflare Fixed Tunnel
         shell: bash
         run: |
           set -euo pipefail
@@ -61,20 +63,29 @@ jobs:
           EOF
           caddy start --config /tmp/Caddyfile
 
-          cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
-          
-          echo "Waiting for Cloudflare Tunnel..."
-          sleep 5
-          TUNNEL_URL=""
-          for i in {1..30}; do
-            TUNNEL_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/tunnel.log | head -n 1 || true)
-            if [ -n "$TUNNEL_URL" ]; then break; fi
-            sleep 1
-          done
+          if [ -z "$TUNNEL_CREDENTIALS" ] || [ -z "$TUNNEL_ID" ]; then
+            echo "LỖI: Chưa cài TUNNEL_CREDENTIALS hoặc TUNNEL_ID trong Secrets!"
+            exit 1
+          fi
 
+          # Ghi file credentials & config cho Cloudflared
+          echo "$TUNNEL_CREDENTIALS" > ~/.cloudflared/credentials.json
+
+          cat << EOF > ~/.cloudflared/config.yml
+          tunnel: ${TUNNEL_ID}
+          credentials-file: /home/runner/.cloudflared/credentials.json
+
+          ingress:
+            - service: http://localhost:8080
+          EOF
+
+          # Khởi chạy tunnel cố định
+          nohup cloudflared tunnel run > /tmp/tunnel.log 2>&1 &
+          
           echo "=================================================="
-          echo "LINK HLS STREAM TRUC TIEP:"
-          echo "${TUNNEL_URL}/index.m3u8"
+          echo "Cloudflare Tunnel đang kết nối với ID: ${TUNNEL_ID}"
+          echo "Link Stream HLS cố định vĩnh viễn:"
+          echo "https://hbo.ankb.qzz.io/index.m3u8"
           echo "=================================================="
 
       - name: FFmpeg Remux Timestamp Fix
