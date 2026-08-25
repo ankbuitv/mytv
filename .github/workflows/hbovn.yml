@@ -1,4 +1,4 @@
-name: HLS Restream - HBO Asia (Hardened v3)
+name: HLS Restream - HBO Asia (Pump v4 - pair pump)
 
 on:
   workflow_dispatch:
@@ -25,18 +25,17 @@ jobs:
     env:
       MPD_URL: "https://s7771.cdn.mytvnet.vn/pkg20/live_dzones/hbo.smil/manifest.mpd"
       CLEARKEY_KEY: "3de0f38dcf014827dfd5bec38743c6a2"
-      # KID của key hiện tại - chỉ để ĐỐI SOÁT khi key rotate.
-      # FFmpeg KHÔNG bắt buộc KID khi manifest chỉ có 1 key (chạy ffprobe chỉ với key là chứng cứ).
-      # Nếu sau này decrypt lỗi (manifest có NHIỀU KID), đổi dòng -cenc_decryption_key thành:
-      #   -cenc_decryption_key "$CLEARKEY_KID:$CLEARKEY_KEY"
+      # KID hiện tại - chỉ để ĐỐI SOÁT khi key rotate (pump sẽ in WARNING nếu KID trong MPD đổi).
+      # Nếu sau này decrypt lỗi (manifest nhiều KID), sửa pump dùng dạng "$CLEARKEY_KID:$CLEARKEY_KEY".
       CLEARKEY_KID: "09ddfe3d63863cafaeb79d0546b098ab"
       USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
       REFERER: "https://www.mytvnet.vn/"
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/tmp/hls_hbo"
-      # 0:v:1 = 720p ~2Mbps (KHUYẾN NGHỊ - nhẹ nhất cho tunnel/runner)
-      # 0:v:0 = 1080p ~4.4Mbps | 0:v:2 = 360p ~0.4Mbps
-      STREAM_MAP: "0:v:1"
+      PUMP_FIFO: "/tmp/shim_hbo.ts"
+      # 720p ~2Mbps (KHUYẾN NGHỊ: nhẹ nhất cho tunnel/runner). 1080p: p0va0br4500000 | 360p: p0va0br400000
+      VIDEO_RID: "p0va0br2000000"
+      AUDIO_RID: "p0aa0br128000"
       TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
       TUNNEL_ID: ${{ secrets.TUNNEL_ID }}
 
@@ -52,8 +51,11 @@ jobs:
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
             && tar -xJf /tmp/ff.tar.xz -C /tmp \
             && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
+            && sudo install -m 755 /tmp/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe \
             && rm -rf /tmp/ff.tar.xz /tmp/ffmpeg-master-latest-linux64-gpl
           ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          python3 --version
 
           sudo apt-get update -qq
           sudo apt-get install -y -qq caddy
@@ -64,6 +66,388 @@ jobs:
 
           mkdir -p /tmp/hls_hbo /home/runner/.cloudflared
           chmod -R 777 /tmp/hls_hbo
+
+      - name: Install dash_pump.py (pair pump)
+        shell: bash
+        run: |
+          # PUMP - giai doan 1 (khiem trung tam cua ban v4):
+          #   ffmpeg DASH demuxer goc: khi 1 video segment cham tai, audio cua
+          #   window ke duoc gia len truoc ~4s -> HLS lech A/V -> player khung hinh.
+          #   Pump khac phuc: moi luc chi cung cap 1 DOI video+audio CUNG window
+          #   (gap nhau ~ms) -> A/V khong the nao lech duoc.
+          #   Ky thuat: moi doi duoc bien qua 1 MPD static nho (file://) vi mov
+          #   demuxer thuong (doc .m4s truc tiep) chia mdat AAC theo stsz
+          #   placeholder trong init -> frame audio binh manh; DASH demuxer chia
+          #   theo trun cua moi moof -> chinh xac. Timestamp moi doan duoc neo
+          #   lien tuc bang -itsoffset (doan N nam o vi tri 4*N giay).
+          cat > /tmp/dash_pump.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """
+          dash_pump.py — DASH segment pump (KIEN TRUC CUOI: mini-MPD per pair).
+
+          VAN DE 1 (frame splitting): mov demuxer (doc file .m4s) chia mdat AAC theo stsz
+          placeholder trong init -> frame audio BINH MANH (decode 400+ loi). DASH demuxer
+          chia theo trun moi moof -> chinh xac (decode sach).
+          VAN DE 2 (timestamp): moi doan m4s bi "reset" timeline ve bias co dinh -> pump
+          dung -itsoffset de neo tung doan vao timeline session lien tuc:
+              itsoffset_N = ISO0 + N * 4.0
+              -> video frame cua doan N nam trong [1.505+ISO0+4N, 5.465+ISO0+4N], lien
+                 tuc hoan hao voi doan N+1 (25fps, GOP 1s, 4s/doi).
+              -> A/V offset giu chinh xac theo window hien tai (audio t trong mini-MPD).
+
+          MOI DOI (4s video + 4s audio CUG window):
+            1. download v.m4s + a.m4s (song song) tu MPD that
+            2. viet mini-MPD static chi ra file:// vao 2 segment nay (init chi ra init da lay)
+            3. ffmpeg -itsoffset (N*4) -i mini.mpd -cenc_decryption_key ... -c copy -f mpegts
+            4. kiem tra pts dau (sanity), ghi FIFO -> Stage 2 (TS -> HLS)
+
+          Kienh A/V: video+audio chi deuoc gan cap ket hop moi khi CUNG window, nen A/V
+          khong bao gio lech -> khong co tinh hinh 4-5s nua.
+
+          Env:
+            MPD_URL, CLEARKEY_KEY, USER_AGENT, REFERER, ORIGIN
+            VIDEO_RID (ma dan p0va0br2000000=720p), AUDIO_RID (p0aa0br128000)
+            PUMP_FIFO (ma dan /tmp/shim.ts), FFMPEG, FFPROBE
+            EXPECTED_KID (tu chon, canh bao khi key rotate)
+          """
+          import os
+          import signal
+          import subprocess
+          import threading
+          import time
+          import urllib.request
+          import xml.etree.ElementTree as ET
+
+          MPD_URL = os.environ["MPD_URL"]
+          KEY = os.environ["CLEARKEY_KEY"]
+          UA = os.environ.get("USER_AGENT", "Mozilla/5.0")
+          REFERER = os.environ.get("REFERER", "")
+          ORIGIN = os.environ.get("ORIGIN", "")
+          VIDEO_RID = os.environ.get("VIDEO_RID", "p0va0br2000000")
+          AUDIO_RID = os.environ.get("AUDIO_RID", "p0aa0br128000")
+          FIFO = os.environ.get("PUMP_FIFO", "/tmp/shim.ts")
+          FFMPEG = os.environ.get("FFMPEG", "/usr/local/bin/ffmpeg")
+          FFPROBE = os.environ.get("FFPROBE", os.path.join(os.path.dirname(FFMPEG), "ffprobe"))
+
+          NS = {"m": "urn:mpeg:dash:schema:mpd:2011"}
+          BASE_DIR = MPD_URL.rsplit("/", 1)[0] + "/"
+          SEG_SPACING = 4.0     # doan 4s
+          ISO0 = 0.05           # tranh duong itsoffset=0 (duong dac biet, base khac 15ms)
+
+          RUNNING = True
+
+
+          def log(msg):
+              print(f"[pump {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+          def on_term(sig, frame):
+              global RUNNING
+              RUNNING = False
+
+
+          def http_get(url, timeout=25, retries=2):
+              last = None
+              for i in range(retries + 1):
+                  try:
+                      req = urllib.request.Request(url, headers={
+                          "User-Agent": UA, "Referer": REFERER, "Origin": ORIGIN,
+                      })
+                      with urllib.request.urlopen(req, timeout=timeout) as r:
+                          return r.read()
+                  except Exception as e:
+                      last = e
+                      time.sleep(1 + i)
+              raise last
+
+
+          def find_rep(root, rid, mime):
+              cands = []
+              for asel in root.iter("{urn:mpeg:dash:schema:mpd:2011}AdaptationSet"):
+                  if mime not in (asel.get("mimeType") or ""):
+                      continue
+                  for rep in asel.findall("m:Representation", NS):
+                      cands.append((rep, asel))
+              for rep, asel in cands:
+                  if rep.get("id") == rid:
+                      return rep, asel, True
+              if cands:
+                  return cands[0][0], cands[0][1], False
+              return None, None, False
+
+
+          def get_template(rep, asel):
+              st = rep.find("m:SegmentTemplate", NS)
+              if st is None:
+                  st = asel.find("m:SegmentTemplate", NS)
+              return st
+
+
+          def timeline(st):
+              tl = st.find("m:SegmentTimeline", NS)
+              if tl is None:
+                  return None, None
+              ts = int(st.get("timescale", "90000"))
+              t, out = None, []
+              for s in tl.findall("m:S", NS):
+                  d = int(s.get("d"))
+                  t = int(s.get("t")) if s.get("t") is not None else (0 if t is None else t + d)
+                  out.append((t, d))
+              return ts, out
+
+
+          def first_pts(path, sel):
+              try:
+                  out = subprocess.run(
+                      [FFPROBE, "-v", "error", "-select_streams", sel, "-show_packets",
+                       "-show_entries", "packet=pts_time", "-of", "csv=p=0", path],
+                      capture_output=True, text=True, timeout=20).stdout
+                  vals = []
+                  for line in out.strip().splitlines():
+                      v = line.split(",")[0].strip()
+                      if v and v != "N/A":
+                          vals.append(float(v))
+                  return min(vals) if vals else None
+              except Exception:
+                  return None
+
+
+          def build_mini_mpd(media_v, media_a, init_v, init_a, d_v, d_a, t_a_ticks):
+              return f'''<?xml version="1.0"?>
+          <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+           <Period duration="PT4S">
+            <AdaptationSet mimeType="video/mp4" contentType="video">
+             <Representation id="v" bandwidth="2000000" codecs="avc1.640028" width="1280" height="720">
+              <SegmentTemplate timescale="90000" media="{media_v}" initialization="{init_v}">
+               <SegmentTimeline><S t="0" d="{d_v}"/></SegmentTimeline>
+              </SegmentTemplate>
+             </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+             <Representation id="a" bandwidth="128000" codecs="mp4a.40.2">
+              <SegmentTemplate timescale="48000" media="{media_a}" initialization="{init_a}">
+               <SegmentTimeline><S t="{t_a_ticks}" d="{d_a}"/></SegmentTimeline>
+              </SegmentTemplate>
+             </Representation>
+            </AdaptationSet>
+           </Period>
+          </MPD>'''
+
+
+          def main():
+              signal.signal(signal.SIGTERM, on_term)
+              signal.signal(signal.SIGINT, on_term)
+
+              workdir = os.path.dirname(FIFO) or "/tmp"
+              f_pv = os.path.join(workdir, "pump_pv_0.m4s")
+              f_pa = os.path.join(workdir, "pump_pa_0.m4s")
+              f_iv = os.path.join(workdir, "pump_iv.m4s")
+              f_ia = os.path.join(workdir, "pump_ia.m4s")
+              f_mpd = os.path.join(workdir, "pump_pair.mpd")
+              f_ts = os.path.join(workdir, "pump_pair.ts")
+
+              init_fetched = False
+              last_v = None
+              n_pair = 0
+              pumped = skipped = 0
+              mpd_fail_streak = 0
+              last_kid_warn = 0
+
+              def open_fifo():
+                  log(f"Mo FIFO {FIFO} cho ghi...")
+                  return open(FIFO, "wb", buffering=0)
+
+              f = open_fifo()
+              log("FIFO da mo, bat dau pump.")
+
+              while RUNNING:
+                  # 1) MPD that
+                  try:
+                      root = ET.fromstring(http_get(MPD_URL, timeout=20, retries=1))
+                      mpd_fail_streak = 0
+                  except Exception as e:
+                      mpd_fail_streak += 1
+                      if mpd_fail_streak in (1, 5, 20):
+                          log(f"Lay MPD that bai (lan {mpd_fail_streak}): {e}")
+                      time.sleep(3 if mpd_fail_streak < 10 else 10)
+                      continue
+
+                  vid_rep, vid_asel, vid_ok = find_rep(root, VIDEO_RID, "video")
+                  aud_rep, aud_asel, aud_ok = find_rep(root, AUDIO_RID, "audio")
+                  if vid_rep is None or aud_rep is None:
+                      log("MPD khong co video/audio rep phu hop")
+                      time.sleep(5)
+                      continue
+                  if not vid_ok:
+                      log(f"WARNING: VIDEO_RID {VIDEO_RID} khong co, dung thay the: {vid_rep.get('id')}")
+                  if not aud_ok:
+                      log(f"WARNING: AUDIO_RID {AUDIO_RID} khong co, dung thay the: {aud_rep.get('id')}")
+
+                  # 2) KID monitoring
+                  for cp in root.iter("{urn:mpeg:dash:schema:mpd:2011}ContentProtection"):
+                      kid = (cp.get("{urn:mpeg:cenc:2013}default_KID") or "").replace("-", "")
+                      if kid and os.environ.get("EXPECTED_KID") and \
+                         kid.lower() != os.environ["EXPECTED_KID"].replace("-", "").lower():
+                          if time.time() - last_kid_warn > 600:
+                              log(f"WARNING: KID trong MPD da doi: {kid} — CAP NHAT CLEARKEY_KEY!")
+                              last_kid_warn = time.time()
+                      break
+
+                  v_st = get_template(vid_rep, vid_asel)
+                  a_st = get_template(aud_rep, aud_asel)
+                  if v_st is None or a_st is None:
+                      log("Khong tim thay SegmentTemplate")
+                      time.sleep(5)
+                      continue
+                  v_ts, v_items = timeline(v_st)
+                  a_ts, a_items = timeline(a_st)
+                  if not v_items or not a_items:
+                      log("SegmentTimeline rong")
+                      time.sleep(2)
+                      continue
+
+                  # 3) Init (moi lan session reset hoac lan dau)
+                  if not init_fetched:
+                      try:
+                          open(f_iv, "wb").write(
+                              http_get(BASE_DIR + v_st.get("initialization").replace("$RepresentationID$", vid_rep.get("id"))))
+                          open(f_ia, "wb").write(
+                              http_get(BASE_DIR + a_st.get("initialization").replace("$RepresentationID$", aud_rep.get("id"))))
+                          init_fetched = True
+                          log(f"Init OK: video {vid_rep.get('id')} {vid_rep.get('bandwidth','?')}bps "
+                              f"{vid_rep.get('width','?')}x{vid_rep.get('height','?')} | audio {aud_rep.get('id')}")
+                      except Exception as e:
+                          log(f"Lay init that bai: {e}")
+                          time.sleep(5)
+                          continue
+
+                  media_v_tpl = v_st.get("media").replace("$RepresentationID$", vid_rep.get("id"))
+                  media_a_tpl = a_st.get("media").replace("$RepresentationID$", aud_rep.get("id"))
+
+                  # 4) Pump cac doi MOI
+                  for vt, d_v in v_items:
+                      if not RUNNING:
+                          break
+                      if last_v is not None and vt <= last_v:
+                          continue
+
+                      # Tim audio doi ung (gan nhat, dung ngan 2s)
+                      target = vt * a_ts / v_ts
+                      best = None
+                      for at, _da in a_items:
+                          if best is None or abs(at - target) < abs(best[0] - target):
+                              best = (at, _da)
+                      if best is None or abs(best[0] - target) > a_ts // 2:
+                          log(f"Skip v={vt}: khong co audio doi ung trong window")
+                          last_v = vt
+                          continue
+                      at, d_a = best
+
+                      # Download doi (song song)
+                      err = []
+
+                      def dl(url, path):
+                          try:
+                              open(path, "wb").write(http_get(url, timeout=30, retries=2))
+                          except Exception as e:
+                              err.append(str(e))
+
+                      th1 = threading.Thread(target=dl, args=(BASE_DIR + media_v_tpl.replace("$Time$", str(vt)), f_pv))
+                      th2 = threading.Thread(target=dl, args=(BASE_DIR + media_a_tpl.replace("$Time$", str(at)), f_pa))
+                      th1.start(); th2.start(); th1.join(); th2.join()
+                      if err:
+                          skipped += 1
+                          log(f"Skip doi v={vt}: {err[0][:120]}")
+                          n_pair += 1   # giu timeline lien tuc (player se de chong nho)
+                          last_v = vt
+                          continue
+
+                      # Mini-MPD: ca 2 track t=0. A/V offset (video sau audio ~0.105s) bi
+                      # giu tuanh nhien tu lead-in cua encoder (0.12s video / 0.02s audio)
+                      # — trung voi offset goc, khong can dinh t_a (DASH demuxer lam mat t am).
+                      t_a_ticks = 0
+                      mpd = build_mini_mpd(f"file://{f_pv}", f"file://{f_pa}",
+                                           f"file://{f_iv}", f"file://{f_ia}",
+                                           d_v, d_a, t_a_ticks)
+                      open(f_mpd, "w").write(mpd)
+
+                      # Bien doan: itsoffset neo doan N vao vi tri 4N trong timeline session
+                      iso = ISO0 + n_pair * SEG_SPACING
+                      cmd = [FFMPEG, "-y", "-v", "error",
+                             "-itsoffset", f"{iso:.6f}", "-i", f_mpd,
+                             "-cenc_decryption_key", KEY,
+                             "-map", "0:v:0", "-map", "0:a:0",
+                             "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-c:a", "copy",
+                             "-probesize", "2000000", "-analyzeduration", "2000000",
+                             "-f", "mpegts", f_ts]
+                      r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+                      if r.returncode != 0:
+                          skipped += 1
+                          log(f"ffmpeg that bai doi N={n_pair} v={vt}: {r.stderr[-300:]}")
+                          n_pair += 1
+                          last_v = vt
+                          continue
+
+                      # Sanity: pts video dau phai ~ 1.505 + iso
+                      act_v = first_pts(f_ts, "v:0")
+                      exp_v = 1.505 + iso
+                      if act_v is None:
+                          skipped += 1
+                          log(f"Skip doi N={n_pair} v={vt}: khong probe duoc pts (loi decrypt?)")
+                          n_pair += 1
+                          last_v = vt
+                          continue
+                      if abs(act_v - exp_v) > 0.05:
+                          # Dung chinh lan 2 (hiem)
+                          iso2 = iso + (exp_v - act_v)
+                          r2 = subprocess.run([FFMPEG, "-y", "-v", "error",
+                                               "-itsoffset", f"{iso2:.6f}", "-i", f_mpd,
+                                               "-cenc_decryption_key", KEY,
+                                               "-map", "0:v:0", "-map", "0:a:0",
+                                               "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-c:a", "copy",
+                                               "-probesize", "2000000", "-analyzeduration", "2000000",
+                                               "-f", "mpegts", f_ts],
+                                              capture_output=True, text=True, timeout=90)
+                          if r2.returncode == 0:
+                              log(f"Dung chinh doi N={n_pair}: {act_v:.3f} -> ky vong {exp_v:.3f}")
+
+                      data = open(f_ts, "rb").read()
+                      if len(data) < 1000:
+                          skipped += 1
+                          log(f"Skip doi N={n_pair} v={vt}: TS trong")
+                          n_pair += 1
+                          last_v = vt
+                          continue
+
+                      try:
+                          f.write(data)
+                      except (BrokenPipeError, OSError):
+                          log("Reader (stage 2) da dong -> mo lai FIFO (pump tiep tuc)")
+                          time.sleep(1)
+                          f = open_fifo()
+                          # Stage 2 moi se bat dau tu doan tiep theo: tiep tuc n_pair
+                          continue
+
+                      pumped += 1
+                      n_pair += 1
+                      last_v = vt
+                      if pumped == 1 or pumped % 10 == 0:
+                          log(f"OK doi N={n_pair-1} (pumped {pumped}, skip {skipped}): "
+                              f"exp_v={exp_v:.3f} act_v={act_v:.3f} +{len(data)}B")
+
+                  time.sleep(1.0)
+
+              log("Pump dung (pumped=%d skipped=%d)." % (pumped, skipped))
+              try:
+                  f.close()
+              except Exception:
+                  pass
+
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+          python3 -m py_compile /tmp/dash_pump.py && echo "dash_pump.py OK ($(wc -l < /tmp/dash_pump.py) dong)"
 
       - name: Preflight - Check Source (MPD)
         shell: bash
@@ -151,56 +535,66 @@ jobs:
           fi
           echo "=== TUNNEL OK ==="
 
-      - name: FFmpeg Restream + Watchdog (heart of the job)
+      - name: Pump + Stage2 HLS + Watchdog (heart of the job)
         shell: bash
         run: |
           set -uo pipefail
 
           HLS_DIR=/tmp/hls_hbo
-          MAX_LIFE=21000     # ~350 phut: exit that bai truoc cap 360 phut cua job
-          STALE_AFTER=20     # 20s khong co .ts moi => input bi tre, kill doi
-          BOOT_GRACE=120     # suong an toan cho luot khoi dong dau
+          FIFO=/tmp/shim_hbo.ts
+          MAX_LIFE=21000     # ~350 phut: ket thuc de run ke tiep nhan nhap (tranh cap 360p cua job)
+          STALE_AFTER=25     # 25s khong co .ts moi => kill ca bo, khoi dong lai
+          BOOT_GRACE=120     # suong an toan cho luot khoi dong dau (lay init + probe)
 
-          HEADERS=$(printf "Referer: %s\r\nOrigin: %s\r\n" "$REFERER" "$ORIGIN")
-
-          start_ffmpeg() {
-            # Xoa sach: tranh thanh phan seg_XXX cu (da bi xoa) bat dong ten khi restart
+          # ---- Khoi dong CA BO (pump + stage2) ----
+          start_streaming() {
             rm -rf "$HLS_DIR"
             mkdir -p "$HLS_DIR"
             chmod 777 "$HLS_DIR"
+            rm -f "$FIFO"
+            mkfifo "$FIFO"
+
+            # [Giai doan 1] PUMP: DASH -> doi video+audio (decrypt, -c copy) -> TS ghi FIFO
+            env MPD_URL="$MPD_URL" \
+                CLEARKEY_KEY="$CLEARKEY_KEY" \
+                USER_AGENT="$USER_AGENT" \
+                REFERER="$REFERER" \
+                ORIGIN="$ORIGIN" \
+                VIDEO_RID="$VIDEO_RID" \
+                AUDIO_RID="$AUDIO_RID" \
+                EXPECTED_KID="$CLEARKEY_KID" \
+                PUMP_FIFO="$FIFO" \
+                FFMPEG=/usr/local/bin/ffmpeg \
+                FFPROBE=/usr/local/bin/ffprobe \
+              python3 /tmp/dash_pump.py > /tmp/pump.log 2>&1 &
+            PUMP_PID=$!
+
+            # [Giai doan 2] Stage2: doc TS tu FIFO -> HLS (chi cat, khong giai ma lai)
             nohup ffmpeg -hide_banner -loglevel warning \
               -rw_timeout 30000000 \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -user_agent "$USER_AGENT" \
-              -headers "$HEADERS" \
-              -cenc_decryption_key "$CLEARKEY_KEY" \
-              -analyzeduration 10000000 -probesize 10000000 \
-              -fflags +genpts \
-              -avoid_negative_ts make_zero \
-              -i "$MPD_URL" \
-              -map "$STREAM_MAP" -map 0:a:0 \
-              -c:v copy -bsf:v h264_mp4toannexb \
-              -c:a copy \
-              -flush_packets 1 \
+              -i "$FIFO" \
+              -c:v copy -c:a copy \
               -f hls -hls_segment_type mpegts \
               -hls_time 4 -hls_list_size 15 \
-              -hls_flags delete_segments,omit_endlist,independent_segments,program_date_time \
+              -hls_flags delete_segments+omit_endlist+independent_segments+program_date_time \
               -hls_segment_filename "$HLS_DIR/seg_%05d.ts" \
               "$HLS_DIR/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
+            STAGE_PID=$!
             FF_STARTED=$(date +%s)
+            echo "BO da khoi dong: pump pid $PUMP_PID | stage2 pid $STAGE_PID"
           }
 
-          start_caddy() {
-            nohup caddy run --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 &
+          kill_streaming() {
+            [ -n "${STAGE_PID:-}" ] && kill -9 "$STAGE_PID" 2>/dev/null
+            [ -n "${PUMP_PID:-}" ] && kill -9 "$PUMP_PID" 2>/dev/null
+            pkill -x ffmpeg 2>/dev/null
+            pkill -f "dash_pu[m]p.py" 2>/dev/null
+            sleep 2
           }
 
-          LOOP_START=$(date +%s)
-          CYCLES=0
-          RESTARTS=0
-          start_ffmpeg
-          echo "FFmpeg da khoi dong, cho playlist dau..."
-
-          for i in $(seq 1 30); do
+          start_streaming
+          echo "Cho playlist dau (toi da 90s)..."
+          for i in $(seq 1 45); do
             [ -s "$HLS_DIR/index.m3u8" ] && break
             sleep 2
           done
@@ -208,47 +602,58 @@ jobs:
             echo "=== PLAYLIST OK ==="
             head -n 12 "$HLS_DIR/index.m3u8"
           else
-            echo "::warning::Chua co playlist sau 60s"
-            tail -n 30 /tmp/ffmpeg.log 2>/dev/null || true
+            echo "::warning::Chua co playlist sau 90s (ngon co the dang suy giam - watchdog van tiep tuc giam sat)"
+            tail -n 15 /tmp/pump.log 2>/dev/null || true
+            tail -n 15 /tmp/ffmpeg.log 2>/dev/null || true
           fi
 
+          LOOP_START=$(date +%s)
+          CYCLES=0
+          RESTARTS=0
           while true; do
             NOW=$(date +%s)
             CYCLES=$((CYCLES + 1))
             if [ $((NOW - LOOP_START)) -ge $MAX_LIFE ]; then
-              echo "Dat gio han ($MAX_LIFE s) - dang dung that bai"
+              echo "Dat gio han ($MAX_LIFE s) - bo ket thuc, run ke tiep se nhan tiep"
               break
             fi
 
-            # 1) ffmpeg mat => in nguyen nhan + restart
-            if ! pgrep -x ffmpeg >/dev/null; then
+            # 1) MOT trong 2 cai mat => restart CA BO (tranh tinh trang moi:
+            #    pump song ma khong ai doc FIFO, hoac stage2 doc FIFO trong)
+            if ! kill -0 "$PUMP_PID" 2>/dev/null || ! kill -0 "$STAGE_PID" 2>/dev/null; then
               RESTARTS=$((RESTARTS + 1))
-              echo "=== FFMPEG DEAD (restart #$RESTARTS) ==="
-              tail -n 40 /tmp/ffmpeg.log 2>/dev/null || true
-              start_ffmpeg
+              echo "=== PUMP/STAGE2 DEAD (restart bo #$RESTARTS) ==="
+              echo "--- pump.log ---";    tail -n 20 /tmp/pump.log 2>/dev/null || true
+              echo "--- ffmpeg.log ---";  tail -n 20 /tmp/ffmpeg.log 2>/dev/null || true
+              kill_streaming
+              start_streaming
               continue
             fi
 
-            # 2) ffmpeg song nhung TRE (TCP half-open / CDN ruc rut) => kill de restart
+            # 2) Ca 2 song nhung TRE (nuoc khong chay) => kill bo de restart
             if [ $((NOW - FF_STARTED)) -gt $BOOT_GRACE ]; then
               LAST_TS=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1 | cut -d. -f1)
               if [ -z "$LAST_TS" ]; then
-                echo "=== FFMPEG song nhung ${BOOT_GRACE}s vung vung khong co .ts nao - kill ==="
-                tail -n 40 /tmp/ffmpeg.log 2>/dev/null || true
-                pkill -x ffmpeg || true
+                echo "=== STALE: ${BOOT_GRACE}s ma khong co .ts nao - kill bo ==="
+                tail -n 20 /tmp/pump.log 2>/dev/null || true
+                tail -n 20 /tmp/ffmpeg.log 2>/dev/null || true
+                kill_streaming
+                start_streaming
               elif [ $((NOW - LAST_TS)) -gt $STALE_AFTER ]; then
-                echo "=== STALE: $((NOW - LAST_TS))s khong co .ts moi - kill ffmpeg ==="
-                pkill -x ffmpeg || true
+                echo "=== STALE: $((NOW - LAST_TS))s khong co .ts moi - kill bo ==="
+                tail -n 20 /tmp/pump.log 2>/dev/null || true
+                kill_streaming
+                start_streaming
               fi
             fi
 
             # 3) caddy mat => restart
             if ! pgrep -x caddy >/dev/null; then
               echo "=== CADDY DEAD - restarting ==="
-              start_caddy
+              nohup caddy run --config /tmp/Caddyfile --adapter caddyfile > /tmp/caddy.log 2>&1 &
             fi
 
-            # 4) cloudflared mat => restart + kiem tra dang ky
+            # 4) cloudflared mat => restart
             if ! pgrep -x cloudflared >/dev/null; then
               echo "=== CLOUDFLARED DEAD - restarting ==="
               nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
@@ -262,14 +667,15 @@ jobs:
             if [ $((CYCLES % 12)) -eq 0 ]; then
               SEG_COUNT=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' 2>/dev/null | wc -l)
               LATEST=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -printf '%f\n' 2>/dev/null | sort | tail -n 1)
-              echo "HEARTBEAT: $SEG_COUNT segments | moi nhat: ${LATEST:-none} | restarts: $RESTARTS"
+              echo "HEARTBEAT: $SEG_COUNT segments | moi nhat: ${LATEST:-none} | restarts bo: $RESTARTS"
+              tail -n 2 /tmp/pump.log 2>/dev/null | sed 's/^/  pump: /' || true
             fi
 
             sleep 5
           done
 
-          pkill -x ffmpeg 2>/dev/null || true
-          sleep 3
+          kill_streaming
+          echo "Job ket thuc."
 
       - name: Self-Reschedule - trigger run ke (mat ket noi gap rong 10 phut)
         if: success()
