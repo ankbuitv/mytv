@@ -33,6 +33,7 @@ jobs:
       ORIGIN: "https://www.mytvnet.vn"
       HLS_DIR: "/tmp/hls_hbo"
       PUMP_FIFO: "/tmp/shim_hbo.ts"
+      PUMP_MODE_FILE: "/tmp/pump_mode"   # "va" | "vonly" — pump ghi khi chuyen che do, watchdog theo doi
       # 720p ~2Mbps (KHUYẾN NGHỊ: nhẹ nhất cho tunnel/runner). 1080p: p0va0br4500000 | 360p: p0va0br400000
       VIDEO_RID: "p0va0br2000000"
       AUDIO_RID: "p0aa0br128000"
@@ -75,39 +76,43 @@ jobs:
           #   window ke duoc gia len truoc ~4s -> HLS lech A/V -> player khung hinh.
           #   Pump khac phuc: moi luc chi cung cap 1 DOI video+audio CUNG window
           #   (gap nhau ~ms) -> A/V khong the nao lech duoc.
-          #   Ky thuat: moi doi duoc bien qua 1 MPD static nho (file://) vi mov
-          #   demuxer thuong (doc .m4s truc tiep) chia mdat AAC theo stsz
-          #   placeholder trong init -> frame audio binh manh; DASH demuxer chia
-          #   theo trun cua moi moof -> chinh xac. Timestamp moi doan duoc neo
-          #   lien tuc bang -itsoffset (doan N nam o vi tri 4*N giay).
+          #   Ky thuat: moi doi duoc bien qua 1 MPD static nho (file://) de ffmpeg
+          #   dung DASH demuxer (chia frame theo trun cua moi moof) va de neo
+          #   timestamp moi doan lien tuc bang -itsoffset (doan N nam o vi tri 4*N giay).
+          #   ADAPTIVE AUDIO: neu audio tren nguon bi ro (suy giam origin — da ghi
+          #   nhan 2026-08-24), pump tu chuyen sang VIDEO-ONLY (stage 2 se van khoi
+          #   duoc, player xem khong am thanh), moi 15s kiem tra lai; khi audio hoi
+          #   -> chuyen ve va (watchdog restart ca bo khi thay doi mode file).
           cat > /tmp/dash_pump.py <<'PYEOF'
           #!/usr/bin/env python3
           """
-          dash_pump.py — DASH segment pump (KIEN TRUC CUOI: mini-MPD per pair).
+          dash_pump.py — DASH segment pump (mini-MPD per pair, ADAPTIVE audio).
 
-          VAN DE 1 (frame splitting): mov demuxer (doc file .m4s) chia mdat AAC theo stsz
-          placeholder trong init -> frame audio BINH MANH (decode 400+ loi). DASH demuxer
-          chia theo trun moi moof -> chinh xac (decode sach).
+          KIEN TRUC: moi pair duoc bien qua 1 MPD static nho (file://) chi ra 2 segment
+          cua doan do -> ffmpeg dung DASH demuxer (chia frame theo trun cua moi moof,
+          doc moof ngay tai nguon) thay vi demuxer file thuong. Duong nay da duoc chung
+          minh cho ket qua dech A/V = 0 va timeline lien tuc (test 2026-08).
           VAN DE 2 (timestamp): moi doan m4s bi "reset" timeline ve bias co dinh -> pump
           dung -itsoffset de neo tung doan vao timeline session lien tuc:
               itsoffset_N = ISO0 + N * 4.0
-              -> video frame cua doan N nam trong [1.505+ISO0+4N, 5.465+ISO0+4N], lien
-                 tuc hoan hao voi doan N+1 (25fps, GOP 1s, 4s/doi).
-              -> A/V offset giu chinh xac theo window hien tai (audio t trong mini-MPD).
+              -> doan N nam o vi tri 4N, lien tuc hoan hao voi doan N+1.
+          MOI DOI (4s video + 4s audio CUNG window) -> A/V khong the nao lech ->
+          khong con tinh hinh giật 4-5s.
 
-          MOI DOI (4s video + 4s audio CUG window):
-            1. download v.m4s + a.m4s (song song) tu MPD that
-            2. viet mini-MPD static chi ra file:// vao 2 segment nay (init chi ra init da lay)
-            3. ffmpeg -itsoffset (N*4) -i mini.mpd -cenc_decryption_key ... -c copy -f mpegts
-            4. kiem tra pts dau (sanity), ghi FIFO -> Stage 2 (TS -> HLS)
-
-          Kienh A/V: video+audio chi deuoc gan cap ket hop moi khi CUNG window, nen A/V
-          khong bao gio lech -> khong co tinh hinh 4-5s nua.
+          ADAPTIVE AUDIO (chuong trinh nguon co the phat ra bitstream ro — nghien cuu
+          2026-08: MyTVNet origin da co lan phat audio+video ro 15h lien tuc):
+            - Moi pair che do "va" duoc kiem tra suc khoe audio (decode 0.3s, rat nhe).
+            - Audio ro -> pump tu chuyen sang "vonly": chi cung cap video (video van
+              decode duoc 90%), stage 2 se chua khoi khi audio binh manh.
+            - Moi 15s pump thu lai audio; khi audio hoi -> chuyen ve "va" (watchdog
+              nhan thay file mode doi -> restart ca bo cho sach suto).
+            - File mode (PUMP_MODE_FILE): "va" / "vonly" de watchdog theo doi.
 
           Env:
             MPD_URL, CLEARKEY_KEY, USER_AGENT, REFERER, ORIGIN
             VIDEO_RID (ma dan p0va0br2000000=720p), AUDIO_RID (p0aa0br128000)
-            PUMP_FIFO (ma dan /tmp/shim.ts), FFMPEG, FFPROBE
+            PUMP_FIFO (ma dan /tmp/shim.ts), PUMP_MODE_FILE (ma dan /tmp/pump_mode)
+            FFMPEG, FFPROBE
             EXPECTED_KID (tu chon, canh bao khi key rotate)
           """
           import os
@@ -126,6 +131,7 @@ jobs:
           VIDEO_RID = os.environ.get("VIDEO_RID", "p0va0br2000000")
           AUDIO_RID = os.environ.get("AUDIO_RID", "p0aa0br128000")
           FIFO = os.environ.get("PUMP_FIFO", "/tmp/shim.ts")
+          MODE_FILE = os.environ.get("PUMP_MODE_FILE", "/tmp/pump_mode")
           FFMPEG = os.environ.get("FFMPEG", "/usr/local/bin/ffmpeg")
           FFPROBE = os.environ.get("FFPROBE", os.path.join(os.path.dirname(FFMPEG), "ffprobe"))
 
@@ -133,6 +139,7 @@ jobs:
           BASE_DIR = MPD_URL.rsplit("/", 1)[0] + "/"
           SEG_SPACING = 4.0     # doan 4s
           ISO0 = 0.05           # tranh duong itsoffset=0 (duong dac biet, base khac 15ms)
+          RECOVER_EVERY = 15.0  # giay mot lan kiem tra lai audio (che do vonly)
 
           RUNNING = True
 
@@ -212,7 +219,28 @@ jobs:
                   return None
 
 
-          def build_mini_mpd(media_v, media_a, init_v, init_a, d_v, d_a, t_a_ticks):
+          def audio_err_count(path, seconds=0.3):
+              """So dong loi khi decode `seconds` giay audio cua file (0 = sach)."""
+              try:
+                  r = subprocess.run([FFMPEG, "-v", "error", "-i", path,
+                                      "-map", "0:a:0", "-t", f"{seconds}", "-f", "null", "-"],
+                                     capture_output=True, text=True, timeout=30)
+                  return len([l for l in r.stderr.strip().splitlines() if "aac" in l])
+              except Exception:
+                  return 999
+
+
+          def build_mini_mpd(media_v, init_v, d_v, media_a, init_a, d_a):
+              a_part = ""
+              if media_a:
+                  a_part = f'''  <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
+             <Representation id="a" bandwidth="128000" codecs="mp4a.40.2">
+              <SegmentTemplate timescale="48000" media="{media_a}" initialization="{init_a}">
+               <SegmentTimeline><S t="0" d="{d_a}"/></SegmentTimeline>
+              </SegmentTemplate>
+             </Representation>
+            </AdaptationSet>
+          '''
               return f'''<?xml version="1.0"?>
           <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
            <Period duration="PT4S">
@@ -223,15 +251,15 @@ jobs:
               </SegmentTemplate>
              </Representation>
             </AdaptationSet>
-            <AdaptationSet mimeType="audio/mp4" contentType="audio" lang="en">
-             <Representation id="a" bandwidth="128000" codecs="mp4a.40.2">
-              <SegmentTemplate timescale="48000" media="{media_a}" initialization="{init_a}">
-               <SegmentTimeline><S t="{t_a_ticks}" d="{d_a}"/></SegmentTimeline>
-              </SegmentTemplate>
-             </Representation>
-            </AdaptationSet>
-           </Period>
+          {a_part}</Period>
           </MPD>'''
+
+
+          def set_mode(mode):
+              try:
+                  open(MODE_FILE, "w").write(mode)
+              except Exception:
+                  pass
 
 
           def main():
@@ -243,6 +271,7 @@ jobs:
               f_pa = os.path.join(workdir, "pump_pa_0.m4s")
               f_iv = os.path.join(workdir, "pump_iv.m4s")
               f_ia = os.path.join(workdir, "pump_ia.m4s")
+              f_chk = os.path.join(workdir, "pump_chk_a.m4s")
               f_mpd = os.path.join(workdir, "pump_pair.mpd")
               f_ts = os.path.join(workdir, "pump_pair.ts")
 
@@ -252,13 +281,26 @@ jobs:
               pumped = skipped = 0
               mpd_fail_streak = 0
               last_kid_warn = 0
+              # Neu watchdog da restart bo khi che do doi, pump tiếp thu che do cu
+              # (tranh vong lap: va->phat hien hong->vonly->restart->va->...)
+              mode = "va"
+              try:
+                  saved = open(MODE_FILE).read().strip()
+                  if saved in ("va", "vonly"):
+                      mode = saved
+              except Exception:
+                  pass
+              last_recover_check = 0.0
+              base_offset = 0.0   # lead-in co the doi khi nguon restart session -> hoc tu nghiem
+              set_mode(mode)
 
               def open_fifo():
                   log(f"Mo FIFO {FIFO} cho ghi...")
                   return open(FIFO, "wb", buffering=0)
 
               f = open_fifo()
-              log("FIFO da mo, bat dau pump.")
+              log(f"FIFO da mo, bat dau pump. (che do: {mode}"
+                  + (") — audio da hoi, kiem tra tu dong" if mode == "va" else ") — audio nguon con hong, chi phat video"))
 
               while RUNNING:
                   # 1) MPD that
@@ -274,13 +316,13 @@ jobs:
 
                   vid_rep, vid_asel, vid_ok = find_rep(root, VIDEO_RID, "video")
                   aud_rep, aud_asel, aud_ok = find_rep(root, AUDIO_RID, "audio")
-                  if vid_rep is None or aud_rep is None:
+                  if vid_rep is None or (mode == "va" and aud_rep is None):
                       log("MPD khong co video/audio rep phu hop")
                       time.sleep(5)
                       continue
                   if not vid_ok:
                       log(f"WARNING: VIDEO_RID {VIDEO_RID} khong co, dung thay the: {vid_rep.get('id')}")
-                  if not aud_ok:
+                  if mode == "va" and not aud_ok:
                       log(f"WARNING: AUDIO_RID {AUDIO_RID} khong co, dung thay the: {aud_rep.get('id')}")
 
                   # 2) KID monitoring
@@ -294,15 +336,18 @@ jobs:
                       break
 
                   v_st = get_template(vid_rep, vid_asel)
-                  a_st = get_template(aud_rep, aud_asel)
-                  if v_st is None or a_st is None:
-                      log("Khong tim thay SegmentTemplate")
-                      time.sleep(5)
-                      continue
                   v_ts, v_items = timeline(v_st)
-                  a_ts, a_items = timeline(a_st)
-                  if not v_items or not a_items:
-                      log("SegmentTimeline rong")
+                  if not v_items:
+                      log("Video SegmentTimeline rong")
+                      time.sleep(2)
+                      continue
+                  a_ts = a_items = a_st = None
+                  if aud_rep is not None:
+                      a_st = get_template(aud_rep, aud_asel)
+                      if a_st is not None:
+                          a_ts, a_items = timeline(a_st)
+                  if mode == "va" and not a_items:
+                      log("Audio SegmentTimeline rong")
                       time.sleep(2)
                       continue
 
@@ -311,39 +356,71 @@ jobs:
                       try:
                           open(f_iv, "wb").write(
                               http_get(BASE_DIR + v_st.get("initialization").replace("$RepresentationID$", vid_rep.get("id"))))
-                          open(f_ia, "wb").write(
-                              http_get(BASE_DIR + a_st.get("initialization").replace("$RepresentationID$", aud_rep.get("id"))))
+                          if mode == "va":
+                              open(f_ia, "wb").write(
+                                  http_get(BASE_DIR + a_st.get("initialization").replace("$RepresentationID$", aud_rep.get("id"))))
                           init_fetched = True
                           log(f"Init OK: video {vid_rep.get('id')} {vid_rep.get('bandwidth','?')}bps "
-                              f"{vid_rep.get('width','?')}x{vid_rep.get('height','?')} | audio {aud_rep.get('id')}")
+                              f"{vid_rep.get('width','?')}x{vid_rep.get('height','?')}"
+                              + (f" | audio {aud_rep.get('id')}" if mode == "va" else ""))
                       except Exception as e:
                           log(f"Lay init that bai: {e}")
                           time.sleep(5)
                           continue
 
                   media_v_tpl = v_st.get("media").replace("$RepresentationID$", vid_rep.get("id"))
-                  media_a_tpl = a_st.get("media").replace("$RepresentationID$", aud_rep.get("id"))
+                  media_a_tpl = None
+                  if mode == "va":
+                      media_a_tpl = a_st.get("media").replace("$RepresentationID$", aud_rep.get("id"))
 
-                  # 4) Pump cac doi MOI
+                  # 4) Kiem tra khoi phuc audio (che do vonly, moi RECOVER_EVERY giay)
+                  if mode == "vonly" and init_fetched and \
+                     time.time() - last_recover_check > RECOVER_EVERY and a_items:
+                      last_recover_check = time.time()
+                      try:
+                          # Audio init co the chua co (pump khoi dong sach o vonly)
+                          if not os.path.exists(f_ia):
+                              open(f_ia, "wb").write(http_get(
+                                  BASE_DIR + a_st.get("initialization")
+                                  .replace("$RepresentationID$", aud_rep.get("id")),
+                                  timeout=20, retries=1))
+                          # Probe doan MOI nhat (chuan co nhat ve trang thai hien tai)
+                          at_chk = a_items[-1][0]
+                          seg = http_get(BASE_DIR + a_st.get("media")
+                                         .replace("$RepresentationID$", aud_rep.get("id"))
+                                         .replace("$Time$", str(at_chk)), timeout=25, retries=1)
+                          open(f_chk, "wb").write(open(f_ia, "rb").read() + seg)
+                          nerr = audio_err_count(f_chk, 0.5)
+                          if nerr < 3:
+                              mode = "va"
+                              set_mode(mode)
+                              log(f"AUDIO DA HAI ({nerr} loi/0.5s) — chuyen ve che do va (watchdog se restart bo)")
+                      except Exception as e:
+                          log(f"Kiem tra khoi phuc audio: {str(e)[:100]}")
+
+
+                  # 5) Pump cac doi MOI
                   for vt, d_v in v_items:
                       if not RUNNING:
                           break
                       if last_v is not None and vt <= last_v:
                           continue
 
-                      # Tim audio doi ung (gan nhat, dung ngan 2s)
-                      target = vt * a_ts / v_ts
-                      best = None
-                      for at, _da in a_items:
-                          if best is None or abs(at - target) < abs(best[0] - target):
-                              best = (at, _da)
-                      if best is None or abs(best[0] - target) > a_ts // 2:
-                          log(f"Skip v={vt}: khong co audio doi ung trong window")
-                          last_v = vt
-                          continue
-                      at, d_a = best
+                      at = d_a = None
+                      if mode == "va":
+                          # Tim audio doi ung (gan nhat, dung ngan 2s)
+                          target = vt * a_ts / v_ts
+                          best = None
+                          for at_c, d_c in a_items:
+                              if best is None or abs(at_c - target) < abs(best[0] - target):
+                                  best = (at_c, d_c)
+                          if best is None or abs(best[0] - target) > a_ts // 2:
+                              log(f"Skip v={vt}: khong co audio doi ung trong window")
+                              last_v = vt
+                              continue
+                          at, d_a = best
 
-                      # Download doi (song song)
+                      # Download (song song neu va, chi video neu vonly)
                       err = []
 
                       def dl(url, path):
@@ -353,8 +430,14 @@ jobs:
                               err.append(str(e))
 
                       th1 = threading.Thread(target=dl, args=(BASE_DIR + media_v_tpl.replace("$Time$", str(vt)), f_pv))
-                      th2 = threading.Thread(target=dl, args=(BASE_DIR + media_a_tpl.replace("$Time$", str(at)), f_pa))
-                      th1.start(); th2.start(); th1.join(); th2.join()
+                      threads = [th1]
+                      if mode == "va":
+                          th2 = threading.Thread(target=dl, args=(BASE_DIR + media_a_tpl.replace("$Time$", str(at)), f_pa))
+                          th2.start()
+                          threads.append(th2)
+                      th1.start()
+                      for t in threads:
+                          t.join()
                       if err:
                           skipped += 1
                           log(f"Skip doi v={vt}: {err[0][:120]}")
@@ -362,25 +445,29 @@ jobs:
                           last_v = vt
                           continue
 
-                      # Mini-MPD: ca 2 track t=0. A/V offset (video sau audio ~0.105s) bi
-                      # giu tuanh nhien tu lead-in cua encoder (0.12s video / 0.02s audio)
-                      # — trung voi offset goc, khong can dinh t_a (DASH demuxer lam mat t am).
-                      t_a_ticks = 0
-                      mpd = build_mini_mpd(f"file://{f_pv}", f"file://{f_pa}",
-                                           f"file://{f_iv}", f"file://{f_ia}",
-                                           d_v, d_a, t_a_ticks)
-                      open(f_mpd, "w").write(mpd)
+                      # Mini-MPD (chua audio khi va, chi video khi vonly)
+                      open(f_mpd, "w").write(build_mini_mpd(
+                          f"file://{f_pv}", f"file://{f_iv}", d_v,
+                          f"file://{f_pa}" if mode == "va" else None,
+                          f"file://{f_ia}" if mode == "va" else None,
+                          d_a if d_a else 0))
 
                       # Bien doan: itsoffset neo doan N vao vi tri 4N trong timeline session
                       iso = ISO0 + n_pair * SEG_SPACING
-                      cmd = [FFMPEG, "-y", "-v", "error",
-                             "-itsoffset", f"{iso:.6f}", "-i", f_mpd,
-                             "-cenc_decryption_key", KEY,
-                             "-map", "0:v:0", "-map", "0:a:0",
-                             "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-c:a", "copy",
-                             "-probesize", "2000000", "-analyzeduration", "2000000",
-                             "-f", "mpegts", f_ts]
-                      r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+
+                      def convert(iso_val, with_audio):
+                          cmd = [FFMPEG, "-y", "-v", "error",
+                                 "-itsoffset", f"{iso_val:.6f}", "-i", f_mpd,
+                                 "-cenc_decryption_key", KEY,
+                                 "-map", "0:v:0"]
+                          if with_audio:
+                              cmd += ["-map", "0:a:0", "-c:a", "copy"]
+                          cmd += ["-c:v", "copy", "-bsf:v", "h264_mp4toannexb",
+                                  "-probesize", "2000000", "-analyzeduration", "2000000",
+                                  "-f", "mpegts", f_ts]
+                          return subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+
+                      r = convert(iso, mode == "va")
                       if r.returncode != 0:
                           skipped += 1
                           log(f"ffmpeg that bai doi N={n_pair} v={vt}: {r.stderr[-300:]}")
@@ -388,28 +475,51 @@ jobs:
                           last_v = vt
                           continue
 
-                      # Sanity: pts video dau phai ~ 1.505 + iso
+                      # --- CHE DO VA: kiem tra suc khoe audio cua pair vua bien ---
+                      if mode == "va":
+                          nerr = audio_err_count(f_ts, 0.3)
+                          if nerr >= 3:
+                              log(f"WARNING: AUDIO TREN NGUON DANG HONG (pair N={n_pair}: {nerr} loi/0.3s) "
+                                  f"— chuyen sang che do VIDEO-ONLY den khi audio hoi")
+                              mode = "vonly"
+                              set_mode(mode)
+                              # Bien lai pair nay chi co video
+                              open(f_mpd, "w").write(build_mini_mpd(
+                                  f"file://{f_pv}", f"file://{f_iv}", d_v, None, None, 0))
+                              r = convert(iso, False)
+                              if r.returncode != 0:
+                                  skipped += 1
+                                  log(f"ffmpeg (vonly) that bai doi N={n_pair}: {r.stderr[-200:]}")
+                                  n_pair += 1
+                                  last_v = vt
+                                  continue
+
+                      # Sanity: pts video dau phai ~ 1.505 + base_offset + iso
                       act_v = first_pts(f_ts, "v:0")
-                      exp_v = 1.505 + iso
                       if act_v is None:
                           skipped += 1
                           log(f"Skip doi N={n_pair} v={vt}: khong probe duoc pts (loi decrypt?)")
                           n_pair += 1
                           last_v = vt
                           continue
+                      exp_v = 1.505 + base_offset + iso
                       if abs(act_v - exp_v) > 0.05:
-                          # Dung chinh lan 2 (hiem)
-                          iso2 = iso + (exp_v - act_v)
-                          r2 = subprocess.run([FFMPEG, "-y", "-v", "error",
-                                               "-itsoffset", f"{iso2:.6f}", "-i", f_mpd,
-                                               "-cenc_decryption_key", KEY,
-                                               "-map", "0:v:0", "-map", "0:a:0",
-                                               "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-c:a", "copy",
-                                               "-probesize", "2000000", "-analyzeduration", "2000000",
-                                               "-f", "mpegts", f_ts],
-                                              capture_output=True, text=True, timeout=90)
-                          if r2.returncode == 0:
-                              log(f"Dung chinh doi N={n_pair}: {act_v:.3f} -> ky vong {exp_v:.3f}")
+                          drift = exp_v - act_v
+                          if abs(drift) <= 0.25:
+                              # Lead-in cua session nguon da doi (thuong khi MyTVNet restart
+                              # encoder) -> hoc lai base: exp lan sau phai gan voi act lan sau.
+                              # (gioi bien lan 1 tu -itsoffset da lien tuc tu nhien, giu nhu vay)
+                              base_offset -= drift
+                              log(f"RECALIBRATE doi N={n_pair}: act={act_v:.3f} exp={exp_v:.3f} "
+                                  f"-> base_offset={base_offset:+.3f}")
+                          else:
+                              # Lech nang (doi tu itsoffset bi sot) -> bien lai voi itsoffset chinh
+                              iso2 = iso + drift
+                              r2 = convert(iso2, mode == "va")
+                              if r2.returncode == 0:
+                                  log(f"Dung chinh lan 2 doi N={n_pair}: {act_v:.3f} -> ky vong {exp_v:.3f}")
+                              else:
+                                  log(f"Dung chinh lan 2 that bai doi N={n_pair}: {r2.stderr[-200:]}")
 
                       data = open(f_ts, "rb").read()
                       if len(data) < 1000:
@@ -425,14 +535,13 @@ jobs:
                           log("Reader (stage 2) da dong -> mo lai FIFO (pump tiep tuc)")
                           time.sleep(1)
                           f = open_fifo()
-                          # Stage 2 moi se bat dau tu doan tiep theo: tiep tuc n_pair
                           continue
 
                       pumped += 1
                       n_pair += 1
                       last_v = vt
                       if pumped == 1 or pumped % 10 == 0:
-                          log(f"OK doi N={n_pair-1} (pumped {pumped}, skip {skipped}): "
+                          log(f"OK doi N={n_pair-1} [{mode.upper()}] (pumped {pumped}, skip {skipped}): "
                               f"exp_v={exp_v:.3f} act_v={act_v:.3f} +{len(data)}B")
 
                   time.sleep(1.0)
@@ -550,6 +659,8 @@ jobs:
 
           HLS_DIR=/tmp/hls_hbo
           FIFO=/tmp/shim_hbo.ts
+          # de phan mang an toan cho set -u (job-level env co cung gia tri nay)
+          PUMP_MODE_FILE="${PUMP_MODE_FILE:-/tmp/pump_mode}"
           MAX_LIFE=21000     # ~350 phut: ket thuc de run ke tiep nhan nhap (tranh cap 360p cua job)
           STALE_AFTER=25     # 25s khong co .ts moi => kill ca bo, khoi dong lai
           BOOT_GRACE=120     # suong an toan cho luot khoi dong dau (lay init + probe)
@@ -572,6 +683,7 @@ jobs:
                 AUDIO_RID="$AUDIO_RID" \
                 EXPECTED_KID="$CLEARKEY_KID" \
                 PUMP_FIFO="$FIFO" \
+                PUMP_MODE_FILE="$PUMP_MODE_FILE" \
                 FFMPEG=/usr/local/bin/ffmpeg \
                 FFPROBE=/usr/local/bin/ffprobe \
               python3 /tmp/dash_pump.py > /tmp/pump.log 2>&1 &
@@ -601,6 +713,12 @@ jobs:
           }
 
           start_streaming
+          # Lan cap mode hien tai (pump ghi trong ~2s; file co the con la che do
+          # cua bo truoc do). Neu pump chuyen che do trong luot cho playlist ben
+          # duoi, vong lap se phat hien va restart bo cho stage 2 khoi dong sach.
+          sleep 3
+          LAST_MODE=$(cat "$PUMP_MODE_FILE" 2>/dev/null || echo "va")
+          echo "Che do ban dau: $LAST_MODE"
           echo "Cho playlist dau (toi da 90s)..."
           for i in $(seq 1 45); do
             [ -s "$HLS_DIR/index.m3u8" ] && break
@@ -610,7 +728,7 @@ jobs:
             echo "=== PLAYLIST OK ==="
             head -n 12 "$HLS_DIR/index.m3u8"
           else
-            echo "::warning::Chua co playlist sau 90s (ngon co the dang suy giam - watchdog van tiep tuc giam sat)"
+            echo "::warning::Chua co playlist sau 90s (ngon co the dang suy giam nang - watchdog van tiep tuc giam sat, se tu nhan khi nguon hoi)"
             tail -n 15 /tmp/pump.log 2>/dev/null || true
             tail -n 15 /tmp/ffmpeg.log 2>/dev/null || true
           fi
@@ -618,6 +736,7 @@ jobs:
           LOOP_START=$(date +%s)
           CYCLES=0
           RESTARTS=0
+          LAST_MODE=""   # che do pump ("va"/"vonly") lan cuoi nhan biet
           while true; do
             NOW=$(date +%s)
             CYCLES=$((CYCLES + 1))
@@ -635,6 +754,22 @@ jobs:
               echo "--- ffmpeg.log ---";  tail -n 20 /tmp/ffmpeg.log 2>/dev/null || true
               kill_streaming
               start_streaming
+              continue
+            fi
+
+            # 1.5) Pump da CHUYEN CHE DO (va <-> vonly: audio nguon hong/hoi)
+            #      => restart ca bo de stage 2 khoi dong sach voi che do moi.
+            #      (pump moi se thua ke che do tu file, nen khong co vong lap restart)
+            CUR_MODE=$(cat "$PUMP_MODE_FILE" 2>/dev/null || echo "va")
+            if [ -z "$LAST_MODE" ]; then
+              LAST_MODE="$CUR_MODE"
+            elif [ "$CUR_MODE" != "$LAST_MODE" ]; then
+              RESTARTS=$((RESTARTS + 1))
+              echo "=== PUMP CHUYEN CHE DO: $LAST_MODE -> $CUR_MODE (restart bo #$RESTARTS) ==="
+              tail -n 10 /tmp/pump.log 2>/dev/null || true
+              kill_streaming
+              start_streaming
+              LAST_MODE="$CUR_MODE"
               continue
             fi
 
@@ -675,7 +810,8 @@ jobs:
             if [ $((CYCLES % 12)) -eq 0 ]; then
               SEG_COUNT=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' 2>/dev/null | wc -l)
               LATEST=$(find "$HLS_DIR" -maxdepth 1 -name 'seg_*.ts' -printf '%f\n' 2>/dev/null | sort | tail -n 1)
-              echo "HEARTBEAT: $SEG_COUNT segments | moi nhat: ${LATEST:-none} | restarts bo: $RESTARTS"
+              CUR_NOW=$(cat "$PUMP_MODE_FILE" 2>/dev/null || echo "va")
+              echo "HEARTBEAT: $SEG_COUNT segments | moi nhat: ${LATEST:-none} | che do: $CUR_NOW | restarts bo: $RESTARTS"
               tail -n 2 /tmp/pump.log 2>/dev/null | sed 's/^/  pump: /' || true
             fi
 
