@@ -459,7 +459,15 @@ jobs:
               -H "Referer: $REFERER" \
               -H "Origin: $ORIGIN" \
               -o /tmp/manifest.xml "$MPD_URL"; then
-              echo "OK: MPD load duoc (lan $i)"
+              # Kiem tra suc khoe NGUON: window binh thuong 4-5 segment (16-20s).
+              # Neu chi co 1-2 segment -> origin MyTVNet dang hong (bitstream ro) ->
+              # stream se khong chay duoc den khi nguon hoi; watchdog van giam sat
+              # de tu nhan khi nguon tot lai (khong can deploy lai).
+              NVSEG=$(grep -c '<S t="[0-9]*" d="360000"/>' /tmp/manifest.xml)
+              if [ "$NVSEG" -lt 3 ]; then
+                echo "::warning::SOURCE DEGRADED: window chi co $NVSEG segment (binh thuong 4-5). Origin MyTVNet dang hong - segment co the bitstream ro, stream se khong chay duoc den khi nguon hoi. Van khoi dong de watchdog tu nhan."
+              fi
+              echo "OK: MPD load duoc (lan $i), window $NVSEG segments video"
               exit 0
             fi
             echo "Thi $i that bai - cho 15s"
