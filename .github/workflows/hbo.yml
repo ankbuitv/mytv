@@ -1,8 +1,8 @@
-name: IPTV Stream Server - Web HLS Optimized (HBO EPG Superfast)
+name: IPTV Stream Server - Cinemax
 
 on:
   schedule:
-      - cron: '0 */5 * * *'
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
@@ -18,11 +18,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System & Python Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl dnsutils fonts-freefont-ttf
-          pip install --no-cache-dir flask flask-cors gunicorn requests pytz beautifulsoup4 Pillow
+          sudo apt-get install -y ffmpeg curl dnsutils
+          pip install --no-cache-dir flask flask-cors gunicorn streamlink
 
       - name: Setup Bore Tunnel & SSHX
         run: |
@@ -31,87 +31,9 @@ jobs:
           sudo mv bore /usr/local/bin/
           curl -sSf https://sshx.io/get | sh
 
-      - name: Create Workspace Folders & RAM Disk
+      - name: Create Workspace Folders
         run: |
-          # Sử dụng RAM (/dev/shm) để ghi/đọc HLS segments cực nhanh
-          mkdir -p /dev/shm/hls/hbo
-          ln -s /dev/shm/hls hls
-          curl -sL "https://huggingface.co/spaces/ken1402/antv-live/resolve/main/logo1.png" -o logo1.png
-          curl -sL "https://huggingface.co/spaces/ken1402/antv-live/resolve/main/hbo.png" -o hbo.png
-
-      - name: Generate EPG Fetcher Code
-        run: |
-          python3 -c '
-          code = """import time
-          import requests
-          import xml.etree.ElementTree as ET
-          from datetime import datetime, timezone
-
-          EPG_URL = "https://epg.pw/api/epg.xml?channel_id=480609"
-          HEADER_FILE = "epg_hbo_header.txt"
-          TITLE_FILE = "epg_hbo_title.txt"
-          NEXT_THRESHOLD_SECONDS = 180 
-
-          def parse_xmltv_date(date_str):
-              try:
-                  clean_date = date_str.split()[0]
-                  return datetime.strptime(clean_date, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-              except Exception:
-                  return None
-
-          def update_epg():
-              try:
-                  headers = {"User-Agent": "Mozilla/5.0"}
-                  response = requests.get(EPG_URL, headers=headers, timeout=10)
-                  if response.status_code != 200:
-                      print(f"[EPG] Lỗi kết nối API: {response.status_code}")
-                      return
-                  root = ET.fromstring(response.content)
-                  now_utc = datetime.now(timezone.utc)
-                  programmes = []
-                  for programme in root.findall("programme"):
-                      start_str = programme.get("start")
-                      stop_str = programme.get("stop")
-                      if start_str and stop_str:
-                          start_dt = parse_xmltv_date(start_str)
-                          stop_dt = parse_xmltv_date(stop_str)
-                          title_elem = programme.find("title")
-                          title_text = title_elem.text.strip() if (title_elem is not None and title_elem.text) else ""
-                          if start_dt and stop_dt and title_text:
-                              programmes.append({
-                                  "start": start_dt,
-                                  "stop": stop_dt,
-                                  "title": title_text
-                              })
-                  programmes.sort(key=lambda x: x["start"])
-                  header_text = "NOW"
-                  title_text = "HBO MOVIES"
-                  for idx, p in enumerate(programmes):
-                      if p["start"] <= now_utc < p["stop"]:
-                          time_remaining = (p["stop"] - now_utc).total_seconds()
-                          if time_remaining <= NEXT_THRESHOLD_SECONDS and (idx + 1 < len(programmes)):
-                              header_text = "NEXT"
-                              title_text = programmes[idx + 1]["title"]
-                          else:
-                              header_text = "NOW"
-                              title_text = p["title"]
-                          break
-                  with open(HEADER_FILE, "w", encoding="utf-8") as f:
-                      f.write(header_text)
-                  with open(TITLE_FILE, "w", encoding="utf-8") as f:
-                      f.write(title_text)
-                  print(f"[EPG] Updated | Status: {header_text} | Movie: {title_text}")
-              except Exception as e:
-                  print(f"[EPG] Error updating EPG: {e}")
-
-          if __name__ == "__main__":
-              while True:
-                  update_epg()
-                  time.sleep(10)
-          """
-          with open("fetch_epg.py", "w", encoding="utf-8") as f:
-              f.write(code)
-          '
+          mkdir -p hls/kenscom180
 
       - name: Generate Server App Code (Python)
         run: |
@@ -124,7 +46,7 @@ jobs:
           CORS(app, resources={r"/*": {"origins": "*"}})
 
           @app.route("/")
-          def index(): return "IPTV Stream Server Running (1080p Web Optimized)!", 200
+          def index(): return "IPTV Stream Server Running!", 200
 
           @app.route("/playlist.m3u")
           def playlist(): 
@@ -138,7 +60,6 @@ jobs:
               response = make_response(send_from_directory("hls", filename))
               response.headers["Access-Control-Allow-Origin"] = "*"
               response.headers["Connection"] = "keep-alive"
-              response.headers["Keep-Alive"] = "timeout=30, max=1000"
               response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
               response.headers["Content-Type"] = "video/MP2T" if filename.endswith(".ts") else "application/vnd.apple.mpegurl"
               return response
@@ -155,7 +76,7 @@ jobs:
           script = """#!/bin/bash
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
-          BORE_PORT=4000
+          BORE_PORT=30212
 
           echo "💻 Starting SSHX Web Terminal..."
           sshx > sshx.log 2>&1 &
@@ -181,67 +102,42 @@ jobs:
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
           echo "#EXTM3U" > playlist.m3u
-          echo '\''#EXTINF:-1 tvg-id="HBO.us" tvg-name="HBO HD" group-title="US Live", HBO HD Movie'\'' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/hbo/master.m3u8" >> playlist.m3u
+          echo '\''#EXTINF:-1 tvg-id="Kenscom180" tvg-name="Kenscom Channel 180" group-title="VN Live", KensCom Channel 180 HD'\'' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/kenscom180/1080p.m3u8" >> playlist.m3u
 
-          # Chạy Flask Server tối ưu tối đa cho 4 Cores CPU
-          gunicorn -w 4 --threads 4 --access-logfile - --error-logfile - --keep-alive 30 -b 0.0.0.0:5000 app:app &
+          gunicorn -w 2 --threads 4 --access-logfile - --error-logfile - --keep-alive 15 -b 0.0.0.0:5000 app:app &
           sleep 2
 
-          # Tạo file mặc định
-          echo "NOW" > epg_hbo_header.txt
-          echo "HBO MOVIES" > epg_hbo_title.txt
-
-          # Chạy ngầm EPG Parser
-          python3 fetch_epg.py &
-
           echo "===================================================="
-          echo "🚀 CHRTV STREAM READY (MAX PERFORMANCE ULTRAFAST)!"
+          echo "🚀 CHRTV STREAM READY!"
           echo "🔑 SSHX TERMINAL URL : ${SSHX_URL}"
           echo "👉 PLAYLIST URL      : ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/hbo/master.m3u8"
+          echo "👉 DIRECT STREAM     : ${PUBLIC_URL}/hls/kenscom180/1080p.m3u8"
           echo "===================================================="
 
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          STREAM_HBO="http://23.237.104.106:8080/USA_HBO_ZONE/tracks-v1a1/mono.m3u8"
-          FONT_BOLD="/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
-
-          HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\\r\\nAccept: */*\\r\\nConnection: keep-alive"
+          UA="VLC/3.0.20 LibVLC/3.0.20 (QtEmbedded; U; Linux; C) MAG200 stb app"
+          
+          # Link MPD của bro (Nếu token hết hạn bro chỉ cần thay chuỗi token mới vào biến này)
+          STREAM_MPD="http://136.239.173.10:6610/001/2/ch00000090990000001108/manifest.mpd?AuthInfo=v87HD9rEhwHiAdYyrP20Tg5pgSMSITY%2FHYvvCWJRp%2BoD7Jkv0l3sE1jz6821dGRWytokK1MIobcue1ImXa0ZEA%3D%3D&version=v1.0&BreakPoint=0&virtualDomain=001.live_hls.zte.com&programid=ch00000000000000001233&contentid=ch00000000000000001233&videoid=ch00000090990000001108&recommendtype=0&userid=1349825919509&boid=001&stbid=02%3A00%3A00%3A00%3A00%3A00&terminalflag=1&profilecode=&usersessionid=LAO494UQ9QXXXX&NeedJITP=1&JITPMediaType=DASH&JITPDRMType=NO"
 
           while true; do
-            echo "🎬 Starting FFmpeg Transcode (Ultrafast Mode)..."
-            ffmpeg -y -hide_banner -loglevel error \\
-              -headers "$HEADERS" \\
-              -rw_timeout 10000000 \\
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \\
-              -user_agent "$USER_AGENT" \\
-              -i "$STREAM_HBO" \\
-              -stream_loop -1 -i "logo1.png" \\
-              -stream_loop -1 -i "hbo.png" \\
-              -threads 4 -filter_threads 4 \\
-              -filter_complex "[0:v]fps=30,scale=1280:720[v_scaled]; \\
-                               [1:v]format=rgba,scale=-1:45[lg1]; \\
-                               [2:v]format=rgba,scale=-1:85[lg_hbo]; \\
-                               [v_scaled][lg1]overlay=main_w-overlay_w-20:main_h-overlay_h-15:shortest=1[v_l1]; \\
-                               [v_l1][lg_hbo]overlay=main_w-overlay_w-20:20:shortest=1[v_l2]; \\
-                               [v_l2]drawtext=fontfile=${FONT_BOLD}:textfile=epg_hbo_header.txt:reload=1: \\
-                               fontcolor=white:fontsize=15: \\
-                               x='\''1280-tw-115'\'':y=42: \\
-                               shadowcolor=black@0.9:shadowx=2:shadowy=2[v_txt1]; \\
-                               [v_txt1]drawtext=fontfile=${FONT_BOLD}:textfile=epg_hbo_title.txt:reload=1: \\
-                               fontcolor=white@0.85:fontsize=18: \\
-                               x='\''1280-tw-115'\'':y=62: \\
-                               shadowcolor=black@0.8:shadowx=1:shadowy=1,format=yuv420p[vout]" \\
-              -map "[vout]" -map 0:a? -map 0:s? \\
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -pix_fmt yuv420p \\
-              -g 60 -keyint_min 60 -sc_threshold 0 \\
-              -b:v 2500k -maxrate 2500k -bufsize 5000k \\
-              -c:a aac -b:a 128k -ar 44100 -af "aresample=async=1" \\
-              -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments+omit_endlist+independent_segments \\
-              -hls_segment_filename "hls/hbo/seg_%03d.ts" hls/hbo/master.m3u8 || true
+            echo "🎬 Fetching DASH Stream via Streamlink + Zero-CPU FFmpeg Remux..."
             
-            echo "⚠️ Source stream down, retrying in 2s..."
-            sleep 2
+            # Streamlink chịu trách nhiệm bóc MPD -> FFmpeg chỉ Stream Copy (-c copy) nên CPU 0%
+            streamlink --http-header "User-Agent=$UA" \
+                       --http-header "Accept=*/*" \
+                       --stream-segment-threads 2 \
+                       --retry-streams 3 \
+                       --stdout "$STREAM_MPD" best | \
+            ffmpeg -y -hide_banner -loglevel warning \
+              -i pipe:0 \
+              -c copy \
+              -f hls -hls_time 3 -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -hls_segment_filename "hls/kenscom180/seg_%03d.ts" hls/kenscom180/1080p.m3u8 || true
+            
+            echo "⚠️ Stream pipe broke or Token expired, retrying in 3s..."
+            sleep 3
           done
           """
           with open("start_stream.sh", "w") as f:
