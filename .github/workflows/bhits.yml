@@ -29,7 +29,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          mkdir -p /dev/shm/hls/hc
+          mkdir -p /dev/shm/hls/bh
 
       - name: Create HLS Server
         shell: bash
@@ -39,7 +39,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const HLS_DIR = '/dev/shm/hls/hc';
+          const HLS_DIR = '/dev/shm/hls/bh';
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
@@ -108,8 +108,8 @@ jobs:
             -hls_time 2 \
             -hls_list_size 10 \
             -hls_flags delete_segments+omit_endlist+append_list+temp_file \
-            -hls_segment_filename "/dev/shm/hls/hc/segment_%03d.ts" \
-            /dev/shm/hls/hc/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
+            -hls_segment_filename "/dev/shm/hls/bh/segment_%03d.ts" \
+            /dev/shm/hls/bh/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
           
@@ -176,7 +176,7 @@ jobs:
           STREAM_READY=0
 
           for i in {1..120}; do
-            if [ -f "/dev/shm/hls/hc/index.m3u8" ]; then
+            if [ -f "/dev/shm/hls/bh/index.m3u8" ]; then
               STREAM_READY=1
               echo "✅ HLS Stream Ready!"
               break
