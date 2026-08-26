@@ -33,8 +33,8 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục tự động
-          mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
+          # Tạo sẵn cấu trúc thư mục tự động (720p & 480p cho BM1)
+          mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
       - name: Create HLS Server
         shell: bash
@@ -89,21 +89,21 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Stream Copy
+      - name: Start Services & FFmpeg ABR Stream Copy (Clean Mapping 720p + 480p)
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR
+          # Hàm khởi động FFmpeg ABR Stream Copy cho Box Movie 1
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy ABR Box Movie 1..."
+            echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR Box Movie 1 (720p + 480p)..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # CẤU HÌNH TỐI ƯU KHÔNG LỖI:
-            # - Copy 100% Video (-c:v copy) -> 0% CPU
-            # - Encode lại Audio chuẩn AAC (-c:a aac -b:a 128k) -> Chống sập Muxer HLS
+            # CÁCH MAP ĐÚNG VỚI BM1:
+            # - Rendition 0: Map 0:v:2 (720p HD gốc ~1.9 Mbps) + 0:a:0
+            # - Rendition 1: Map 0:v:1 (480p SD gốc ~0.9 Mbps) + 0:a:0
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -113,8 +113,8 @@ jobs:
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -map 0:v:3? -map 0:v:0 -map 0:a:0? \
-              -map 0:v:2? -map 0:v:0 -map 0:a:0? \
+              -map 0:v:2 -map 0:a:0 \
+              -map 0:v:1 -map 0:a:0 \
               -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
               -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
               -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 \
@@ -124,7 +124,7 @@ jobs:
               -hls_list_size 6 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
               -master_pl_name index.m3u8 \
-              -var_stream_map "v:0,a:0,name:1080p v:1,a:1,name:720p" \
+              -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
               -hls_segment_filename "${HLS_DIR}/%v/segment_%03d.ts" \
               "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
             
