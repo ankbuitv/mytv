@@ -1,8 +1,7 @@
-name: IPTV Stream Server - Kenh Ky Thuat ABR (No Logo - Fixed Port 30206)
+name: IPTV Stream Server - Kenh Ky Thuat ABR (Port 30602 - Short Path)
 
 on:
   schedule:
-    # Trigger tự động mỗi 5 tiếng 50 phút (tránh timeout 6h của GitHub Actions)
     - cron: '50 */5 * * *'
   workflow_dispatch:
 
@@ -21,15 +20,14 @@ jobs:
 
       - name: Run Streamer Engine ABR
         run: |
-          # 1. Cài đặt các gói hệ thống cần thiết
+          # 1. Cài đặt các gói hệ thống
           sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils fonts-dejavu-core
           pip install flask flask-cors
 
-          # ====================================================
-          # CẤU HÌNH DUCKDNS
-          # ====================================================
+          # CẤU HÌNH DUCKDNS & PORT 30602
           DUCKDNS_DOMAIN="chrtv"
           DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+          BORE_PORT=30602
 
           # 2. Cài đặt Bore Tunnel
           echo "⏬ Đang tải Bore..."
@@ -37,26 +35,24 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Tạo thư mục lưu HLS ABR
-          mkdir -p hls/tv360-9/v0 hls/tv360-9/v1 hls/tv360-9/v2
+          # Dọn dẹp & tạo thư mục lưu HLS trực tiếp tại hls/
+          rm -rf hls
+          mkdir -p hls/v0 hls/v1 hls/v2
 
-          # 3. Mở Bore Tunnel tại Port 30206
-          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30206..."
-          BORE_PORT=30206
+          # 3. Mở Bore Tunnel tại Port cố định 30602
+          echo "🌐 Đang mở Bore Tunnel tại Port cố định ${BORE_PORT}..."
           MAX_RETRIES=5
           RETRY_COUNT=0
-          CONNECTED=false
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            bore local 5000 --to bore.pub --port 30206 > bore.log 2>&1 &
+            bore local 5000 --to bore.pub --port $BORE_PORT > bore.log 2>&1 &
             sleep 4
             
-            if grep -q "listening at bore.pub:30206" bore.log; then
-              echo "✅ Đã giữ thành công Port 30206!"
-              CONNECTED=true
+            if grep -q "listening at bore.pub:${BORE_PORT}" bore.log; then
+              echo "✅ Đã giữ thành công Port ${BORE_PORT}!"
               break
             else
-              echo "⚠️ Port 30206 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
+              echo "⚠️ Port ${BORE_PORT} đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
               pkill bore || true
               RETRY_COUNT=$((RETRY_COUNT+1))
               sleep 3
@@ -73,12 +69,12 @@ jobs:
 
           PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
 
-          # 5. Tạo file playlist.m3u trỏ đến Master ABR Playlist
+          # 5. Tạo file playlist.m3u
           echo "#EXTM3U" > playlist.m3u
           echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9 (ABR Auto)' >> playlist.m3u
-          echo "${PUBLIC_URL}/hls/tv360-9/master.m3u8" >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/master.m3u8" >> playlist.m3u
 
-          # 6. Khởi tạo Flask Server
+          # 6. Khởi tạo Flask Server đơn giản hóa đường dẫn /hls/
           cat << 'EOF' > app.py
           from flask import Flask, send_from_directory, abort
           from flask_cors import CORS
@@ -89,7 +85,7 @@ jobs:
 
           @app.route("/")
           def index():
-              return "IPTV Technical ABR Server (No Logo) is Running!", 200
+              return "IPTV Technical ABR Server (Port 30602) is Running!", 200
 
           @app.route("/playlist.m3u")
           def playlist():
@@ -100,7 +96,11 @@ jobs:
               file_path = os.path.join("hls", filename)
               if not os.path.exists(file_path):
                   return abort(404)
-              response = send_from_directory("hls", filename)
+              
+              dir_name = os.path.dirname(file_path)
+              base_name = os.path.basename(file_path)
+              
+              response = send_from_directory(dir_name, base_name)
               if filename.endswith(".m3u8"):
                   response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
               elif filename.endswith(".ts"):
@@ -117,19 +117,18 @@ jobs:
           UA_DALVIK="Dalvik/2.1.0"
 
           echo "===================================================="
-          echo "🚀 CHRTV ABR TECHNICAL STREAM SERVER (NO LOGO) READY!"
-          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
-          echo "👉 LINK MASTER ABR DIRECT: ${PUBLIC_URL}/hls/tv360-9/master.m3u8"
+          echo "🚀 CHRTV ABR STREAM SERVER READY PORT ${BORE_PORT}!"
+          echo "👉 PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 MASTER ABR:   ${PUBLIC_URL}/hls/master.m3u8"
           echo "===================================================="
 
           # ====================================================
-          # 7. ENGINE ENCODE ABR NO-LOGO (1080p - 720p - 480p)
+          # 7. ENGINE ENCODE ABR (Ghi trực tiếp ra hls/master.m3u8)
           # ====================================================
           STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
           CURRENT_REAL_URL=""
           FFMPEG_PID=""
 
-          # Hàm lấy link thật bằng curl
           get_real_url() {
             local fetched_url=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
             if [ -z "$fetched_url" ]; then
@@ -138,10 +137,9 @@ jobs:
             echo "$fetched_url"
           }
 
-          # Hàm chạy FFmpeg ABR Engine (Đã fix hoàn toàn lỗi audio mapping)
           start_ffmpeg() {
             local target_url="$1"
-            echo "🎬 [FFmpeg Engine] Khởi chạy Stream ABR Clean (Chỉ giữ đồng hồ)..."
+            echo "🎬 [FFmpeg Engine] Khởi chạy Stream ABR..."
             
             ffmpeg -hide_banner -loglevel error \
               -rw_timeout 15000000 \
@@ -161,25 +159,23 @@ jobs:
               -map "[a3]"       -c:a:2 aac -b:a:2 64k -ar:a:2 44100 \
               -f hls -hls_time 2 -hls_list_size 6 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
-              -master_pl_name master.m3u8 \
+              -master_pl_name hls/master.m3u8 \
               -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
-              -hls_segment_filename "hls/tv360-9/v%v/seg_%03d.ts" hls/tv360-9/v%v/prog.m3u8 &
+              -hls_segment_filename "hls/v%v/seg_%03d.ts" hls/v%v/prog.m3u8 &
             
             FFMPEG_PID=$!
           }
 
-          # Khởi chạy lần đầu
           CURRENT_REAL_URL=$(get_real_url)
-          echo "🔗 Link gốc khởi tạo: $CURRENT_REAL_URL"
+          echo "🔗 Link gốc: $CURRENT_REAL_URL"
           start_ffmpeg "$CURRENT_REAL_URL"
 
-          # Vòng lặp giám sát & Auto Heal mỗi 10 phút
           while true; do
             sleep 600
             NEW_REAL_URL=$(get_real_url)
 
             if ! kill -0 $FFMPEG_PID 2>/dev/null || [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ]; then
-              echo "🔄 [Auto-Heal] Link gốc đổi hoặc FFmpeg đứt luồng! Đang tái khởi động..."
+              echo "🔄 [Auto-Heal] Re-starting FFmpeg..."
               if kill -0 $FFMPEG_PID 2>/dev/null; then
                 kill -9 $FFMPEG_PID || true
               fi
