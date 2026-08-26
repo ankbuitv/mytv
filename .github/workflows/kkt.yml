@@ -1,0 +1,196 @@
+name: IPTV Stream Server - Kenh Ky Thuat ABR (Fixed Port 30206)
+
+on:
+  schedule:
+    # Trigger tự động mỗi 5 tiếng 50 phút (tránh timeout 6h của GitHub Actions)
+    - cron: '50 */5 * * *'
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Streamer Engine ABR
+        run: |
+          # 1. Cài đặt các gói hệ thống cần thiết
+          sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils fonts-dejavu-core
+          pip install flask flask-cors
+
+          # ====================================================
+          # CẤU HÌNH DUCKDNS
+          # ====================================================
+          DUCKDNS_DOMAIN="chrtv"
+          DUCKDNS_TOKEN="0a7471b5-56fc-4b60-a5d9-5381f66930d9"
+
+          # 2. Cài đặt Bore Tunnel
+          echo "⏬ Đang tải Bore..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+
+          # Tải logo PNG
+          echo "⏬ Đang tải logo..."
+          curl -s -L "https://i.ibb.co/HDmcxzMK/Gemini-Generated-Image-v7i9yav7i9yav7i9-removebg-preview.png" -o logo1.png
+
+          # Tạo thư mục lưu HLS ABR
+          mkdir -p hls/tv360-9/v0 hls/tv360-9/v1 hls/tv360-9/v2
+
+          # 3. Mở Bore Tunnel tại Port 30206
+          echo "🌐 Đang mở Bore Tunnel tại Port cố định 30206..."
+          BORE_PORT=30206
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          CONNECTED=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            bore local 5000 --to bore.pub --port 30206 > bore.log 2>&1 &
+            sleep 4
+            
+            if grep -q "listening at bore.pub:30206" bore.log; then
+              echo "✅ Đã giữ thành công Port 30206!"
+              CONNECTED=true
+              break
+            else
+              echo "⚠️ Port 30206 đang bận... Thử lại ($((RETRY_COUNT+1))/$MAX_RETRIES)"
+              pkill bore || true
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              sleep 3
+            fi
+          done
+
+          # 4. Cập nhật IP Bore lên DuckDNS
+          BORE_IP=$(dig +short bore.pub | tail -n1)
+          if [ -n "$BORE_IP" ]; then
+            echo "🌐 Cập nhật IP Bore (${BORE_IP}) lên ${DUCKDNS_DOMAIN}.duckdns.org..."
+            curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=${BORE_IP}"
+            echo ""
+          fi
+
+          PUBLIC_URL="http://${DUCKDNS_DOMAIN}.duckdns.org:${BORE_PORT}"
+
+          # 5. Tạo file playlist.m3u trỏ đến Master ABR Playlist
+          echo "#EXTM3U" > playlist.m3u
+          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9 (ABR Auto)' >> playlist.m3u
+          echo "${PUBLIC_URL}/hls/tv360-9/master.m3u8" >> playlist.m3u
+
+          # 6. Khởi tạo Flask Server tối ưu Cache ABR
+          cat << 'EOF' > app.py
+          from flask import Flask, send_from_directory, abort
+          from flask_cors import CORS
+          import os
+
+          app = Flask(__name__)
+          CORS(app)
+
+          @app.route("/")
+          def index():
+              return "IPTV Technical ABR Server is Running!", 200
+
+          @app.route("/playlist.m3u")
+          def playlist():
+              return send_from_directory(".", "playlist.m3u")
+
+          @app.route("/hls/<path:filename>")
+          def serve_hls(filename):
+              file_path = os.path.join("hls", filename)
+              if not os.path.exists(file_path):
+                  return abort(404)
+              response = send_from_directory("hls", filename)
+              if filename.endswith(".m3u8"):
+                  response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+              elif filename.endswith(".ts"):
+                  response.headers["Cache-Control"] = "max-age=3600"
+              return response
+
+          if __name__ == "__main__":
+              app.run(host="0.0.0.0", port=5000)
+          EOF
+
+          python3 app.py &
+          sleep 2
+
+          UA_DALVIK="Dalvik/2.1.0"
+
+          echo "===================================================="
+          echo "🚀 CHRTV ABR TECHNICAL STREAM SERVER READY!"
+          echo "👉 LINK PLAYLIST TỔNG M3U: ${PUBLIC_URL}/playlist.m3u"
+          echo "👉 LINK MASTER ABR DIRECT: ${PUBLIC_URL}/hls/tv360-9/master.m3u8"
+          echo "===================================================="
+
+          # ====================================================
+          # 7. ENGINE ENCODE ABR 3 LUỒNG (1080p - 720p - 480p)
+          # ====================================================
+          STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
+          CURRENT_REAL_URL=""
+          FFMPEG_PID=""
+
+          # Hàm lấy link thật bằng curl
+          get_real_url() {
+            local fetched_url=$(curl -sI -A "$UA_DALVIK" "$STREAM_URL_9" | grep -i '^location:' | awk '{print $2}' | tr -d '\r\n')
+            if [ -z "$fetched_url" ]; then
+              fetched_url="$STREAM_URL_9"
+            fi
+            echo "$fetched_url"
+          }
+
+          # Hàm chạy FFmpeg ABR Multi-Bitrate Engine
+          start_ffmpeg() {
+            local target_url="$1"
+            echo "🎬 [FFmpeg Engine] Khởi chạy Stream ABR (1080p + 720p + 480p)..."
+            
+            ffmpeg -hide_banner -loglevel error \
+              -rw_timeout 15000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+              -user_agent "$UA_DALVIK" \
+              -i "$target_url" \
+              -stream_loop -1 -i logo1.png \
+              -filter_complex "[0:v]split=3[v1][v2][v3]; \
+               [1:v]scale=90:-1[logo1080]; [1:v]scale=65:-1[logo720]; [1:v]scale=45:-1[logo480]; \
+               [v1]scale=1920:1080[v1080]; [v1080][logo1080]overlay=20:main_h-overlay_h-20[v1_l]; \
+               [v1_l]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=w-tw-25:y=25:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.65:boxborderw=7,format=yuv420p[v1080out]; \
+               [v2]scale=1280:720[v720]; [v720][logo720]overlay=15:main_h-overlay_h-15[v2_l]; \
+               [v2_l]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=w-tw-20:y=20:fontcolor=white:fontsize=20:box=1:boxcolor=black@0.65:boxborderw=5,format=yuv420p[v720out]; \
+               [v3]scale=854:480[v480]; [v480][logo480]overlay=10:main_h-overlay_h-10[v3_l]; \
+               [v3_l]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=w-tw-15:y=15:fontcolor=white:fontsize=15:box=1:boxcolor=black@0.65:boxborderw=4,format=yuv420p[v480out]" \
+              -map "[v1080out]" -c:v:0 libx264 -preset ultrafast -tune zerolatency -profile:v:0 main -b:v:0 2800k -maxrate:v:0 3200k -bufsize:v:0 5000k \
+              -map "[v720out]"  -c:v:1 libx264 -preset ultrafast -tune zerolatency -profile:v:1 baseline -b:v:1 1200k -maxrate:v:1 1400k -bufsize:v:1 2400k \
+              -map "[v480out]"  -c:v:2 libx264 -preset ultrafast -tune zerolatency -profile:v:2 baseline -b:v:2 500k  -maxrate:v:2 600k  -bufsize:v:2 1000k \
+              -map 0:a? -c:a aac -b:a 96k -ar 44100 \
+              -f hls -hls_time 2 -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -master_pl_name master.m3u8 \
+              -var_stream_map "v:0,a:0 v:1,a:0 v:2,a:0" \
+              -hls_segment_filename "hls/tv360-9/v%v/seg_%03d.ts" hls/tv360-9/v%v/prog.m3u8 &
+            
+            FFMPEG_PID=$!
+          }
+
+          # Khởi chạy lần đầu
+          CURRENT_REAL_URL=$(get_real_url)
+          echo "🔗 Link gốc khởi tạo: $CURRENT_REAL_URL"
+          start_ffmpeg "$CURRENT_REAL_URL"
+
+          # Vòng lặp giám sát & Auto Heal mỗi 10 phút
+          while true; do
+            sleep 600
+            NEW_REAL_URL=$(get_real_url)
+
+            if ! kill -0 $FFMPEG_PID 2>/dev/null || [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ]; then
+              echo "🔄 [Auto-Heal] Link gốc đổi hoặc FFmpeg đứt luồng! Đang tái khởi động..."
+              if kill -0 $FFMPEG_PID 2>/dev/null; then
+                kill -9 $FFMPEG_PID || true
+              fi
+              
+              CURRENT_REAL_URL="$NEW_REAL_URL"
+              start_ffmpeg "$CURRENT_REAL_URL"
+            fi
+          done
