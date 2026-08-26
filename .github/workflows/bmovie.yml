@@ -196,8 +196,8 @@ jobs:
               sleep 5
             fi
 
-            # Tự phục hồi HTTP Server
-            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; me
+            # Tự phục hồi HTTP Server (Đã sửa lỗi cú pháp 'then')
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
