@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Kenh Ky Thuat ABR (Port 30602 - Short Path)
+name: IPTV Stream Server - Kenh Ky Thuat ABR (Port 30602 Fixed Path)
 
 on:
   schedule:
@@ -35,7 +35,7 @@ jobs:
           chmod +x bore
           sudo mv bore /usr/local/bin/
 
-          # Dọn dẹp & tạo thư mục lưu HLS trực tiếp tại hls/
+          # Dọn dẹp & tạo thư mục lưu HLS
           rm -rf hls
           mkdir -p hls/v0 hls/v1 hls/v2
 
@@ -74,7 +74,7 @@ jobs:
           echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9 (ABR Auto)' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/master.m3u8" >> playlist.m3u
 
-          # 6. Khởi tạo Flask Server đơn giản hóa đường dẫn /hls/
+          # 6. Khởi tạo Flask Server
           cat << 'EOF' > app.py
           from flask import Flask, send_from_directory, abort
           from flask_cors import CORS
@@ -123,7 +123,7 @@ jobs:
           echo "===================================================="
 
           # ====================================================
-          # 7. ENGINE ENCODE ABR (Ghi trực tiếp ra hls/master.m3u8)
+          # 7. ENGINE ENCODE ABR (Fix lỗi lặp đường dẫn master.m3u8)
           # ====================================================
           STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
           CURRENT_REAL_URL=""
@@ -159,7 +159,7 @@ jobs:
               -map "[a3]"       -c:a:2 aac -b:a:2 64k -ar:a:2 44100 \
               -f hls -hls_time 2 -hls_list_size 6 \
               -hls_flags delete_segments+omit_endlist+independent_segments \
-              -master_pl_name hls/master.m3u8 \
+              -master_pl_name master.m3u8 \
               -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
               -hls_segment_filename "hls/v%v/seg_%03d.ts" hls/v%v/prog.m3u8 &
             
