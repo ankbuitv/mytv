@@ -92,7 +92,7 @@ jobs:
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg ABR: Giải mã ClearKey + Re-encode 1080p, 720p, 480p + Cắt segment 1s (GOP=25)
+          # 2. FFmpeg ABR Fix: Chọn luồng video chuẩn 0:v:0 + Transcode 1080p và 720p siêu mượt
           CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
 
           nohup ffmpeg -hide_banner -loglevel warning \
@@ -103,19 +103,17 @@ jobs:
             -reconnect_delay_max 5 \
             -cenc_decryption_key "$CLEARKEY_KEY" \
             -i "$MPD_URL" \
-            -filter_complex "[0:v:best]split=3[v1,v2,v3]; [v1]scale=w=1920:h=1080[v1out]; [v2]scale=w=1280:h=720[v2out]; [v3]scale=w=854:h=480[v3out]" \
-            -map "[v1out]" -c:v:0 libx264 -b:v:0 4000k -maxrate:v:0 4500k -bufsize:v:0 6000k -g 25 -keyint_min 25 -sc_threshold 0 -preset ultrafast -tune zerolatency \
-            -map "[v2out]" -c:v:1 libx264 -b:v:1 2000k -maxrate:v:1 2300k -bufsize:v:1 3000k -g 25 -keyint_min 25 -sc_threshold 0 -preset ultrafast -tune zerolatency \
-            -map "[v3out]" -c:v:2 libx264 -b:v:2 800k  -maxrate:v:2 1000k -bufsize:v:2 1200k -g 25 -keyint_min 25 -sc_threshold 0 -preset ultrafast -tune zerolatency \
+            -filter_complex "[0:v:0]split=2[v1,v2]; [v1]scale=w=1920:h=1080[v1out]; [v2]scale=w=1280:h=720[v2out]" \
+            -map "[v1out]" -c:v:0 libx264 -b:v:0 3500k -maxrate:v:0 4000k -bufsize:v:0 5000k -g 25 -keyint_min 25 -sc_threshold 0 -preset ultrafast -tune zerolatency \
+            -map "[v2out]" -c:v:1 libx264 -b:v:1 1800k -maxrate:v:1 2000k -bufsize:v:1 2500k -g 25 -keyint_min 25 -sc_threshold 0 -preset ultrafast -tune zerolatency \
             -map 0:a:0 -c:a:0 aac -b:a:0 128k \
-            -map 0:a:0 -c:a:1 aac -b:a:1 128k \
-            -map 0:a:0 -c:a:2 aac -b:a:2 96k \
+            -map 0:a:0 -c:a:1 aac -b:a:1 96k \
             -f hls \
             -hls_time 1 \
-            -hls_list_size 6 \
+            -hls_list_size 5 \
             -hls_flags delete_segments+omit_endlist+independent_segments \
             -master_pl_name index.m3u8 \
-            -var_stream_map "v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:480p" \
+            -var_stream_map "v:0,a:0,name:1080p v:1,a:1,name:720p" \
             -hls_segment_filename "${HLS_DIR}/%v/segment_%03d.ts" \
             "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
