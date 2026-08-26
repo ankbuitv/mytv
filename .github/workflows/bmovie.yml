@@ -1,4 +1,4 @@
-name: HLS Restream - Box Movie 1 (Fixed Stream Specifier & Paths)
+name: HLS Restream ABR - Box Movie 1 (Cron Auto Restart)
 
 on:
   workflow_dispatch:
@@ -9,13 +9,15 @@ on:
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 370
+    timeout-minutes: 350
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
+      BORE_PORT: "30117"
+      HLS_DIR: "/dev/shm/hls/bm1"
 
     steps:
       - name: Install System Dependencies
@@ -25,12 +27,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl nodejs ffmpeg
 
+          # Tải và cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          mkdir -p /dev/shm/hls/bm1
+          # Tạo sẵn cấu trúc thư mục con cho từng rendition ABR
+          mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
         shell: bash
@@ -40,11 +44,13 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const HLS_DIR = '/dev/shm/hls/bm1';
+          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls/bm1';
 
           const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', '*');
+            res.setHeader('Access-Control-Expose-Headers', '*');
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.setHeader('Connection', 'keep-alive');
 
@@ -63,9 +69,10 @@ jobs:
               return res.end('404 Not Found');
             }
 
-            if (fileName.endsWith('.m3u8')) {
+            const lowerName = fileName.toLowerCase();
+            if (lowerName.endsWith('.m3u8')) {
               res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            } else if (fileName.endsWith('.ts')) {
+            } else if (lowerName.endsWith('.ts')) {
               res.setHeader('Content-Type', 'video/mp2t');
             }
 
@@ -78,157 +85,123 @@ jobs:
           });
 
           server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 Server started on port 5000...');
+            console.log('🚀 HLS Server running on port 5000...');
           });
           EOF
 
-      - name: Start Services & FFmpeg
+      - name: Start Services & FFmpeg ABR Multi-Bitrate (2s Segments)
         shell: bash
         run: |
-          set -euo pipefail
-
-          # 1. Start Server
+          # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. FFmpeg: Fix map stream (-map 0:v:0 và -map 0:a:0) + Copy Video chống ngốn CPU
-          CUSTOM_HEADERS="Referer: ${REFERER}\r\nOrigin: https://vtvprime.vn\r\n"
-          
-          nohup ffmpeg -hide_banner -loglevel warning \
-            -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
-            -user_agent "$USER_AGENT" \
-            -headers "$CUSTOM_HEADERS" \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -fflags +genpts+discardcorrupt+igndts \
-            -i "$MPD_URL" \
-            -map 0:v:0 -map 0:a:0? \
-            -c:v copy \
-            -bsf:v h264_mp4toannexb \
-            -c:a aac -b:a 128k -ar 44100 -ac 2 -af "aresample=async=1000" \
-            -f hls \
-            -hls_time 3 \
-            -hls_list_size 8 \
-            -hls_flags delete_segments+omit_endlist+independent_segments \
-            -hls_segment_filename "/dev/shm/hls/bm1/segment_%03d.ts" \
-            /dev/shm/hls/bm1/index.m3u8 > /tmp/ffmpeg.log 2>&1 &
-          echo $! > /tmp/ffmpeg.pid
+          # Hàm khởi động FFmpeg ABR 2s / Segment
+          start_ffmpeg() {
+            echo "🎬 [FFmpeg Engine] Bắt đầu mã hóa ABR Box Movie 1 (2s/Segment)..."
+            CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
+            
+            nohup ffmpeg -hide_banner -loglevel warning \
+              -user_agent "$USER_AGENT" \
+              -headers "$CUSTOM_HEADERS" \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
+              -reconnect_on_http_error 403,429,500,502,503,504 \
+              -reconnect_delay_max 5 \
+              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -i "$MPD_URL" \
+              -filter_complex "[0:v:0]split=2[v1][v2]; [v1]format=yuv420p[v1out]; [v2]scale=1280:720,format=yuv420p[v2out]; [0:a:0]asplit=2[a1][a2]" \
+              -map "[v1out]" -c:v:0 libx264 -b:v:0 3000k -maxrate:v:0 3500k -bufsize:v:0 4500k -g 50 -keyint_min 50 -sc_threshold 0 -preset ultrafast -tune zerolatency \
+              -map "[v2out]" -c:v:1 libx264 -b:v:1 1500k -maxrate:v:1 1800k -bufsize:v:1 2200k -g 50 -keyint_min 50 -sc_threshold 0 -preset ultrafast -tune zerolatency \
+              -map "[a1]" -c:a:0 aac -b:a:0 128k -ar:a:0 44100 \
+              -map "[a2]" -c:a:1 aac -b:a:1 96k -ar:a:1 44100 \
+              -f hls \
+              -hls_time 2 \
+              -hls_list_size 6 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -master_pl_name index.m3u8 \
+              -var_stream_map "v:0,a:0,name:1080p v:1,a:1,name:720p" \
+              -hls_segment_filename "${HLS_DIR}/%v/segment_%03d.ts" \
+              "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
+            
+            echo $! > /tmp/ffmpeg.pid
+          }
 
-          # 3. Bore Tunnel - tự chờ remote port rảnh
-          BORE_PORT=30117
+          start_ffmpeg
 
-          echo "🌐 Đang tìm bore.pub:${BORE_PORT}..."
-
-          while true; do
-            echo "🔍 Đang thử lấy bore.pub:${BORE_PORT}..."
-
+          # 2. Khởi tạo Bore Tunnel
+          start_bore() {
+            echo "🌐 Đang mở kết nối Bore Tunnel tại port ${BORE_PORT}..."
             rm -f /tmp/bore.log
+            nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
+            echo $! > /tmp/bore.pid
+          }
 
-            bore local 5000 \
-              --to bore.pub \
-              --port "${BORE_PORT}" \
-              > /tmp/bore.log 2>&1 &
+          start_bore
 
-            BORE_PID=$!
-            echo "$BORE_PID" > /tmp/bore.pid
-
-            PORT_READY=0
-
-            for i in {1..30}; do
-              sleep 1
-
-              if grep -qiE \
-                "bound to remote port|bore.pub:${BORE_PORT}" \
-                /tmp/bore.log 2>/dev/null; then
-
-                PORT_READY=1
-                break
-              fi
-
-              if ! kill -0 "$BORE_PID" 2>/dev/null; then
-                break
-              fi
-            done
-
-            if [ "$PORT_READY" -eq 1 ]; then
-              echo "✅ Bore đã chiếm được port ${BORE_PORT}!"
+          PORT_READY=0
+          for i in {1..30}; do
+            sleep 1
+            if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
+              PORT_READY=1
+              echo "✅ Bore đã giữ thành công port ${BORE_PORT}!"
               break
             fi
-
-            echo "⚠️ Chưa lấy được bore.pub:${BORE_PORT}"
-            echo "----- Bore log -----"
-            cat /tmp/bore.log 2>/dev/null || true
-            echo "--------------------"
-
-            kill "$BORE_PID" 2>/dev/null || true
-            wait "$BORE_PID" 2>/dev/null || true
-
-            echo "⏳ Chờ 15 giây rồi thử lại..."
-            sleep 15
           done
 
+          if [ "$PORT_READY" -ne 1 ]; then
+            echo "⚠️ Bore đang xếp hàng kết nối, tiến trình giám sát sẽ tự động duy trì."
+          fi
+
           echo "=================================================="
-          echo "🌐 BORE READY"
-          echo "👉 http://bore.pub:${BORE_PORT}/index.m3u8"
+          echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
           
-          echo "⏳ Đang chờ FFmpeg tạo HLS..."
-          STREAM_READY=0
-
-          # Sửa đường dẫn kiểm tra đúng chính xác: /dev/shm/hls/bm1/index.m3u8
+          echo "⏳ Chờ FFmpeg tạo danh sách phát ban đầu..."
           for i in {1..120}; do
-            if [ -f "/dev/shm/hls/bm1/index.m3u8" ]; then
-              STREAM_READY=1
-              echo "✅ HLS Stream Ready!"
+            if [ -f "${HLS_DIR}/index.m3u8" ]; then
+              echo "✅ HLS ABR Stream Sẵn Sàng!"
               break
             fi
-
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
-              echo "❌ FFmpeg đã chết trong lúc khởi tạo!"
-              echo "----- FFmpeg log -----"
-              cat /tmp/ffmpeg.log || true
-              echo "----------------------"
-              exit 1
-            fi
-
             sleep 1
           done
 
-          if [ "$STREAM_READY" -ne 1 ]; then
-            echo "❌ FFmpeg không tạo index.m3u8 sau 120 giây."
-            cat /tmp/ffmpeg.log || true
-            exit 1
-          fi
-
-          # 4. Timer 5h 59m (21540s)
+          # 3. Vòng lặp giám sát liên tục & Auto-Heal
           START_TIME=$(date +%s)
-          LIMIT_SECONDS=21540
+          LIMIT_SECONDS=21540  # 5 giờ 59 phút
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Đã chạy đủ 5h 59m, tự thoát nhường cho Cron Job mới..."
+              echo "⏰ Hết ca làm việc (5h59m), kết thúc phiên nhường chỗ cho Cron Job tiếp theo..."
               exit 0
             fi
 
-            if ! kill -0 $(cat /tmp/server.pid) 2>/dev/null; then
-              echo "❌ Server crashed! Log:"
-              cat /tmp/server.log
-              exit 1
+            # Tự phục hồi FFmpeg nếu nguồn phát bị ngắt
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang tự động kích hoạt lại..."
+              start_ffmpeg
+              sleep 5
             fi
 
-            if ! kill -0 $(cat /tmp/ffmpeg.pid) 2>/dev/null; then
-              echo "❌ FFmpeg crashed! Log:"
-              cat /tmp/ffmpeg.log
-              exit 1
+            # Tự phục hồi Bore Tunnel nếu mất kết nối
+            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
+              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Đang kết nối lại..."
+              start_bore
+              sleep 5
             fi
 
-            if ! kill -0 $(cat /tmp/bore.pid) 2>/dev/null; then
-              echo "❌ Bore Tunnel crashed! Log:"
-              cat /tmp/bore.log
-              exit 1
+            # Tự phục hồi HTTP Server
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+              echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
+              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+              echo $! > /tmp/server.pid
+              sleep 2
             fi
+
+            # Dọn rác các file .ts cũ quá 5 phút
+            find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
 
             sleep 10
           done
