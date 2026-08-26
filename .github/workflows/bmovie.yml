@@ -33,7 +33,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục tự động theo env HLS_DIR
+          # Tạo sẵn cấu trúc thư mục tự động
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
@@ -89,22 +89,21 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Pure Stream Copy (True 0% CPU)
+      - name: Start Services & FFmpeg ABR Stream Copy
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg Pure Stream Copy
+          # Hàm khởi động FFmpeg ABR
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR Box Movie 1 (1080p + 720p)..."
+            echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy ABR Box Movie 1..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # CẤU HÌNH TỐI ƯU CHUẨN ĐỆT:
-            # - Stream Copy 100% cả Video & Audio (-c copy) -> CPU nhàn 0%
-            # - Map 0:v:3 (1080p) và 0:v:2 (720p)
-            # - Bitstream filter h264_mp4toannexb giúp chuyển container mp4/m4s sang ts mượt mà
+            # CẤU HÌNH TỐI ƯU KHÔNG LỖI:
+            # - Copy 100% Video (-c:v copy) -> 0% CPU
+            # - Encode lại Audio chuẩn AAC (-c:a aac -b:a 128k) -> Chống sập Muxer HLS
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -114,10 +113,12 @@ jobs:
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -map 0:v:3 -map 0:a:0 \
-              -map 0:v:2 -map 0:a:0 \
-              -c:v copy -c:a copy \
-              -bsf:v h264_mp4toannexb \
+              -map 0:v:3? -map 0:v:0 -map 0:a:0? \
+              -map 0:v:2? -map 0:v:0 -map 0:a:0? \
+              -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
+              -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
+              -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 \
+              -c:a:1 aac -b:a:1 96k -ar 44100 -ac 2 \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
@@ -152,22 +153,36 @@ jobs:
             fi
           done
 
-          if [ "$PORT_READY" -ne 1 ]; then
-            echo "⚠️ Bore đang xếp hàng kết nối, tiến trình giám sát sẽ tự động duy trì."
-          fi
-
           echo "=================================================="
           echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
           
-          echo "⏳ Chờ FFmpeg tạo danh sách phát ban đầu..."
-          for i in {1..120}; do
+          echo "⏳ Đang kiểm tra khởi tạo HLS Stream..."
+          STREAM_READY=0
+          for i in {1..60}; do
             if [ -f "${HLS_DIR}/index.m3u8" ]; then
+              STREAM_READY=1
               echo "✅ HLS ABR Stream Sẵn Sàng!"
               break
             fi
+
+            # Kiểm tra ngay nếu FFmpeg bị chết đột ngột
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Chi tiết lỗi bên dưới:"
+              echo "---------------- FFMEPG LOG ----------------"
+              cat /tmp/ffmpeg.log || true
+              echo "--------------------------------------------"
+              exit 1
+            fi
+
             sleep 1
           done
+
+          if [ "$STREAM_READY" -ne 1 ]; then
+            echo "❌ Không tạo được file index.m3u8 sau 60s. Log FFmpeg:"
+            cat /tmp/ffmpeg.log || true
+            exit 1
+          fi
 
           # 3. Vòng lặp giám sát liên tục & Auto-Heal
           START_TIME=$(date +%s)
@@ -196,7 +211,7 @@ jobs:
               sleep 5
             fi
 
-            # Tự phục hồi HTTP Server (Đã sửa lỗi cú pháp 'then')
+            # Tự phục hồi HTTP Server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
