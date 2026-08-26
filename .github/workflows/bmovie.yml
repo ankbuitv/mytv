@@ -33,7 +33,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục con cho từng rendition ABR
+          # Tạo sẵn cấu trúc thư mục tự động theo env HLS_DIR
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
@@ -89,23 +89,22 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Multi-Bitrate (0% CPU Stream Copy - 2s Segments)
+      - name: Start Services & FFmpeg ABR Pure Stream Copy (True 0% CPU)
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR 2s / Segment
+          # Hàm khởi động FFmpeg Pure Stream Copy
           start_ffmpeg() {
             echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR Box Movie 1 (1080p + 720p)..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # TỐI ƯU CHUẨN ĐÉT:
-            # - Bỏ hoàn toàn -filter_complex (không transcode video, CPU nhàn 0%)
-            # - Map 0:v:3 -> Luồng 1080p Full HD gốc
-            # - Map 0:v:2 -> Luồng 720p HD gốc
-            # - Dùng -bsf:v h264_mp4toannexb để đóng gói m4s/mp4 sang MPEG-TS không vỡ hình
+            # CẤU HÌNH TỐI ƯU CHUẨN ĐỆT:
+            # - Stream Copy 100% cả Video & Audio (-c copy) -> CPU nhàn 0%
+            # - Map 0:v:3 (1080p) và 0:v:2 (720p)
+            # - Bitstream filter h264_mp4toannexb giúp chuyển container mp4/m4s sang ts mượt mà
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -117,10 +116,8 @@ jobs:
               -i "$MPD_URL" \
               -map 0:v:3 -map 0:a:0 \
               -map 0:v:2 -map 0:a:0 \
-              -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
-              -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
-              -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 -af "aresample=async=1000" \
-              -c:a:1 aac -b:a:1 96k -ar 44100 -ac 2 -af "aresample=async=1000" \
+              -c:v copy -c:a copy \
+              -bsf:v h264_mp4toannexb \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
@@ -200,7 +197,7 @@ jobs:
             fi
 
             # Tự phục hồi HTTP Server
-            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; me
               echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
