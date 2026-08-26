@@ -32,7 +32,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục con cho từng rendition ABR
+          # Tạo sẵn cấu trúc thư mục tự động (1080p & 720p cho Box Hits)
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
@@ -88,18 +88,21 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Multi-Bitrate (2s Segments)
+      - name: Start Services & FFmpeg ABR Stream Copy (Clean Mapping 1080p + 720p)
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR 2s / Segment
+          # Hàm khởi động FFmpeg ABR Stream Copy cho Box Hits
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Bắt đầu mã hóa ABR (2s/Segment)..."
+            echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR Box Hits (1080p + 720p)..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
+            # CÁCH MAP CHUẨN XÁC CHO BOX HITS:
+            # - Rendition 0: Map 0:v:3 (1080p Full HD gốc ~3.2 Mbps) + 0:a:0
+            # - Rendition 1: Map 0:v:2 (720p HD gốc ~2.3 Mbps)     + 0:a:0
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -107,12 +110,14 @@ jobs:
               -reconnect_on_http_error 403,429,500,502,503,504 \
               -reconnect_delay_max 5 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
+              -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -filter_complex "[0:v:0]split=2[v1][v2]; [v1]format=yuv420p[v1out]; [v2]scale=1280:720,format=yuv420p[v2out]; [0:a:0]asplit=2[a1][a2]" \
-              -map "[v1out]" -c:v:0 libx264 -b:v:0 3000k -maxrate:v:0 3500k -bufsize:v:0 4500k -g 50 -keyint_min 50 -sc_threshold 0 -preset ultrafast -tune zerolatency \
-              -map "[v2out]" -c:v:1 libx264 -b:v:1 1500k -maxrate:v:1 1800k -bufsize:v:1 2200k -g 50 -keyint_min 50 -sc_threshold 0 -preset ultrafast -tune zerolatency \
-              -map "[a1]" -c:a:0 aac -b:a:0 128k -ar:a:0 44100 \
-              -map "[a2]" -c:a:1 aac -b:a:1 96k -ar:a:1 44100 \
+              -map 0:v:3 -map 0:a:0 \
+              -map 0:v:2 -map 0:a:0 \
+              -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
+              -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
+              -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 \
+              -c:a:1 aac -b:a:1 96k -ar 44100 -ac 2 \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
@@ -147,22 +152,36 @@ jobs:
             fi
           done
 
-          if [ "$PORT_READY" -ne 1 ]; then
-            echo "⚠️ Bore đang xếp hàng kết nối, tiến trình giám sát sẽ tự động duy trì."
-          fi
-
           echo "=================================================="
           echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
           
-          echo "⏳ Chờ FFmpeg tạo danh sách phát ban đầu..."
-          for i in {1..120}; do
+          echo "⏳ Đang kiểm tra khởi tạo HLS Stream..."
+          STREAM_READY=0
+          for i in {1..60}; do
             if [ -f "${HLS_DIR}/index.m3u8" ]; then
+              STREAM_READY=1
               echo "✅ HLS ABR Stream Sẵn Sàng!"
               break
             fi
+
+            # Kiểm tra ngay nếu FFmpeg bị chết đột ngột
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Chi tiết lỗi bên dưới:"
+              echo "---------------- FFMEPG LOG ----------------"
+              cat /tmp/ffmpeg.log || true
+              echo "--------------------------------------------"
+              exit 1
+            fi
+
             sleep 1
           done
+
+          if [ "$STREAM_READY" -ne 1 ]; then
+            echo "❌ Không tạo được file index.m3u8 sau 60s. Log FFmpeg:"
+            cat /tmp/ffmpeg.log || true
+            exit 1
+          fi
 
           # 3. Vòng lặp giám sát liên tục & Auto-Heal
           START_TIME=$(date +%s)
