@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Technical ABR Reference (Auto-Heal & Precision UTC+7)
+name: IPTV Stream Server - Technical ABR Reference (Stable Engine)
 
 on:
   schedule:
@@ -87,7 +87,7 @@ jobs:
 
           @app.route("/")
           def index():
-              return "IPTV Technical ABR Server (Low-Latency Port 30602) is Running!", 200
+              return "IPTV Technical ABR Server (Port 30602) is Running!", 200
 
           @app.route("/playlist.m3u")
           def playlist():
@@ -125,7 +125,7 @@ jobs:
           echo "===================================================="
 
           # ====================================================
-          # 7. ENGINE ENCODE ABR (Bổ sung cờ chịu lỗi mạng demuxer)
+          # 7. ENGINE ENCODE ABR STABLE (Ổn định chống crash)
           # ====================================================
           STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
           CURRENT_REAL_URL=""
@@ -141,13 +141,11 @@ jobs:
 
           start_ffmpeg() {
             local target_url="$1"
-            echo "🎬 [FFmpeg Engine] Khởi chạy Low-Latency Technical Stream (Native ms)..."
+            echo "🎬 [FFmpeg Engine] Khởi chạy Stream ổn định..."
             
-            TZ="Asia/Ho_Chi_Minh" ffmpeg -hide_banner -loglevel error \
+            TZ="Asia/Ho_Chi_Minh" nohup ffmpeg -hide_banner -loglevel error \
+              -re \
               -rw_timeout 15000000 \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
-              -max_reload 20 -m3u8_hold_counters 20 \
-              -err_detect ignore_err \
               -user_agent "$UA_DALVIK" \
               -i "$target_url" \
               -filter_complex "[0:v]split=3[v1][v2][v3]; \
@@ -161,11 +159,11 @@ jobs:
               -map "[a2]"       -c:a:1 aac -b:a:1 96k -ar:a:1 44100 \
               -map "[v480out]"  -c:v:2 libx264 -preset ultrafast -tune zerolatency -profile:v:2 baseline -g:v:2 25 -b:v:2 500k  -maxrate:v:2 600k  -bufsize:v:2 1000k \
               -map "[a3]"       -c:a:2 aac -b:a:2 64k -ar:a:2 44100 \
-              -f hls -hls_time 1 -hls_list_size 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+split_by_time \
+              -f hls -hls_time 2 -hls_list_size 5 \
+              -hls_flags delete_segments+omit_endlist+independent_segments \
               -master_pl_name master.m3u8 \
               -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
-              -hls_segment_filename "hls/v%v/seg_%03d.ts" hls/v%v/prog.m3u8 &
+              -hls_segment_filename "hls/v%v/seg_%03d.ts" hls/v%v/prog.m3u8 > ffmpeg.log 2>&1 &
             
             FFMPEG_PID=$!
           }
@@ -175,15 +173,17 @@ jobs:
           start_ffmpeg "$CURRENT_REAL_URL"
 
           while true; do
-            sleep 600
+            sleep 60
             NEW_REAL_URL=$(get_real_url)
 
-            if ! kill -0 $FFMPEG_PID 2>/dev/null || [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ]; then
-              echo "🔄 [Auto-Heal] Re-starting FFmpeg..."
-              if kill -0 $FFMPEG_PID 2>/dev/null; then
-                kill -9 $FFMPEG_PID || true
-              fi
-              
+            # Chỉ restart khi link nguồn đổi thực sự hoặc FFmpeg bị ngắt hẳn
+            if ! kill -0 $FFMPEG_PID 2>/dev/null; then
+              echo "🔄 Tiến trình FFmpeg dừng đột ngột, đang bật lại..."
+              CURRENT_REAL_URL="$NEW_REAL_URL"
+              start_ffmpeg "$CURRENT_REAL_URL"
+            elif [ "$NEW_REAL_URL" != "$CURRENT_REAL_URL" ] && [ -n "$NEW_REAL_URL" ]; then
+              echo "🔄 Đổi URL nguồn mới, cập nhật FFmpeg..."
+              kill -9 $FFMPEG_PID 2>/dev/null || true
               CURRENT_REAL_URL="$NEW_REAL_URL"
               start_ffmpeg "$CURRENT_REAL_URL"
             fi
