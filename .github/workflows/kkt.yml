@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Kenh Ky Thuat ABR (UTC+7 - Bottom Left Clock)
+name: IPTV Stream Server - Technical ABR Reference (Low-Latency & Precision UTC+7)
 
 on:
   schedule:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Run Streamer Engine ABR
         run: |
-          # 1. Cài đặt các gói hệ thống & Set múi giờ UTC+7
+          # 1. Cài đặt hệ thống & Set múi giờ UTC+7
           sudo apt-get update && sudo apt-get install -y ffmpeg curl dnsutils fonts-dejavu-core tzdata
           sudo timedatectl set-timezone Asia/Ho_Chi_Minh || true
           export TZ="Asia/Ho_Chi_Minh"
@@ -41,7 +41,7 @@ jobs:
           rm -rf hls
           mkdir -p hls/v0 hls/v1 hls/v2
 
-          # 3. Mở Bore Tunnel tại Port cố định 30602
+          # 3. Mở Bore Tunnel tại Port 30602
           echo "🌐 Đang mở Bore Tunnel tại Port cố định ${BORE_PORT}..."
           MAX_RETRIES=5
           RETRY_COUNT=0
@@ -73,7 +73,7 @@ jobs:
 
           # 5. Tạo file playlist.m3u
           echo "#EXTM3U" > playlist.m3u
-          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9 (ABR Auto)' >> playlist.m3u
+          echo '#EXTINF:-1 tvg-id="tv360plus9" tvg-name="TV360+9" group-title="Sự Kiện TV360", TV360+9 (ABR Technical)' >> playlist.m3u
           echo "${PUBLIC_URL}/hls/master.m3u8" >> playlist.m3u
 
           # 6. Khởi tạo Flask Server
@@ -87,7 +87,7 @@ jobs:
 
           @app.route("/")
           def index():
-              return "IPTV Technical ABR Server (Port 30602) is Running!", 200
+              return "IPTV Technical ABR Server (Low-Latency Port 30602) is Running!", 200
 
           @app.route("/playlist.m3u")
           def playlist():
@@ -119,15 +119,15 @@ jobs:
           UA_DALVIK="Dalvik/2.1.0"
 
           echo "===================================================="
-          echo "🚀 CHRTV ABR STREAM SERVER READY PORT ${BORE_PORT}!"
+          echo "🚀 CHRTV ABR TECHNICAL MONITOR READY PORT ${BORE_PORT}!"
           echo "👉 PLAYLIST M3U: ${PUBLIC_URL}/playlist.m3u"
           echo "👉 MASTER ABR:   ${PUBLIC_URL}/hls/master.m3u8"
           echo "===================================================="
 
           # ====================================================
-          # 7. ENGINE ENCODE ABR (UTC+7 - Đồng hồ góc dưới bên trái)
+          # 7. ENGINE ENCODE ABR LOW-LATENCY (Native %3N Milliseconds)
           # ====================================================
-          STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
+          STREAM_URL_9="https://stream01.ankb.qzz.io/event01/index.m3u8?cookieCheck=1"
           CURRENT_REAL_URL=""
           FFMPEG_PID=""
 
@@ -141,7 +141,7 @@ jobs:
 
           start_ffmpeg() {
             local target_url="$1"
-            echo "🎬 [FFmpeg Engine] Khởi chạy Stream ABR (UTC+7, Góc dưới trái)..."
+            echo "🎬 [FFmpeg Engine] Khởi chạy Low-Latency Technical Stream (Native ms)..."
             
             TZ="Asia/Ho_Chi_Minh" ffmpeg -hide_banner -loglevel error \
               -rw_timeout 15000000 \
@@ -149,18 +149,18 @@ jobs:
               -user_agent "$UA_DALVIK" \
               -i "$target_url" \
               -filter_complex "[0:v]split=3[v1][v2][v3]; \
-               [v1]scale=1920:1080,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=25:y=h-th-25:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.65:boxborderw=7,format=yuv420p[v1080out]; \
-               [v2]scale=1280:720,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=20:y=h-th-20:fontcolor=white:fontsize=20:box=1:boxcolor=black@0.65:boxborderw=5,format=yuv420p[v720out]; \
-               [v3]scale=854:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{eif\:mod(n\,1000)/1000*1000\:d\:3}':x=15:y=h-th-15:fontcolor=white:fontsize=15:box=1:boxcolor=black@0.65:boxborderw=4,format=yuv420p[v480out]; \
+               [v1]scale=1920:1080,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{localtime\:%3N}':x=25:y=h-th-25:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.65:boxborderw=7,format=yuv420p[v1080out]; \
+               [v2]scale=1280:720,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{localtime\:%3N}':x=20:y=h-th-20:fontcolor=white:fontsize=20:box=1:boxcolor=black@0.65:boxborderw=5,format=yuv420p[v720out]; \
+               [v3]scale=854:480,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}.%{localtime\:%3N}':x=15:y=h-th-15:fontcolor=white:fontsize=15:box=1:boxcolor=black@0.65:boxborderw=4,format=yuv420p[v480out]; \
                [0:a]asplit=3[a1][a2][a3]" \
-              -map "[v1080out]" -c:v:0 libx264 -preset ultrafast -tune zerolatency -profile:v:0 main -b:v:0 2800k -maxrate:v:0 3200k -bufsize:v:0 5000k \
+              -map "[v1080out]" -c:v:0 libx264 -preset ultrafast -tune zerolatency -profile:v:0 main -g:v:0 25 -b:v:0 2800k -maxrate:v:0 3200k -bufsize:v:0 5000k \
               -map "[a1]"       -c:a:0 aac -b:a:0 128k -ar:a:0 44100 \
-              -map "[v720out]"  -c:v:1 libx264 -preset ultrafast -tune zerolatency -profile:v:1 baseline -b:v:1 1200k -maxrate:v:1 1400k -bufsize:v:1 2400k \
+              -map "[v720out]"  -c:v:1 libx264 -preset ultrafast -tune zerolatency -profile:v:1 baseline -g:v:1 25 -b:v:1 1200k -maxrate:v:1 1400k -bufsize:v:1 2400k \
               -map "[a2]"       -c:a:1 aac -b:a:1 96k -ar:a:1 44100 \
-              -map "[v480out]"  -c:v:2 libx264 -preset ultrafast -tune zerolatency -profile:v:2 baseline -b:v:2 500k  -maxrate:v:2 600k  -bufsize:v:2 1000k \
+              -map "[v480out]"  -c:v:2 libx264 -preset ultrafast -tune zerolatency -profile:v:2 baseline -g:v:2 25 -b:v:2 500k  -maxrate:v:2 600k  -bufsize:v:2 1000k \
               -map "[a3]"       -c:a:2 aac -b:a:2 64k -ar:a:2 44100 \
-              -f hls -hls_time 2 -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist+independent_segments \
+              -f hls -hls_time 1 -hls_list_size 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+split_by_time \
               -master_pl_name master.m3u8 \
               -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
               -hls_segment_filename "hls/v%v/seg_%03d.ts" hls/v%v/prog.m3u8 &
