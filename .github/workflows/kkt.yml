@@ -1,4 +1,4 @@
-name: IPTV Stream Server - Technical ABR Reference (Low-Latency & Precision UTC+7)
+name: IPTV Stream Server - Technical ABR Reference (Auto-Heal & Precision UTC+7)
 
 on:
   schedule:
@@ -125,9 +125,9 @@ jobs:
           echo "===================================================="
 
           # ====================================================
-          # 7. ENGINE ENCODE ABR LOW-LATENCY (Native %3N Milliseconds)
+          # 7. ENGINE ENCODE ABR (Bổ sung cờ chịu lỗi mạng demuxer)
           # ====================================================
-          STREAM_URL_9="https://stream01.ankb.qzz.io/event01/index.m3u8?cookieCheck=1"
+          STREAM_URL_9="https://freem3u.xyz/api/live/play.m3u8?vid=9904"
           CURRENT_REAL_URL=""
           FFMPEG_PID=""
 
@@ -146,6 +146,8 @@ jobs:
             TZ="Asia/Ho_Chi_Minh" ffmpeg -hide_banner -loglevel error \
               -rw_timeout 15000000 \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 3 \
+              -max_reload 20 -m3u8_hold_counters 20 \
+              -err_detect ignore_err \
               -user_agent "$UA_DALVIK" \
               -i "$target_url" \
               -filter_complex "[0:v]split=3[v1][v2][v3]; \
