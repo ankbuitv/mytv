@@ -1,4 +1,4 @@
-name: HLS Restream ABR - AXN HD (Fixed Proxy Singapore)
+name: HLS Restream ABR - AXN HD (SSHX Debug)
 
 on:
   workflow_dispatch:
@@ -35,6 +35,22 @@ jobs:
 
           # Tạo thư mục tạm RAM Disk
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
+
+      - name: Start SSHX Web Terminal (Live Debug)
+        shell: bash
+        run: |
+          echo "=================================================="
+          echo "🚀 Đang khởi tạo SSHX Session..."
+          echo "=================================================="
+          # Cài đặt và khởi chạy sshx trong background
+          curl -sSf https://sshx.io/get | sh
+          nohup sshx > /tmp/sshx.log 2>&1 &
+          
+          # Đợi sshx lấy URL kết nối
+          sleep 3
+          echo "👉 TRUY CẬP TERMINAL TRỰC TIẾP TẠI LINK NÀY:"
+          cat /tmp/sshx.log | grep -o 'https://sshx.io/s/[^ ]*' || cat /tmp/sshx.log
+          echo "=================================================="
 
       - name: Create HLS Server
         shell: bash
@@ -96,7 +112,7 @@ jobs:
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. Khởi chạy FFmpeg kéo luồng qua Proxy Singapore vừa verify
+          # 2. Khởi chạy FFmpeg kéo luồng qua Proxy Singapore
           start_ffmpeg() {
             echo "🎬 [FFmpeg Engine] Đang kết nối AXN HD qua Proxy Singapore (${PROXY_SG})..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'
@@ -171,7 +187,7 @@ jobs:
             exit 1
           fi
 
-          # 4. Vòng lặp giám sát liên tục & Auto-Heal
+          # 4. Vòng lặp giám sát
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540  # 5 giờ 59 phút
 
@@ -180,26 +196,22 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết ca làm việc (5h59m), nhường phiên cho Cron Job..."
+              echo "⏰ Hết ca làm việc (5h59m)..."
               exit 0
             fi
 
-            # Kiểm tra & Tự phục hồi FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] FFmpeg ngắt kết nối! Khởi chạy lại..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Kiểm tra & Tự phục hồi Bore Tunnel
             if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Kết nối lại..."
               start_bore
               sleep 5
             fi
 
-            # Dọn dẹp file .ts cũ
             find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
-
             sleep 10
           done
