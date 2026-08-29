@@ -1,4 +1,4 @@
-name: HLS Restream ABR - AXN HD (WARP Singapore Auto Restart)
+name: HLS Restream ABR - AXN HD (WARP Singapore Forced)
 
 on:
   workflow_dispatch:
@@ -17,37 +17,46 @@ jobs:
       REFERER: "https://www.starhubtvplus.com/"
       BORE_PORT: "30123"
       HLS_DIR: "/dev/shm/hls/axnhd"
-      LOCAL_WARP_PROXY: "socks5://127.0.0.1:4001"
 
     steps:
-      - name: Install System Dependencies & Setup Cloudflare WARP
+      - name: Install System Dependencies & WireGuard
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg gpg net-tools
+          sudo apt-get install -y -qq curl nodejs ffmpeg wireguard resolvconf net-tools iproute2
 
-          # 1. Cài đặt Cloudflare WARP
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp
+          # 1. Tải wgcf (WireGuard Profile Generator cho WARP)
+          curl -fsSL https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -o /usr/local/bin/wgcf
+          sudo chmod +x /usr/local/bin/wgcf
 
-          # 2. Khai báo & Đăng ký WARP Client (Bổ sung --accept-tos)
-          warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode proxy || true
-          warp-cli --accept-tos proxy port 4001 || true
-          warp-cli --accept-tos connect || true
+          # 2. Đăng ký tài khoản WARP và tạo cấu hình WireGuard
+          mkdir -p /tmp/wgcf && cd /tmp/wgcf
+          wgcf register --accept-tos
+          wgcf generate
 
-          # Đợi WARP thiết lập kết nối
+          # 3. Ép Endpoint của WARP kết nối đến IP Datacenter Singapore của Cloudflare (162.159.192.1 / 162.159.193.1:2408)
+          # Sửa Endpoint trong file wgcf-profile.conf sang IP Cloudflare SG
+          sed -i 's/engage.cloudflareclient.com:2408/162.159.192.1:2408/g' wgcf-profile.conf
+          
+          # Đổi tên file cấu hình WireGuard
+          sudo cp wgcf-profile.conf /etc/wireguard/wgcf.conf
+
+          # 4. Khởi chạy giao diện mạng WireGuard WARP SG
+          sudo wg-quick up wgcf
+
           sleep 5
 
-          # 3. Tải và cài đặt Bore Tunnel
+          # 5. Kiểm tra vị trí IP hiện tại (Phải ra Singapore - SG)
+          echo "🌐 Vị trí IP sau khi ép WARP Singapore:"
+          curl -s https://ipinfo.io/json || true
+
+          # Tải Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo cấu trúc thư mục HLS
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
@@ -103,22 +112,19 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Stream Copy (WARP Tunnel)
+      - name: Start Services & FFmpeg ABR Stream Copy
         shell: bash
         run: |
-          # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg đẩy luồng qua WARP Local Proxy
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Đang kết nối nguồn AXN HD qua WARP Local Proxy..."
+            echo "🎬 [FFmpeg Engine] Đang kết nối nguồn AXN HD..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
-              -http_proxy "$LOCAL_WARP_PROXY" \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 403,429,500,502,503,504 \
               -reconnect_delay_max 5 \
@@ -145,7 +151,6 @@ jobs:
 
           start_ffmpeg
 
-          # 2. Khởi tạo Bore Tunnel
           start_bore() {
             echo "🌐 Đang mở kết nối Bore Tunnel tại port ${BORE_PORT}..."
             rm -f /tmp/bore.log
@@ -185,35 +190,30 @@ jobs:
             exit 1
           fi
 
-          # 3. Vòng lặp giám sát liên tục & Auto-Heal
           START_TIME=$(date +%s)
-          LIMIT_SECONDS=21540  # 5 giờ 59 phút
+          LIMIT_SECONDS=21540
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết ca làm việc (5h59m), dừng runner nhường phiên cho Cron Job..."
+              echo "⏰ Hết ca làm việc (5h59m)..."
               exit 0
             fi
 
-            # Kiểm tra & Tự phục hồi FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg ngắt kết nối! Khởi chạy lại..."
+              echo "🔄 [Auto-Heal] Khởi chạy lại FFmpeg..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Kiểm tra & Tự phục hồi Bore Tunnel
             if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Kết nối lại..."
+              echo "🔄 [Auto-Heal] Khởi chạy lại Bore..."
               start_bore
               sleep 5
             fi
 
-            # Dọn dẹp file .ts cũ
             find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
-
             sleep 10
           done
