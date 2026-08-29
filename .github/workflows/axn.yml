@@ -1,4 +1,4 @@
-name: HLS Restream ABR - AXN HD (SSHX Debug)
+name: HLS Restream ABR - AXN HD (Fixed Proxy & AAC)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo thư mục tạm RAM Disk
+          # Tạo thư mục tạm RAM Disk cho HLS
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Start SSHX Web Terminal (Live Debug)
@@ -42,11 +42,9 @@ jobs:
           echo "=================================================="
           echo "🚀 Đang khởi tạo SSHX Session..."
           echo "=================================================="
-          # Cài đặt và khởi chạy sshx trong background
           curl -sSf https://sshx.io/get | sh
           nohup sshx > /tmp/sshx.log 2>&1 &
           
-          # Đợi sshx lấy URL kết nối
           sleep 3
           echo "👉 TRUY CẬP TERMINAL TRỰC TIẾP TẠI LINK NÀY:"
           cat /tmp/sshx.log | grep -o 'https://sshx.io/s/[^ ]*' || cat /tmp/sshx.log
@@ -112,7 +110,7 @@ jobs:
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. Khởi chạy FFmpeg kéo luồng qua Proxy Singapore
+          # 2. Khởi chạy FFmpeg ABR Stream Copy (Dùng Proxy SG & Copy AAC Audio)
           start_ffmpeg() {
             echo "🎬 [FFmpeg Engine] Đang kết nối AXN HD qua Proxy Singapore (${PROXY_SG})..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'
@@ -131,8 +129,8 @@ jobs:
               -map 0:v:2 -map 0:a:0 \
               -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
               -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
-              -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 \
-              -c:a:1 aac -b:a:1 96k -ar 44100 -ac 2 \
+              -c:a:0 copy -bsf:a:0 aac_adtstoasc \
+              -c:a:1 copy -bsf:a:1 aac_adtstoasc \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
@@ -187,7 +185,7 @@ jobs:
             exit 1
           fi
 
-          # 4. Vòng lặp giám sát
+          # 4. Vòng lặp giám sát liên tục & Auto-Heal
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540  # 5 giờ 59 phút
 
