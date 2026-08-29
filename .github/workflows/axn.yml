@@ -1,4 +1,4 @@
-name: HLS Restream ABR - AXN HD (Cron Auto Restart)
+name: HLS Restream ABR - AXN HD (WARP Singapore Auto Restart)
 
 on:
   workflow_dispatch:
@@ -13,27 +13,40 @@ jobs:
     env:
       MPD_URL: "https://shtvgo-prod.gcdn.co/bpk-tv/AXNHD/output/manifest.mpd"
       CLEARKEY_KEY: "4db68809e6795408417128abbb32dba0"
-      HTTP_PROXY: "http://152.42.177.32:8888"
       USER_AGENT: "VLC/3.0.20 LibVLC/3.0.20"
       REFERER: "https://www.starhubtvplus.com/"
       BORE_PORT: "30123"
       HLS_DIR: "/dev/shm/hls/axnhd"
+      LOCAL_WARP_PROXY: "socks5://127.0.0.1:4001"
 
     steps:
-      - name: Install System Dependencies
+      - name: Install System Dependencies & Setup Cloudflare WARP
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
+          sudo apt-get install -y -qq curl nodejs ffmpeg gpg net-tools
 
-          # Tải và cài đặt Bore Tunnel
+          # 1. Cài đặt Cloudflare WARP
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp
+
+          # 2. Khai báo & Đăng ký WARP Client
+          warp-cli registration new || true
+          
+          # Đặt WARP chạy ở chế độ SOCKS5 Local Proxy để kiểm soát kết nối mượt hơn
+          warp-cli mode proxy || true
+          warp-cli proxy port 4001 || true
+          warp-cli connect || true
+
+          # 3. Tải và cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục tự động (1080p & 720p cho AXN HD)
+          # Tạo cấu trúc thư mục HLS
           mkdir -p "${HLS_DIR}/1080p" "${HLS_DIR}/720p"
 
       - name: Create HLS Server
@@ -89,25 +102,23 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Stream Copy (Clean Mapping 1080p + 720p)
+      - name: Start Services & FFmpeg ABR Stream Copy (WARP Tunnel)
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR Stream Copy cho AXN HD
+          # Hàm khởi động FFmpeg đẩy luồng qua WARP Local Proxy
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR AXN HD (1080p + 720p)..."
+            echo "🎬 [FFmpeg Engine] Đang kết nối nguồn AXN HD qua WARP Local Proxy..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'
 
-            # CÁCH MAP CHUẨN XÁC CHO AXN HD qua Singapore Proxy:
-            # - Rendition 0: Map 0:v:3 (1080p Full HD) + 0:a:0
-            # - Rendition 1: Map 0:v:2 (720p HD)      + 0:a:0
+            # Sử dụng Local WARP Proxy (SOCKS5 127.0.0.1:4001) để lấy IP Cloudflare sạch
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
-              -http_proxy "$HTTP_PROXY" \
+              -http_proxy "$LOCAL_WARP_PROXY" \
               -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 \
               -reconnect_on_http_error 403,429,500,502,503,504 \
               -reconnect_delay_max 5 \
@@ -144,16 +155,6 @@ jobs:
 
           start_bore
 
-          PORT_READY=0
-          for i in {1..30}; do
-            sleep 1
-            if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
-              PORT_READY=1
-              echo "✅ Bore đã giữ thành công port ${BORE_PORT}!"
-              break
-            fi
-          done
-
           echo "=================================================="
           echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
@@ -167,10 +168,9 @@ jobs:
               break
             fi
 
-            # Kiểm tra ngay nếu FFmpeg bị chết đột ngột
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Chi tiết lỗi bên dưới:"
-              echo "---------------- FFMEPG LOG ----------------"
+              echo "❌ FFmpeg bị sập! Chi tiết log:"
+              echo "---------------- FFMPEG LOG ----------------"
               cat /tmp/ffmpeg.log || true
               echo "--------------------------------------------"
               exit 1
@@ -194,33 +194,25 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết ca làm việc (5h59m), kết thúc phiên nhường chỗ cho Cron Job tiếp theo..."
+              echo "⏰ Hết ca làm việc (5h59m), dừng runner nhường phiên cho Cron Job..."
               exit 0
             fi
 
-            # Tự phục hồi FFmpeg nếu nguồn phát bị ngắt
+            # Kiểm tra & Tự phục hồi FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang tự động kích hoạt lại..."
+              echo "🔄 [Auto-Heal] FFmpeg ngắt kết nối! Khởi chạy lại..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Tự phục hồi Bore Tunnel nếu mất kết nối
+            # Kiểm tra & Tự phục hồi Bore Tunnel
             if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Đang kết nối lại..."
+              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Kết nối lại..."
               start_bore
               sleep 5
             fi
 
-            # Tự phục hồi HTTP Server
-            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
-              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-              echo $! > /tmp/server.pid
-              sleep 2
-            fi
-
-            # Dọn rác các file .ts cũ quá 5 phút
+            # Dọn dẹp file .ts cũ
             find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
 
             sleep 10
