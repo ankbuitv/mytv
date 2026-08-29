@@ -32,13 +32,14 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
           sudo apt-get update -qq && sudo apt-get install -y -qq cloudflare-warp
 
-          # 2. Khai báo & Đăng ký WARP Client
-          warp-cli registration new || true
-          
-          # Đặt WARP chạy ở chế độ SOCKS5 Local Proxy để kiểm soát kết nối mượt hơn
-          warp-cli mode proxy || true
-          warp-cli proxy port 4001 || true
-          warp-cli connect || true
+          # 2. Khai báo & Đăng ký WARP Client (Bổ sung --accept-tos)
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode proxy || true
+          warp-cli --accept-tos proxy port 4001 || true
+          warp-cli --accept-tos connect || true
+
+          # Đợi WARP thiết lập kết nối
+          sleep 5
 
           # 3. Tải và cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
@@ -114,7 +115,6 @@ jobs:
             echo "🎬 [FFmpeg Engine] Đang kết nối nguồn AXN HD qua WARP Local Proxy..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'
 
-            # Sử dụng Local WARP Proxy (SOCKS5 127.0.0.1:4001) để lấy IP Cloudflare sạch
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
