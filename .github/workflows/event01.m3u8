@@ -1,6 +1,0 @@
-#EXTM3U
-#EXTINF:-1 tvg-name="CHRTV Video" group-title="Kênh Kỹ Thuật", CHRTV Video 1080p
-#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
-#EXTVLCOPT:http-referrer=https://p.ankb.qzz.io/videos
-#EXTVLCOPT:http-cookie=anp_session=b3c85f1c56b8424e10fa4aefd3b24e381578c93a47d22243eaee1986cc5f19fa
-https://p.ankb.qzz.io/api/v1/media/951807bf-2d61-4945-be2b-5db90d259e54/file
