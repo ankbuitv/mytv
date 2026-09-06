@@ -303,27 +303,19 @@ https://devda.undo.it/Stream/index.php?id=tv&ext=.m3u8
 # 📺 DANH SÁCH KÊNH PHIM VÀ QUỐC TẾ
 # Cập nhật ngày: 07/24
 # ==========================================
-
-#EXTINF:-1 tvg-id="boxmovie1" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/boxmovie1.png" group-title="🎬 BOX - Giải trí",Box Movie 1
-https://sg001-cdw18826playnow.ankb.qzz.io/NotForCommercial/api/stream/GETnfcplay/Ym94MQ/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
-
-#EXTINF:-1 tvg-id="boxhits" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/boxhits.png" group-title="🎬 BOX - Giải trí",Box Hits
-https://sg001-cdw18826playnow.ankb.qzz.io/NotForCommercial/api/stream/GETnfcplay/YmhpdHM/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
-
-#EXTINF:-1 tvg-id="hollywood" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/hollywoodclassic.png" group-title="🎬 BOX - Giải trí",Hollywood Classics
-https://sg001-cdw18826playnow.ankb.qzz.io/NotForCommercial/api/stream/GETnfcplay/aGM/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
+# ⚠️ BẢO MẬT (2026-09-05): KHÔNG được nhúng token/admin-key vào URL stream trong
+# file này nữa — file là nguồn CÔNG KHAI (raw.githubusercontent.com) và từng bị
+# lộ token admin của Stream Engine trong query string (đã thu hồi 2026-09-05).
+# Token phát kênh premium giờ do backend inject server-side từ bảng
+# `stream_credentials` (admin cấp qua /admin/stream-credentials, không lộ ra API).
+# Sau khi rotate token trên Stream Engine, admin nhập lại token phát mới của
+# từng kênh qua /admin/stream-credentials — KHÔNG sửa tay file này.
 
 #EXTINF:-1 tvg-id="hbohd" tvg-logo="https://i.pinimg.com/originals/8b/02/00/8b020050690f955ccb306cdf51324aea.png" group-title="🎬 BOX - Giải trí",HBO
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/6WTmvB_gCMCw_XrF273svd6LHFBjrGqE6M6Jw7LQBgXYjfIx/manifest.m3u8?token=Ken1402@
 
 #EXTINF:-1 tvg-id="axn" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/axn.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/axnhd_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",AXN
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/09uYwmUJ3VsZsXqFi8RJiOOWBcx8yPOLr5-53J-8gnV0f6g/manifest.m3u8?token=Ken1402@
-
-#EXTINF:-1 tvg-id="musicbox" tvg-logo="https://img-zlr1.tv360.vn/image1/2023/07/20/10/1689822939536/68d521f6938e_640_360.png" group-title="🎬 BOX - Giải trí",Music Box
-https://sg002-cdw039026playnow.ankb.qzz.io/copyrighted/api/stream/GETftplay/OgjQGa7mL7-Qjo2w2OMmQKAXZpA7g5BmSUFIE1XR/manifest.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
-
-#EXTINF:-1 tvg-id="woman" tvg-logo="https://img-zlr1.tv360.vn/image1/2020_09_23/1600822442611/f6b738c3d05a_640_360.png" group-title="🎬 BOX - Giải trí",Woman
-https://sg001-cdw18826playnow.ankb.qzz.io/NotForCommercial/api/stream/GETnfcplay/d28/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
 
 #EXTINF:-1 tvg-id="warnertvhd" tvg-logo="https://s7774.cdn.mytvnet.vn/vimages/6b/ba/a3/36/60/0a/6ba36-pwarnerhd-channel-unkn.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/warnertv_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",Warner TV
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/UuX3y1k1HLi0nXj0XSc0ucjCvWb-rODqwUVaAp46F1GJZCLSizHa/manifest.m3u8?token=Ken1402@
@@ -340,13 +332,12 @@ https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/by7_uFV
 #EXTINF:-1 tvg-id="discoveryasiahd" tvg-logo="https://astromedia.com.my/wp-content/uploads/2024/01/Discovery-Asia.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/discoveryasia_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",Discovery Asia
 https://sg002-cdw039026playnow.ankb.qzz.io/copyrighted/api/stream/GETftplay/nd3LVx1EhPI_UJRrHxxT1pCiNefnzW8kdJOIbkrlr_s/manifest.m3u8?token=Ken1402@
 
-#EXTINF:-1 tvg-id="natgeo" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/fc/Nat_Geo_Channel_logo.svg/1024px-Nat_Geo_Channel_logo.svg.png" group-title="🎬 BOX - Giải trí",National Geographic
+#EXTINF:-1 tvg-id="natgeo" tvg-logo="https://logo.com/image-cdn/images/kts928pd/production/710e55e60e13ce8026509480fa61dfc6de6312a7-1140x620.png?w=640&q=72&fm=webp" group-title="🎬 BOX - Giải trí",National Geographic
 #KODIPROP:inputstreamaddon=inputstream.adaptive
 #KODIPROP:inputstream.adaptive.manifest_type=hls
-#KODIPROP:inputstream.adaptive.stream_headers=X-Access-Token=5d3f72d76c010e308199f4116851004f2dfc638521c652ad
 https://sg001-cdw18826playnow.ankb.qzz.io/red/api/stream/GETred/USA_NAT_GEO/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
 
-#EXTINF:-1 tvg-id="rakuten-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Rakuten_TV_logo.svg/1024px-Rakuten_TV_logo.svg.png" group-title="🎬 BOX - Giải trí",Rakuten TV
+#EXTINF:-1 tvg-id="rakuten-tv" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR6--8Pj0FmP1bNiNrMi6TSJ6Bs9G_2y4YHup0GpudW5Kp4v9bItt-ZTU6C&s=10" group-title="🎬 BOX - Giải trí",Rakuten TV
 #EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0
 https://devda.undo.it/Stream/index.php?id=rakuten-tv&ext=.m3u8
 
@@ -359,10 +350,10 @@ https://devda.undo.it/Stream/index.php?id=davinci-tv&ext=.m3u8
 #EXTINF:-1 tvg-id="kbsworld" tvg-logo="https://img.hplus.com.vn/728x409/banner/2018/06/05/654179-KBS.png" group-title="🎬 BOX - Giải trí",KBS World
 https://world.gscdn.kbs.co.kr/world-02/world-02_sd.m3u8?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly93b3JsZC5nc2Nkbi5rYnMuY28ua3Ivd29ybGQtMDIvKiIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc4NzAxNDI2OX19fV19&Key-Pair-Id=APKAICDSGT3Y7IXGJ3TA&Signature=ICH7P4xKvCVGymcCm7TCdoyLOlstC~6KcHouAsSMgbXWp3xxG-gFxb~v33Qp-IJ0O-Nw8Opi7rlVN1yamRLQvD4xH3b2Q9m-~5x5iNqsolvHbJrRX1kC~n2WQ~jaV~XS6nraMw-u6UqyyOclBGkg6gJgTTMRIINf4A1Aat2CsCMbm0UcTUp2dbrgidlhQKvU2AV3wiZwNGVYynGbwps0Afz4My1Dj9q2EXg5UF62Y12v1zrso5baN1OS7F4g8i-quxKyB1QxhizrFMM4amIgzUSzOE~Lh6FXEjy0ej3MZMb2YWSnY1lM0qtlYKDcippF1knevpVI~RPLLhiakyq4RQ__
 
-#EXTINF:-1 tvg-id="MTV" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/MTV_Logo_2021.svg/1024px-MTV_Logo_2021.svg.png" group-title="🎬 BOX - Giải trí",MTV
+#EXTINF:-1 tvg-id="MTV" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSwuEVW-C4I3I0FgisoS7HZ6_0KAHh2SSnQC1aJ7vSbyml9_Izm7dmI-Isa&s=10" group-title="🎬 BOX - Giải trí",MTV
 https://sg001-cdw18826playnow.ankb.qzz.io/red/api/stream/GETred/USA_MTV/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
 
-#EXTINF:-1 tvg-id="crime-investigation" tvg-logo="https://upload.wikimedia.org/wikipedia/en/8/86/True_Crime_Network_logo.png" group-title="🎬 BOX - Giải trí",Crime Investigation
+#EXTINF:-1 tvg-id="crime-investigation" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQxxwM4n4LJnsFMZh_JwQHEkqNA_pM6GSgYI0j1O8GZUA&s" group-title="🎬 BOX - Giải trí",Crime Investigation
 https://sg001-cdw18826playnow.ankb.qzz.io/red/api/stream/GETred/USA_CRIME_INVESTIGATION/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
 
 #EXTINF:-1 tvg-id="outdoor" group-title="🎬 BOX - Giải trí" tvg-logo="https://images.fptplay53.net/media/channels/icon_channel_outdoor-channel_165649323545.png", Outdoor Channel
@@ -384,7 +375,7 @@ https://devda.undo.it/Stream/index.php?id=bloomberg&ext=.m3u8
 #EXTINF:-1 tvg-id="abcaustralia" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/abcaustralia.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/australiaplus_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",ABC Australia
 https://abc-news-dmd-streams-1.akamaized.net/out/v1/701126012d044971b3fa89406a440133/index.m3u8
 
-#EXTINF:-1 tvg-id="sony-channel-tv" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4c/Sony_Channel_2021.svg/1024px-Sony_Channel_2021.svg.png" group-title="🎬 BOX - Giải trí",Sony Channel TV
+#EXTINF:-1 tvg-id="sony-channel-tv" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRncZu-9YDt_Fc1-lGo1BhZoLjUuYPP8ea_f78rQD8qTA&s" group-title="🎬 BOX - Giải trí",Sony Channel TV
 https://devda.undo.it/Stream/index.php?id=sony-channel-tv&ext=.m3u8
 
 #EXTINF:-1 tvg-id="dw" tvg-logo="https://i.ytimg.com/vi/puzK9XqJ6-Y/hq720.jpg" group-title="🎬 BOX - Giải trí",DW
@@ -393,7 +384,7 @@ https://freem3u.xyz/api/live/play.m3u8?vid=109
 #EXTINF:-1 tvg-id="tlc" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/74/TLC_Logo.svg/1280px-TLC_Logo.svg.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/travelliving_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",TLC
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/S-KOcFsA1x1l2pwUaO2lAWRdjQHeLaHbBzvGQ7eBgwIEgggh/manifest.m3u8?token=Ken1402@
 
-#EXTINF:-1 tvg-id="travel-channel" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/5f/Travel_Channel_Logo.svg/1024px-Travel_Channel_Logo.svg.png" group-title="🎬 BOX - Giải trí",Travel Channel
+#EXTINF:-1 tvg-id="travel-channel" tvg-logo="https://static.wikia.nocookie.net/logos/images/c/c9/Trvl_Channel.png/revision/latest/scale-to-width-down/1200?cb=20220303030802&path-prefix=vi" group-title="🎬 BOX - Giải trí",Travel Channel
 http://206.212.244.63/162/index.m3u8
 
 #EXTINF:-1 tvg-id="tv5monde" tvg-logo="https://information.tv5monde.com/sites/tv5-info/files/styles/entete/public/2023-11/tv5monde_logo.jpg" group-title="🎬 BOX - Giải trí",TV5MONDE
@@ -411,20 +402,17 @@ https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/FP9LypJ
 #EXTINF:-1 tvg-id="kix" tvg-logo="https://static.wikia.nocookie.net/logos/images/2/26/KIX.png/revision/latest/scale-to-width-down/1200?cb=20211017094335&path-prefix=vi" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/kixhd_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",KIX TV
 https://devda.undo.it/Stream/index.php?id=kix-tv&ext=.m3u8
 
-#EXTINF:-1 tvg-id="lovenature4k" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Love_Nature_Logo.svg/1024px-Love_Nature_Logo.svg.png" group-title="🎬 BOX - Giải trí",Love Nature TV
+#EXTINF:-1 tvg-id="lovenature4k" tvg-logo="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRgJGAbhyvdHXL-e-LntA5MQ-mncKy9uS73WJ92QNPSIA&s" group-title="🎬 BOX - Giải trí",Love Nature TV
 https://aegis-cloudfront-1.tubi.video/6d6d0f24-8445-4b4c-bdf6-44f9e38beaa4/playlist.m3u8
 
 #EXTINF:-1 tvg-id="nhkworld" tvg-logo="https://raw.githubusercontent.com/vuminhthanh12/Logo/refs/heads/main/nhkworld.png" group-title="🎬 BOX - Giải trí",NHK World
 https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8
 
 #EXTINF:-1 tvg-id="cartoonhd" tvg-logo="https://freight.cargo.site/w/1200/i/3cf72163d993c4d87263e6d4990ec4ccdd1e14b09ce89e6e35dee1de83ef4985/CN.jpg" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/cartoonnetworkhd_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",Cartoon Network HD
-https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/PqakXDqQCf6SeZOYN9UlnkvlVkCJ_1SuqXbl5-j3iko/manifest.m3u8?token=Ken1402@
+https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/PqakXDqQCf6SeZOYN9UlnkvlVkCJ_1SuqXbl5-j3iko/manifest.m3u8
 
 #EXTINF:-1 tvg-id="boomerang" tvg-logo="https://1000logos.net/wp-content/uploads/2023/10/Cartoonito-Logo.jpg" group-title="🎬 BOX - Giải trí",Cartoonito
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/8DktZhXSFTsppiyxhaG2o4ScARWP2SIdvfcKH6rs-dKXLyGDHOQZVpmm0g/manifest.m3u8?token=Ken1402@
-
-#EXTINF:-1 tvg-id="nick" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Nickelodeon_2023_logo.svg/1024px-Nickelodeon_2023_logo.svg.png" group-title="🎬 BOX - Giải trí",Nickelodeon
-http://nmk.ioapk.com:5050/4gtv-live105/index.m3u8
 
 #EXTINF:-1 tvg-id="dreamworks" tvg-logo="https://s7266.cdn.mytvnet.vn/vimages/de/eb/ba/a7/7e/ee/deba7-pdreamworkshd-channel-unkn.png" catchup="append" catchup-days="2" catchup-source="https://tshift.fptplay.net/dvr/dreamworks_1000.stream/chunks_dvr_range-${start}-${offset}.m3u8" group-title="🎬 BOX - Giải trí",Dreamworks HD
 https://sg002-cdw039026playnow.ankb.qzz.io/dashdrm/api/stream/GETdashdrm/7XPZfOcauk0n8r4mfsd_GqxepkTGKG5EtDHFLdIJsmCOhA8PKDFwNXDs/manifest.m3u8?token=Ken1402@
@@ -465,7 +453,7 @@ http://198.58.104.90:8989/nba/index.m3u8
 https://devda.undo.it/Stream/index.php?id=world-poker-tour&ext=.m3u8
 
 #EXTINF:-1 tvg-id="f1tv" tvg-logo="https://r2.thesportsdb.com/images/media/channel/logo/p5csyn1620551587.png" group-title="⚽ SPORTS - Thể thao",F1 TV
-https://sg001-cdw18826playnow.ankb.qzz.io/copyrighted/api/stream/GETftplay/c2t5ZjE/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
+https://sg001-cdw18826playnow.ankb.qzz.io/NotForCommercial/api/stream/GETnfcplay/ZjF1cw/index.m3u8?token=snYheZmfoT3BDCfcS8k4FNfCJbel4iveQYtx7ZMH
 
 #EXTINF:-1 tvg-id="fpt-01" group-title="⚽ SPORTS - Thể thao" group-logo="https://toiyeuvietnam.dpdns.org/HoiQuanLogo/Images/HinhNhom.png" tvg-logo="https://images.fptplay53.net/media/home_event/OTT_ECS/2026/09/02/omega-european-masters-2026---slide-thumb_1788330371378.jpg",FPT Sự kiện 1
 https://vips-livecdn.fptplay.net/live/media/su-kien-01/hls_avc_v6/index.m3u8
