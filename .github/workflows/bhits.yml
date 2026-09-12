@@ -1,9 +1,9 @@
-name: HLS Restream ABR - BOX HITS (Fixed)
+name: HLS Restream - BOX HITS
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    - cron: '59 5,11,17,23 * * *'
+    - cron: "59 5,11,17,23 * * *"
 
 jobs:
   hls-proxy:
@@ -20,7 +20,6 @@ jobs:
 
     steps:
       - name: Install System Dependencies
-        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -36,7 +35,6 @@ jobs:
           mkdir -p "${HLS_DIR}"
 
       - name: Create Robust HLS Server
-        shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
@@ -84,13 +82,12 @@ jobs:
           EOF
 
       - name: Start Services & Run FFmpeg
-        shell: bash
         run: |
           # 1. Chạy Node Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. Khởi chạy FFmpeg (Xử lý an toàn luồng gốc)
+          # 2. Khởi chạy FFmpeg (Xử lý luồng tránh sập map)
           start_ffmpeg() {
             echo "🎬 [FFmpeg] Khởi chạy Stream Copy..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
