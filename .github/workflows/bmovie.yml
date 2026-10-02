@@ -1,4 +1,4 @@
-name: HLS Restream ABR - Box Movie 1 (Cloudflare Tunnel CLI)
+name: HLS Restream ABR - Box Movie 1 (Cloudflare Tunnel Fixed)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,8 @@ jobs:
           TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
         run: |
           mkdir -p ~/.cloudflared
-          echo "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
+          
           cat << EOF > ~/.cloudflared/config.yml
           tunnel: $TUNNEL_ID
           credentials-file: /home/runner/.cloudflared/credentials.json
@@ -69,7 +70,6 @@ jobs:
 
             let urlPath = req.url.split('?')[0];
 
-            // Tự động route /vtv/boxmovie1.m3u8 hoặc /boxmovie1.m3u8 về index.m3u8
             let cleanPath = urlPath.replace(/^\/vtv/, '');
             if (cleanPath === '' || cleanPath === '/' || cleanPath === '/boxmovie1.m3u8') {
               cleanPath = '/index.m3u8';
@@ -92,8 +92,6 @@ jobs:
           EOF
 
       - name: Start Restream Engine & Cloudflare Tunnel
-        env:
-          TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
         run: |
           # 1. Bật HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
@@ -126,9 +124,11 @@ jobs:
 
           start_ffmpeg
 
-          # 3. Hàm bật Tunnel
+          # 3. Hàm bật Tunnel (Đã sửa câu lệnh chuẩn)
           start_tunnel() {
-            nohup cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_ID > /tmp/tunnel.log 2>&1 &
+            echo "🌐 Đang kết nối Cloudflare Tunnel..."
+            rm -f /tmp/tunnel.log
+            nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
             echo $! > /tmp/tunnel.pid
           }
 
@@ -146,6 +146,18 @@ jobs:
             fi
             sleep 1
           done
+
+          # Chờ 5s để test kết nối Tunnel
+          sleep 5
+          if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+            echo "❌ Cloudflare Tunnel gặp lỗi! Log bên dưới:"
+            echo "---------------- TUNNEL LOG ----------------"
+            cat /tmp/tunnel.log || true
+            echo "--------------------------------------------"
+            exit 1
+          else
+            echo "✅ Cloudflare Tunnel đã kết nối thành công!"
+          fi
 
           # 4. Auto Heal Loop
           START_TIME=$(date +%s)
@@ -165,6 +177,8 @@ jobs:
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 Restarting Tunnel..."
               start_tunnel
+              sleep 3
+              cat /tmp/tunnel.log || true
             fi
 
             sleep 10
