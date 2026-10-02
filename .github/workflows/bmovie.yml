@@ -1,4 +1,4 @@
-name: HLS Restream ABR - Box Movie 1 (Cron Auto Restart)
+name: HLS Restream ABR - Box Movie 1 (Cloudflare Tunnel CLI)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,6 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      BORE_PORT: "30117"
       HLS_DIR: "/dev/shm/hls/bm1"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
@@ -29,16 +28,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin procps
 
-          echo "🌐 [2/3] Cài đặt Bore Tunnel..."
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
-          tar -xzf /tmp/bore.tar.gz -C /tmp
-          sudo install -m 755 /tmp/bore /usr/local/bin/bore
-          rm -f /tmp/bore.tar.gz /tmp/bore
+          echo "🌐 [2/3] Cài đặt Cloudflare Tunnel..."
+          curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+          sudo dpkg -i /tmp/cloudflared.deb
+          rm -f /tmp/cloudflared.deb
 
           echo "🎨 [3/3] Tải và chuẩn bị Logo Watermark..."
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          # Đã sửa: Hạ kích thước logo về rộng 35px
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo.png
 
       - name: Create HLS Static Server
@@ -65,7 +62,15 @@ jobs:
             }
 
             let reqPath = req.url.split('?')[0];
-            if (!reqPath || reqPath === '/') {
+            
+            // Xử lý route /vtv/boxmovie1.m3u8
+            if (reqPath.startsWith('/vtv/')) {
+              reqPath = reqPath.replace('/vtv', '');
+            } else if (reqPath.startsWith('/vtv')) {
+              reqPath = reqPath.replace('/vtv', '');
+            }
+
+            if (!reqPath || reqPath === '/' || reqPath === '/boxmovie1.m3u8') {
               reqPath = '/index.m3u8';
             }
 
@@ -96,19 +101,20 @@ jobs:
           });
           EOF
 
-      - name: Start Restream Engine
+      - name: Start Restream Engine & Cloudflare Tunnel
         shell: bash
+        env:
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           # 1. Bật HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi chạy FFmpeg ABR với Logo Watermark
+          # 2. Khởi chạy FFmpeg
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
+            echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Đã chỉnh: Mờ 50% (aa=0.5) và căn lề cách góc 10px (720p) / 8px (480p)
             FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.5,split=2[logo1][logo2]; \
             [0:v:2]split=2[v720_raw][v480_pre]; \
             [v480_pre]scale=854:480[v480_raw]; \
@@ -146,30 +152,21 @@ jobs:
 
           start_ffmpeg
 
-          # 2. Khởi chạy Bore Tunnel
-          start_bore() {
-            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})..."
-            rm -f /tmp/bore.log
-            nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
-            echo $! > /tmp/bore.pid
+          # 3. Bật Cloudflare Tunnel
+          start_tunnel() {
+            echo "🌐 Đang kết nối Cloudflare Tunnel..."
+            rm -f /tmp/cloudflared.log
+            nohup cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN" > /tmp/cloudflared.log 2>&1 &
+            echo $! > /tmp/tunnel.pid
           }
 
-          start_bore
-
-          # Kiểm tra Bore Port Ready
-          for i in {1..30}; do
-            sleep 1
-            if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
-              echo "✅ Bore Tunnel đã sẵn sàng tại port ${BORE_PORT}!"
-              break
-            fi
-          done
+          start_tunnel
 
           echo "=================================================="
-          echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
+          echo "👉 MASTER ABR STREAM URL: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "=================================================="
 
-          # Kiểm tra khởi tạo HLS Playlist
+          # Kiểm tra HLS Playlist
           echo "⏳ Đang kiểm tra khởi tạo HLS Stream..."
           STREAM_READY=0
           for i in {1..60}; do
@@ -180,10 +177,8 @@ jobs:
             fi
 
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg bị văng lỗi khi khởi chạy! Log bên dưới:"
-              echo "---------------- FFMPEG LOG ----------------"
+              echo "❌ FFmpeg lỗi! Log:"
               cat /tmp/ffmpeg.log || true
-              echo "--------------------------------------------"
               exit 1
             fi
 
@@ -196,7 +191,7 @@ jobs:
             exit 1
           fi
 
-          # 3. Vòng lặp giám sát & Auto-Heal (Thời lượng tối đa ~5h59m)
+          # 4. Giám sát & Auto-Heal (Phiên làm việc 5h59m)
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540
 
@@ -205,27 +200,27 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết phiên làm việc 5h59m, dừng để Cron Job tiếp theo nhận ca..."
+              echo "⏰ Hết phiên 5h59m, dừng để Cron Job tiếp theo nhận ca..."
               exit 0
             fi
 
             # Auto-Heal FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg bị sập! Đang khởi động lại..."
+              echo "🔄 [Auto-Heal] FFmpeg bị sập! Khởi động lại..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Auto-Heal Bore Tunnel
-            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Bore Tunnel bị mất kết nối! Đang bật lại..."
-              start_bore
+            # Auto-Heal Tunnel
+            if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+              echo "🔄 [Auto-Heal] Cloudflare Tunnel bị sập! Bật lại..."
+              start_tunnel
               sleep 5
             fi
 
             # Auto-Heal Node Server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] HTTP Server dừng hoạt động! Đang khởi tạo lại..."
+              echo "🔄 [Auto-Heal] HTTP Server dừng! Khởi tạo lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
               sleep 2
