@@ -18,6 +18,7 @@ jobs:
       REFERER: "https://vtvprime.vn/"
       BORE_PORT: "30117"
       HLS_DIR: "/dev/shm/hls/bm1"
+      LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
     steps:
       - name: Install System Dependencies
@@ -25,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
+          sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin
 
           # Tải và cài đặt Bore Tunnel
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
@@ -33,7 +34,13 @@ jobs:
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tạo sẵn cấu trúc thư mục tự động (720p & 480p cho BM1)
+          # Tải Logo SVG và chuyển đổi thành PNG transparent nhỏ gọn
+          echo "🎨 Đang tải và chuẩn bị Logo Watermark..."
+          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
+          # Chuyển SVG -> PNG chiều rộng 80px (gọn nhẹ)
+          rsvg-convert -w 80 /tmp/logo.svg -o /tmp/logo.png
+
+          # Tạo sẵn cấu trúc thư mục tự động (720p & 480p)
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
       - name: Create HLS Server
@@ -59,17 +66,19 @@ jobs:
               return res.end();
             }
 
-            let fileName = req.url.split('?')[0].replace('/', '');
-            if (!fileName || fileName === '') fileName = 'index.m3u8';
+            let reqPath = req.url.split('?')[0];
+            if (!reqPath || reqPath === '/') {
+              reqPath = '/index.m3u8';
+            }
 
-            const filePath = path.join(HLS_DIR, fileName);
+            const filePath = path.join(HLS_DIR, path.normalize(reqPath));
 
-            if (!fs.existsSync(filePath)) {
+            if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
               res.writeHead(404);
               return res.end('404 Not Found');
             }
 
-            const lowerName = fileName.toLowerCase();
+            const lowerName = filePath.toLowerCase();
             if (lowerName.endsWith('.m3u8')) {
               res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
             } else if (lowerName.endsWith('.ts')) {
@@ -89,21 +98,25 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Stream Copy (Clean Mapping 720p + 480p)
+      - name: Start Services & FFmpeg ABR Stream with Watermark
         shell: bash
         run: |
           # 1. Khởi chạy HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR Stream Copy cho Box Movie 1
+          # Hàm khởi động FFmpeg ABR với Logo Watermark
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Bắt đầu Stream Copy ABR Box Movie 1 (720p + 480p)..."
+            echo "🎬 [FFmpeg Engine] Bắt đầu Encode ABR Box Movie 1 kèm Logo Watermark..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # CÁCH MAP ĐÚNG VỚI BM1:
-            # - Rendition 0: Map 0:v:2 (720p HD gốc ~1.9 Mbps) + 0:a:0
-            # - Rendition 1: Map 0:v:1 (480p SD gốc ~0.9 Mbps) + 0:a:0
+            # Cấu hình Filter:
+            # - format=rgba,colorchannelmixer=aa=0.7 : Làm mờ logo còn 70% opacity
+            # - overlay=main_w-overlay_w-20:main_h-overlay_h-20 : Đặt logo ở góc DƯỚI BÊN PHẢI (cách lề 20px)
+            FILTER_COMPLEX="[1:v]format=rgba,colorchannelmixer=aa=0.7[logo]; \
+            [0:v:2][logo]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
+            [0:v:1][logo]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v480]"
+
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
               -headers "$CUSTOM_HEADERS" \
@@ -113,12 +126,14 @@ jobs:
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -map 0:v:2 -map 0:a:0 \
-              -map 0:v:1 -map 0:a:0 \
-              -c:v:0 copy -bsf:v:0 h264_mp4toannexb \
-              -c:v:1 copy -bsf:v:1 h264_mp4toannexb \
-              -c:a:0 aac -b:a:0 128k -ar 44100 -ac 2 \
-              -c:a:1 aac -b:a:1 96k -ar 44100 -ac 2 \
+              -i /tmp/logo.png \
+              -filter_complex "$FILTER_COMPLEX" \
+              -map "[v720]" -map 0:a:0 \
+              -map "[v480]" -map 0:a:0 \
+              -c:v:0 libx264 -preset ultrafast -crf 23 \
+              -c:v:1 libx264 -preset ultrafast -crf 25 \
+              -c:a:0 aac -b:a:0 128k -ar:a:0 48000 -ac:a:0 2 \
+              -c:a:1 aac -b:a:1 96k -ar:a:1 48000 -ac:a:1 2 \
               -f hls \
               -hls_time 2 \
               -hls_list_size 6 \
@@ -166,10 +181,10 @@ jobs:
               break
             fi
 
-            # Kiểm tra ngay nếu FFmpeg bị chết đột ngột
+            # Kiểm tra nếu FFmpeg bị sập ngay khi khởi chạy
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Chi tiết lỗi bên dưới:"
-              echo "---------------- FFMEPG LOG ----------------"
+              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Log chi tiết:"
+              echo "---------------- FFMPEG LOG ----------------"
               cat /tmp/ffmpeg.log || true
               echo "--------------------------------------------"
               exit 1
@@ -184,7 +199,7 @@ jobs:
             exit 1
           fi
 
-          # 3. Vòng lặp giám sát liên tục & Auto-Heal
+          # 3. Vòng lặp giám sát & Auto-Heal
           START_TIME=$(date +%s)
           LIMIT_SECONDS=21540  # 5 giờ 59 phút
 
@@ -193,34 +208,31 @@ jobs:
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết ca làm việc (5h59m), kết thúc phiên nhường chỗ cho Cron Job tiếp theo..."
+              echo "⏰ Hết ca làm việc (5h59m), kết thúc phiên..."
               exit 0
             fi
 
-            # Tự phục hồi FFmpeg nếu nguồn phát bị ngắt
+            # Tự phục hồi FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang tự động kích hoạt lại..."
+              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang kích hoạt lại..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Tự phục hồi Bore Tunnel nếu mất kết nối
+            # Tự phục hồi Bore Tunnel
             if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Đang kết nối lại..."
               start_bore
               sleep 5
             fi
 
-            # Tự phục hồi HTTP Server
+            # Tự phục hồi Node HTTP Server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
               sleep 2
             fi
-
-            # Dọn rác các file .ts cũ quá 5 phút
-            find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +5 -delete 2>/dev/null || true
 
             sleep 10
           done
