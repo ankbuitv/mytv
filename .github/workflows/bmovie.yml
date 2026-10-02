@@ -38,8 +38,8 @@ jobs:
           echo "🎨 [3/3] Tải và chuẩn bị Logo Watermark..."
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          # Convert SVG sang PNG transparent rộng 80px
-          rsvg-convert -w 80 /tmp/logo.svg -o /tmp/logo.png
+          # Đã sửa: Hạ kích thước logo rộng 55px (nhỏ hơn ~30% so với cũ 80px)
+          rsvg-convert -w 55 /tmp/logo.svg -o /tmp/logo.png
 
       - name: Create HLS Static Server
         shell: bash
@@ -108,16 +108,12 @@ jobs:
             echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Giải thích FILTER_GRAPH mới:
-            # 1. Lấy logo [1:v] đổi sang RGBA, chỉnh mờ 70%, nhân bản làm 2 bản [logo1][logo2]
-            # 2. Lấy luồng [0:v:2] (720p gốc của MPD) làm chuẩn, nhân bản làm 2 luồng [v720_raw][v480_pre]
-            # 3. Scale luồng [v480_pre] về 854:480 tạo thành luồng [v480_raw] (Chuẩn cú pháp!)
-            # 4. Đè logo tương ứng lên 2 luồng 720p và 480p
-            FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.7,split=2[logo1][logo2]; \
+            # Đã sửa: aa=0.5 để làm mờ 50%
+            FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.5,split=2[logo1][logo2]; \
             [0:v:2]split=2[v720_raw][v480_pre]; \
             [v480_pre]scale=854:480[v480_raw]; \
-            [v720_raw][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
-            [v480_raw][logo2]overlay=main_w-overlay_w-15:main_h-overlay_h-15[v480]"
+            [v720_raw][logo1]overlay=main_w-overlay_w-15:main_h-overlay_h-15[v720]; \
+            [v480_raw][logo2]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v480]"
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
@@ -152,7 +148,7 @@ jobs:
 
           # 2. Khởi chạy Bore Tunnel
           start_bore() {
-            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})...."
+            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})..."
             rm -f /tmp/bore.log
             nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             echo $! > /tmp/bore.pid
