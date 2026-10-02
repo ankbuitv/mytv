@@ -3,7 +3,7 @@ name: HLS Restream ABR - Box Movie 1 (Cron Auto Restart)
 on:
   workflow_dispatch:
   schedule:
-    # Tự động khởi chạy lúc 05:59, 11:59, 17:59, 23:59 UTC (Cứ mỗi 6 tiếng)
+    # Tự động khởi chạy lúc 05:59, 11:59, 17:59, 23:59 UTC (Mỗi 6 tiếng)
     - cron: '59 5,11,17,23 * * *'
 
 jobs:
@@ -21,29 +21,27 @@ jobs:
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
     steps:
-      - name: Install System Dependencies
+      - name: Install System Dependencies & Tools
         shell: bash
         run: |
           set -euo pipefail
+          echo "📦 [1/3] Cài đặt System Packages..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin
+          sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin procps
 
-          # Tải và cài đặt Bore Tunnel
+          echo "🌐 [2/3] Cài đặt Bore Tunnel..."
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
           tar -xzf /tmp/bore.tar.gz -C /tmp
           sudo install -m 755 /tmp/bore /usr/local/bin/bore
           rm -f /tmp/bore.tar.gz /tmp/bore
 
-          # Tải Logo SVG và chuyển đổi thành PNG transparent nhỏ gọn
-          echo "🎨 Đang tải và chuẩn bị Logo Watermark..."
+          echo "🎨 [3/3] Tải và chuẩn bị Logo Watermark..."
+          mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          # Chuyển SVG -> PNG chiều rộng 80px (gọn nhẹ)
+          # Convert SVG sang PNG transparent rộng 80px
           rsvg-convert -w 80 /tmp/logo.svg -o /tmp/logo.png
 
-          # Tạo sẵn cấu trúc thư mục tự động (720p & 480p)
-          mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-
-      - name: Create HLS Server
+      - name: Create HLS Static Server
         shell: bash
         run: |
           cat << 'EOF' > /tmp/hls_server.js
@@ -98,24 +96,25 @@ jobs:
           });
           EOF
 
-      - name: Start Services & FFmpeg ABR Stream with Watermark
+      - name: Start Restream Engine
         shell: bash
         run: |
-          # 1. Khởi chạy HTTP Server
+          # 1. Bật HTTP Server
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
 
-          # Hàm khởi động FFmpeg ABR với Logo Watermark
+          # Hàm khởi chạy FFmpeg ABR với Logo Watermark
           start_ffmpeg() {
-            echo "🎬 [FFmpeg Engine] Bắt đầu Encode ABR Box Movie 1 kèm Logo Watermark..."
+            echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Cấu hình Filter:
-            # - format=rgba,colorchannelmixer=aa=0.7 : Làm mờ logo còn 70% opacity
-            # - overlay=main_w-overlay_w-20:main_h-overlay_h-20 : Đặt logo ở góc DƯỚI BÊN PHẢI (cách lề 20px)
-            FILTER_COMPLEX="[1:v]format=rgba,colorchannelmixer=aa=0.7[logo]; \
-            [0:v:2][logo]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
-            [0:v:1][logo]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v480]"
+            # Complex Filter Graph: 
+            # - Tách logo làm 2 luồng [logo1], [logo2] qua split
+            # - Giảm opacity xuống 70% (aa=0.7)
+            # - Overlay góc dưới bên phải (cách lề 20px)
+            FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.7,split=2[logo1][logo2]; \
+            [0:v:2][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20:shortest=1[v720]; \
+            [0:v:1][logo2]overlay=main_w-overlay_w-20:main_h-overlay_h-20:shortest=1[v480]"
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
@@ -127,11 +126,11 @@ jobs:
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
               -i /tmp/logo.png \
-              -filter_complex "$FILTER_COMPLEX" \
+              -filter_complex "$FILTER_GRAPH" \
               -map "[v720]" -map 0:a:0 \
               -map "[v480]" -map 0:a:0 \
-              -c:v:0 libx264 -preset ultrafast -crf 23 \
-              -c:v:1 libx264 -preset ultrafast -crf 25 \
+              -c:v:0 libx264 -preset ultrafast -tune zerolatency -crf 23 \
+              -c:v:1 libx264 -preset ultrafast -tune zerolatency -crf 25 \
               -c:a:0 aac -b:a:0 128k -ar:a:0 48000 -ac:a:0 2 \
               -c:a:1 aac -b:a:1 96k -ar:a:1 48000 -ac:a:1 2 \
               -f hls \
@@ -148,9 +147,9 @@ jobs:
 
           start_ffmpeg
 
-          # 2. Khởi tạo Bore Tunnel
+          # 2. Khởi chạy Bore Tunnel
           start_bore() {
-            echo "🌐 Đang mở kết nối Bore Tunnel tại port ${BORE_PORT}..."
+            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})..."
             rm -f /tmp/bore.log
             nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             echo $! > /tmp/bore.pid
@@ -158,12 +157,11 @@ jobs:
 
           start_bore
 
-          PORT_READY=0
+          # Kiểm tra Bore Port Ready
           for i in {1..30}; do
             sleep 1
             if grep -qiE "bound to remote port|bore.pub:${BORE_PORT}" /tmp/bore.log 2>/dev/null; then
-              PORT_READY=1
-              echo "✅ Bore đã giữ thành công port ${BORE_PORT}!"
+              echo "✅ Bore Tunnel đã sẵn sàng tại port ${BORE_PORT}!"
               break
             fi
           done
@@ -171,7 +169,8 @@ jobs:
           echo "=================================================="
           echo "👉 MASTER ABR STREAM URL: http://bore.pub:${BORE_PORT}/index.m3u8"
           echo "=================================================="
-          
+
+          # Kiểm tra khởi tạo HLS Playlist
           echo "⏳ Đang kiểm tra khởi tạo HLS Stream..."
           STREAM_READY=0
           for i in {1..60}; do
@@ -181,9 +180,8 @@ jobs:
               break
             fi
 
-            # Kiểm tra nếu FFmpeg bị sập ngay khi khởi chạy
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg đã bị sập ngay khi khởi chạy! Log chi tiết:"
+              echo "❌ FFmpeg bị văng lỗi khi khởi chạy! Log bên dưới:"
               echo "---------------- FFMPEG LOG ----------------"
               cat /tmp/ffmpeg.log || true
               echo "--------------------------------------------"
@@ -194,41 +192,41 @@ jobs:
           done
 
           if [ "$STREAM_READY" -ne 1 ]; then
-            echo "❌ Không tạo được file index.m3u8 sau 60s. Log FFmpeg:"
+            echo "❌ Quá thời gian 60s không tạo được index.m3u8. Log FFmpeg:"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
 
-          # 3. Vòng lặp giám sát & Auto-Heal
+          # 3. Vòng lặp giám sát & Auto-Heal (Thời lượng tối đa ~5h59m)
           START_TIME=$(date +%s)
-          LIMIT_SECONDS=21540  # 5 giờ 59 phút
+          LIMIT_SECONDS=21540
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$(( NOW - START_TIME ))
 
             if [ "$ELAPSED" -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết ca làm việc (5h59m), kết thúc phiên..."
+              echo "⏰ Hết phiên làm việc 5h59m, dừng để Cron Job tiếp theo nhận ca..."
               exit 0
             fi
 
-            # Tự phục hồi FFmpeg
+            # Auto-Heal FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang kích hoạt lại..."
+              echo "🔄 [Auto-Heal] FFmpeg bị sập! Đang khởi động lại..."
               start_ffmpeg
               sleep 5
             fi
 
-            # Tự phục hồi Bore Tunnel
+            # Auto-Heal Bore Tunnel
             if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Đang kết nối lại..."
+              echo "🔄 [Auto-Heal] Bore Tunnel bị mất kết nối! Đang bật lại..."
               start_bore
               sleep 5
             fi
 
-            # Tự phục hồi Node HTTP Server
+            # Auto-Heal Node Server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Node HTTP Server tắt! Đang bật lại..."
+              echo "🔄 [Auto-Heal] HTTP Server dừng hoạt động! Đang khởi tạo lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
               sleep 2
