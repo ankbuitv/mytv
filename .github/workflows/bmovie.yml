@@ -108,13 +108,14 @@ jobs:
             echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Complex Filter Graph: 
-            # - Tách logo làm 2 luồng [logo1], [logo2] qua split
-            # - Giảm opacity xuống 70% (aa=0.7)
-            # - Overlay góc dưới bên phải (cách lề 20px)
+            # Complex Filter Graph chuẩn:
+            # - Dùng loop 1 cho logo ở input [1:v]
+            # - Tách logo làm 2 luồng qua split=2
+            # - Overlay góc dưới bên phải (cách lề 20px), giảm opacity 70%
             FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.7,split=2[logo1][logo2]; \
-            [0:v:2][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20:shortest=1[v720]; \
-            [0:v:1][logo2]overlay=main_w-overlay_w-20:main_h-overlay_h-20:shortest=1[v480]"
+            [0:v:0][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
+            [0:v:0][logo2]scale=854:480[v480_raw]; \
+            [v480_raw][logo2]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v480]"
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
@@ -125,12 +126,12 @@ jobs:
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -i /tmp/logo.png \
+              -stream_loop -1 -i /tmp/logo.png \
               -filter_complex "$FILTER_GRAPH" \
-              -map "[v720]" -map 0:a:0 \
-              -map "[v480]" -map 0:a:0 \
-              -c:v:0 libx264 -preset ultrafast -tune zerolatency -crf 23 \
-              -c:v:1 libx264 -preset ultrafast -tune zerolatency -crf 25 \
+              -map "[v720]" -map 0:a? \
+              -map "[v480]" -map 0:a? \
+              -c:v:0 libx264 -preset ultrafast -tune zerolatency -b:v:0 2500k \
+              -c:v:1 libx264 -preset ultrafast -tune zerolatency -b:v:1 1200k \
               -c:a:0 aac -b:a:0 128k -ar:a:0 48000 -ac:a:0 2 \
               -c:a:1 aac -b:a:1 96k -ar:a:1 48000 -ac:a:1 2 \
               -f hls \
