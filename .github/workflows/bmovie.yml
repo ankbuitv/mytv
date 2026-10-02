@@ -1,4 +1,4 @@
-name: HLS Restream ABR - Box Movie 1 (Cloudflare Tunnel CLI Fixed)
+name: HLS Restream ABR - Box Movie 1 (Final Stable)
 
 on:
   workflow_dispatch:
@@ -15,126 +15,102 @@ jobs:
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      HLS_DIR: "/dev/shm/hls/bm1"
+      HLS_DIR: "/dev/shm/hls/vtv"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
     steps:
-      - name: Install System Dependencies
+      - name: Install System & Pre-process Logo
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin procps
+          sudo apt-get update -qq && sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin imagemagick procps
           curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
           sudo dpkg -i /tmp/cloudflared.deb
-          rm -f /tmp/cloudflared.deb
-
+          
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+          
+          # Tải logo và xử lý mờ 50% ngay lập tức (Tiết kiệm CPU cho Action)
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo.png
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+          convert /tmp/logo_raw.png -alpha set -channel A -evaluate multiply 0.5 /tmp/logo_ready.png
 
-      - name: Setup Cloudflare Tunnel Config
+      - name: Setup CF Tunnel Config
+        env:
+          TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
+          TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
         run: |
           mkdir -p ~/.cloudflared
-          # Sử dụng cat để ghi file giúp giữ nguyên cấu trúc JSON
-          cat << 'EOF' > ~/.cloudflared/credentials.json
-          ${{ secrets.CF_TUNNEL_CREDENTIALS }}
-          EOF
-          
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           cat << EOF > ~/.cloudflared/config.yml
-          tunnel: ${{ secrets.CF_TUNNEL_ID }}
+          tunnel: $TUNNEL_ID
           credentials-file: /home/runner/.cloudflared/credentials.json
-
           ingress:
             - hostname: zzdigital01.thelac.dpdns.org
               service: http://localhost:5000
             - service: http_status:404
           EOF
 
-      - name: Start Static HLS Server
+      - name: Start HLS Engine & Tunnel
         run: |
+          # 1. Start Server Node.js (Route chính xác /vtv/boxmovie1.m3u8)
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
-          const HLS_DIR = '/dev/shm/hls/bm1';
-
+          const HLS_DIR = '/dev/shm/hls/vtv';
           http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', '*');
-
-            if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-
-            let urlPath = req.url.split('?')[0];
-            let cleanPath = urlPath.replace(/^\/vtv/, '');
-            if (cleanPath === '' || cleanPath === '/' || cleanPath === '/boxmovie1.m3u8') {
-              cleanPath = '/index.m3u8';
+            let u = req.url.split('?')[0];
+            // Xử lý route cho Master Playlist
+            if (u === '/vtv/boxmovie1.m3u8' || u === '/boxmovie1.m3u8') {
+              u = '/index.m3u8';
+            } else {
+              u = u.replace(/^\/vtv/, '');
             }
-
-            const filePath = path.join(HLS_DIR, path.normalize(cleanPath));
-            if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+            const f = path.join(HLS_DIR, path.normalize(u));
+            if (!fs.existsSync(f) || fs.statSync(f).isDirectory()) {
               res.writeHead(404); return res.end();
             }
-
-            if (filePath.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            if (filePath.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
-
-            fs.createReadStream(filePath).pipe(res);
+            if (f.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            if (f.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
+            fs.createReadStream(f).pipe(res);
           }).listen(5000);
           EOF
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
 
-      - name: Start Restream Engine & Cloudflare Tunnel
-        run: |
-          # 1. Start FFmpeg
-          FILTER="[1:v]format=rgba,colorchannelmixer=aa=0.5,split=2[l1][l2]; \
-                  [0:v:2]split=2[v7raw][v4pre]; [v4pre]scale=854:480[v4raw]; \
-                  [v7raw][l1]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v7]; \
-                  [v4raw][l2]overlay=main_w-overlay_w-8:main_h-overlay_h-8[v4]"
+          # 2. Start FFmpeg ABR (Đã tối ưu CPU để không bị treo)
+          FILTER="[0:v:2][1:v]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v7]; \
+                  [0:v:1][1:v]overlay=main_w-overlay_w-8:main_h-overlay_h-8[v4]"
 
-          nohup ffmpeg -hide_banner -loglevel warning \
-            -user_agent "$USER_AGENT" -headers "Referer: $REFERER"$'\r\n' \
-            -cenc_decryption_key "$CLEARKEY_KEY" \
-            -i "$MPD_URL" -loop 1 -i /tmp/logo.png \
-            -filter_complex "$FILTER" \
+          nohup ffmpeg -hide_banner -loglevel warning -user_agent "$USER_AGENT" \
+            -headers "Referer: $REFERER"$'\r\n' -cenc_decryption_key "$CLEARKEY_KEY" \
+            -i "$MPD_URL" -loop 1 -i /tmp/logo_ready.png -filter_complex "$FILTER" \
             -map "[v7]" -map 0:a? -map "[v4]" -map 0:a? \
-            -c:v libx264 -preset ultrafast -b:v:0 2500k -b:v:1 1200k \
-            -c:a aac -b:a:0 128k -b:a:1 96k \
-            -f hls -hls_time 2 -hls_list_size 6 -hls_flags delete_segments \
-            -master_pl_name index.m3u8 \
-            -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
-            -hls_segment_filename "${HLS_DIR}/%v/segment_%03d.ts" \
+            -c:v libx264 -preset ultrafast -tune zerolatency -b:v:0 2000k -b:v:1 800k \
+            -c:a copy -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
+            -master_pl_name index.m3u8 -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
+            -hls_segment_filename "${HLS_DIR}/%v/s_%03d.ts" \
             "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
           echo $! > /tmp/ffmpeg.pid
 
-          # 2. Start Tunnel
-          echo "🌐 Connecting Tunnel..."
+          # 3. Start Cloudflare Tunnel
           nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
 
-          echo "✅ Đang khởi tạo tại: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
-
-          # 3. Kiểm tra HLS Ready
-          for i in {1..60}; do
-            [ -f "${HLS_DIR}/index.m3u8" ] && break
-            sleep 1
-          done
-
-          # 4. Kiểm tra Tunnel Status & Auto Heal
+          # Vòng lặp giám sát
           START_TIME=$(date +%s)
           while true; do
             if [ $(( $(date +%s) - START_TIME )) -ge 21540 ]; then exit 0; fi
-
-            if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ Tunnel crashed! Log:"
-              cat /tmp/tunnel.log
-              nohup cloudflared tunnel --config /home/runner/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
-              echo $! > /tmp/tunnel.pid
-            fi
             
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 Restarting FFmpeg..."
-              # (Gọi lại lệnh FFmpeg ở đây nếu cần, nhưng tạm thời để Tunnel chạy ổn định đã)
+            # Nếu FFmpeg chết, in log và thoát
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
+              echo "❌ FFmpeg lỗi nghiêm trọng! Log:"
+              tail -n 20 /tmp/ffmpeg.log
+              exit 1
             fi
-            sleep 15
+
+            # Kiểm tra xem file playlist đã xuất hiện chưa
+            if [ -f "${HLS_DIR}/index.m3u8" ]; then
+              echo "✅ Stream Online: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+            fi
+            sleep 30
           done
