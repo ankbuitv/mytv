@@ -38,8 +38,8 @@ jobs:
           echo "🎨 [3/3] Tải và chuẩn bị Logo Watermark..."
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          # Đã sửa: Hạ kích thước logo rộng 55px (nhỏ hơn ~30% so với cũ 80px)
-          rsvg-convert -w 55 /tmp/logo.svg -o /tmp/logo.png
+          # Đã sửa: Hạ kích thước logo về rộng 35px
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo.png
 
       - name: Create HLS Static Server
         shell: bash
@@ -108,12 +108,12 @@ jobs:
             echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Đã sửa: aa=0.5 để làm mờ 50%
+            # Đã chỉnh: Mờ 50% (aa=0.5) và căn lề cách góc 10px (720p) / 8px (480p)
             FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.5,split=2[logo1][logo2]; \
             [0:v:2]split=2[v720_raw][v480_pre]; \
             [v480_pre]scale=854:480[v480_raw]; \
-            [v720_raw][logo1]overlay=main_w-overlay_w-15:main_h-overlay_h-15[v720]; \
-            [v480_raw][logo2]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v480]"
+            [v720_raw][logo1]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v720]; \
+            [v480_raw][logo2]overlay=main_w-overlay_w-8:main_h-overlay_h-8[v480]"
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
