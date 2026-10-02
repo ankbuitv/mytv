@@ -108,14 +108,16 @@ jobs:
             echo "🎬 [FFmpeg Engine] Đang khởi chạy Stream Copy/Encode kẹp Logo..."
             CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
-            # Complex Filter Graph chuẩn:
-            # - Dùng loop 1 cho logo ở input [1:v]
-            # - Tách logo làm 2 luồng qua split=2
-            # - Overlay góc dưới bên phải (cách lề 20px), giảm opacity 70%
+            # Giải thích FILTER_GRAPH mới:
+            # 1. Lấy logo [1:v] đổi sang RGBA, chỉnh mờ 70%, nhân bản làm 2 bản [logo1][logo2]
+            # 2. Lấy luồng [0:v:2] (720p gốc của MPD) làm chuẩn, nhân bản làm 2 luồng [v720_raw][v480_pre]
+            # 3. Scale luồng [v480_pre] về 854:480 tạo thành luồng [v480_raw] (Chuẩn cú pháp!)
+            # 4. Đè logo tương ứng lên 2 luồng 720p và 480p
             FILTER_GRAPH="[1:v]format=rgba,colorchannelmixer=aa=0.7,split=2[logo1][logo2]; \
-            [0:v:0][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
-            [0:v:0][logo2]scale=854:480[v480_raw]; \
-            [v480_raw][logo2]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v480]"
+            [0:v:2]split=2[v720_raw][v480_pre]; \
+            [v480_pre]scale=854:480[v480_raw]; \
+            [v720_raw][logo1]overlay=main_w-overlay_w-20:main_h-overlay_h-20[v720]; \
+            [v480_raw][logo2]overlay=main_w-overlay_w-15:main_h-overlay_h-15[v480]"
 
             nohup ffmpeg -hide_banner -loglevel warning \
               -user_agent "$USER_AGENT" \
@@ -126,7 +128,7 @@ jobs:
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -fflags +genpts+discardcorrupt+igndts \
               -i "$MPD_URL" \
-              -stream_loop -1 -i /tmp/logo.png \
+              -loop 1 -i /tmp/logo.png \
               -filter_complex "$FILTER_GRAPH" \
               -map "[v720]" -map 0:a? \
               -map "[v480]" -map 0:a? \
@@ -150,7 +152,7 @@ jobs:
 
           # 2. Khởi chạy Bore Tunnel
           start_bore() {
-            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})..."
+            echo "🌐 Đang mở kết nối Bore Tunnel (Port ${BORE_PORT})...."
             rm -f /tmp/bore.log
             nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             echo $! > /tmp/bore.pid
