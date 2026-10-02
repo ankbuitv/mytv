@@ -1,4 +1,4 @@
-name: HLS Restream ABR - BOX HITS (Cloudflare Tunnel)
+name: HLS Restream ABR - BOX HITS (Subdomain 02)
 
 on:
   workflow_dispatch: {}
@@ -32,12 +32,12 @@ jobs:
 
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Tải logo và xử lý mờ 50%, size 35px sẵn (Cực nhẹ CPU)
+          # Tải logo và xử lý mờ 50%, size 35px sẵn
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
           convert /tmp/logo_raw.png -alpha set -channel A -evaluate multiply 0.5 /tmp/logo_final.png
 
-      - name: Configure Cloudflare Tunnel
+      - name: Configure Cloudflare Tunnel (Subdomain zzdigital02)
         env:
           TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
           TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
@@ -50,14 +50,14 @@ jobs:
           credentials-file: /home/runner/.cloudflared/credentials.json
 
           ingress:
-            - hostname: zzdigital01.thelac.dpdns.org
+            - hostname: zzdigital02.thelac.dpdns.org
               service: http://localhost:5000
             - service: http_status:404
           EOF
 
       - name: Run Engine & Tunnel
         run: |
-          # 1. Server Node.js (Route chuẩn /vtv/boxhits.m3u8)
+          # 1. Server Node.js
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
@@ -67,34 +67,27 @@ jobs:
           http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', '*');
-
             if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
             let u = req.url.split('?')[0];
-            
-            // Map đường dẫn /vtv/boxhits.m3u8 hoặc /boxhits.m3u8 về playlist master
             let cleanPath = u.replace(/^\/vtv/, '');
             if (cleanPath === '' || cleanPath === '/' || cleanPath === '/boxhits.m3u8') {
               cleanPath = '/index.m3u8';
             }
 
             const filePath = path.join(HLS_DIR, path.normalize(cleanPath));
-
             if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-              res.writeHead(404); return res.end('404 Not Found');
+              res.writeHead(404); return res.end();
             }
 
             if (filePath.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
             if (filePath.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
-
             fs.createReadStream(filePath).pipe(res);
           }).listen(5000, '0.0.0.0');
           EOF
           nohup node /tmp/hls_server.js > /dev/null 2>&1 &
-          echo $! > /tmp/server.pid
 
-          # 2. FFmpeg ABR Engine (720p: 2000k, 480p: 900k)
+          # 2. FFmpeg ABR
           FILTER="[0:v:2][1:v]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v7]; \
                   [0:v:1][1:v]overlay=main_w-overlay_w-8:main_h-overlay_h-8[v4]"
 
@@ -118,14 +111,11 @@ jobs:
           echo "⏳ Đang kết nối và khởi tạo HLS..."
           while true; do
             if [ -f "${HLS_DIR}/index.m3u8" ]; then
-              echo "=================================================="
-              echo "✅ BOX HITS STREAM ONLINE THÀNH CÔNG!"
-              echo "👉 STREAM LINK: https://zzdigital01.thelac.dpdns.org/vtv/boxhits.m3u8"
-              echo "=================================================="
+              echo "✅ BOX HITS ONLINE: https://zzdigital02.thelac.dpdns.org/vtv/boxhits.m3u8"
             fi
             
             if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
-              echo "❌ FFmpeg bị lỗi sập! Log chi tiết:"
+              echo "❌ FFmpeg lỗi!"
               cat /tmp/ffmpeg.log
               exit 1
             fi
