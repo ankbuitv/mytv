@@ -1,4 +1,4 @@
-name: HLS Restream - BOX HITS
+name: HLS Restream ABR - BOX HITS (Cloudflare Tunnel)
 
 on:
   workflow_dispatch: {}
@@ -13,166 +13,121 @@ jobs:
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BOXHIT/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
-      USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
       REFERER: "https://vtvprime.vn/"
-      BORE_PORT: "30119"
-      HLS_DIR: "/dev/shm/hls/boxhits"
+      HLS_DIR: "/dev/shm/hls/vtv"
+      LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
     steps:
-      - name: Install System Dependencies
+      - name: Install System & Prepare Assets
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl nodejs ffmpeg
+          sudo apt-get install -y -qq curl nodejs ffmpeg librsvg2-bin imagemagick procps
+          
+          # Cài đặt cloudflared
+          curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+          sudo dpkg -i /tmp/cloudflared.deb
+          rm -f /tmp/cloudflared.deb
 
-          # Cài đặt Bore Tunnel
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz -o /tmp/bore.tar.gz
-          tar -xzf /tmp/bore.tar.gz -C /tmp
-          sudo install -m 755 /tmp/bore /usr/local/bin/bore
-          rm -f /tmp/bore.tar.gz /tmp/bore
+          mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Tạo thư mục chứa HLS
-          mkdir -p "${HLS_DIR}"
+          # Tải logo và xử lý mờ 50%, size 35px sẵn (Cực nhẹ CPU)
+          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+          convert /tmp/logo_raw.png -alpha set -channel A -evaluate multiply 0.5 /tmp/logo_final.png
 
-      - name: Create Robust HLS Server
+      - name: Configure Cloudflare Tunnel
+        env:
+          TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
+          TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
         run: |
+          mkdir -p ~/.cloudflared
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
+          
+          cat << EOF > ~/.cloudflared/config.yml
+          tunnel: $TUNNEL_ID
+          credentials-file: /home/runner/.cloudflared/credentials.json
+
+          ingress:
+            - hostname: zzdigital01.thelac.dpdns.org
+              service: http://localhost:5000
+            - service: http_status:404
+          EOF
+
+      - name: Run Engine & Tunnel
+        run: |
+          # 1. Server Node.js (Route chuẩn /vtv/boxhits.m3u8)
           cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
+          const HLS_DIR = '/dev/shm/hls/vtv';
 
-          const HLS_DIR = process.env.HLS_DIR || '/dev/shm/hls/boxhits';
-
-          const server = http.createServer((req, res) => {
+          http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', '*');
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-            if (req.method === 'OPTIONS') {
-              res.writeHead(204);
-              return res.end();
+            if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+
+            let u = req.url.split('?')[0];
+            
+            // Map đường dẫn /vtv/boxhits.m3u8 hoặc /boxhits.m3u8 về playlist master
+            let cleanPath = u.replace(/^\/vtv/, '');
+            if (cleanPath === '' || cleanPath === '/' || cleanPath === '/boxhits.m3u8') {
+              cleanPath = '/index.m3u8';
             }
 
-            let reqPath = req.url.split('?')[0];
-            if (reqPath === '/' || reqPath === '') reqPath = '/index.m3u8';
-
-            const safePath = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, '');
-            const filePath = path.join(HLS_DIR, safePath);
+            const filePath = path.join(HLS_DIR, path.normalize(cleanPath));
 
             if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-              res.writeHead(404, { 'Content-Type': 'text/plain' });
-              return res.end('404 Not Found');
+              res.writeHead(404); return res.end('404 Not Found');
             }
 
-            if (filePath.endsWith('.m3u8')) {
-              res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            } else if (filePath.endsWith('.ts')) {
-              res.setHeader('Content-Type', 'video/mp2t');
-            } else if (filePath.endsWith('.m4s') || filePath.endsWith('.mp4')) {
-              res.setHeader('Content-Type', 'video/iso.segment');
-            }
+            if (filePath.endsWith('.m3u8')) res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            if (filePath.endsWith('.ts')) res.setHeader('Content-Type', 'video/mp2t');
 
             fs.createReadStream(filePath).pipe(res);
-          });
-
-          server.listen(5000, '0.0.0.0', () => {
-            console.log('🚀 HTTP Server listening on port 5000');
-          });
+          }).listen(5000, '0.0.0.0');
           EOF
-
-      - name: Start Services & Run FFmpeg
-        run: |
-          # 1. Chạy Node Server
-          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+          nohup node /tmp/hls_server.js > /dev/null 2>&1 &
           echo $! > /tmp/server.pid
 
-          # 2. Khởi chạy FFmpeg (Xử lý luồng tránh sập map)
-          start_ffmpeg() {
-            echo "🎬 [FFmpeg] Khởi chạy Stream Copy..."
-            CUSTOM_HEADERS="Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
+          # 2. FFmpeg ABR Engine (720p: 2000k, 480p: 900k)
+          FILTER="[0:v:2][1:v]overlay=main_w-overlay_w-10:main_h-overlay_h-10[v7]; \
+                  [0:v:1][1:v]overlay=main_w-overlay_w-8:main_h-overlay_h-8[v4]"
 
-            nohup ffmpeg -hide_banner -loglevel warning \
-              -user_agent "$USER_AGENT" \
-              -headers "$CUSTOM_HEADERS" \
-              -cenc_decryption_key "$CLEARKEY_KEY" \
-              -fflags +genpts+discardcorrupt+igndts \
-              -i "$MPD_URL" \
-              -map 0:v:0 -map 0:a:0 \
-              -c:v copy -bsf:v h264_mp4toannexb \
-              -c:a aac -b:a 128k -ar 44100 -ac 2 \
-              -f hls \
-              -hls_time 2 \
-              -hls_list_size 6 \
-              -hls_flags delete_segments+omit_endlist \
-              -hls_segment_filename "${HLS_DIR}/segment_%03d.ts" \
-              "${HLS_DIR}/index.m3u8" > /tmp/ffmpeg.log 2>&1 &
-            
-            echo $! > /tmp/ffmpeg.pid
-          }
+          nohup ffmpeg -hide_banner -loglevel warning -user_agent "$USER_AGENT" \
+            -headers "Referer: $REFERER"$'\r\n' -cenc_decryption_key "$CLEARKEY_KEY" \
+            -i "$MPD_URL" -loop 1 -i /tmp/logo_final.png -filter_complex "$FILTER" \
+            -map "[v7]" -map 0:a? -map "[v4]" -map 0:a? \
+            -c:v libx264 -preset ultrafast -tune zerolatency -b:v:0 2000k -b:v:1 900k \
+            -c:a copy -f hls -hls_time 2 -hls_list_size 6 \
+            -hls_flags delete_segments+omit_endlist+independent_segments \
+            -master_pl_name index.m3u8 \
+            -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
+            -hls_segment_filename "${HLS_DIR}/%v/s_%03d.ts" \
+            "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
+          echo $! > /tmp/ffmpeg.pid
 
-          start_ffmpeg
+          # 3. Chạy Cloudflare Tunnel
+          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+          echo $! > /tmp/tunnel.pid
 
-          # 3. Khởi chạy Bore Tunnel & Tự bắt Port
-          start_bore() {
-            echo "🌐 Đang kết nối Bore Tunnel..."
-            rm -f /tmp/bore.log
-            nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
-            echo $! > /tmp/bore.pid
-          }
-
-          start_bore
-
-          sleep 3
-          ACTUAL_PORT=$(grep -oE "bore.pub:[0-9]+" /tmp/bore.log | cut -d':' -f2 | head -n 1 || echo "${BORE_PORT}")
-
-          echo "=================================================="
-          echo "👉 STREAM LINK: http://bore.pub:${ACTUAL_PORT}/index.m3u8"
-          echo "=================================================="
-
-          # 4. Kiểm tra Stream Sẵn Sàng
-          STREAM_READY=0
-          for i in {1..60}; do
+          echo "⏳ Đang kết nối và khởi tạo HLS..."
+          while true; do
             if [ -f "${HLS_DIR}/index.m3u8" ]; then
-              STREAM_READY=1
-              echo "✅ HLS Stream đã tạo thành công!"
-              break
+              echo "=================================================="
+              echo "✅ BOX HITS STREAM ONLINE THÀNH CÔNG!"
+              echo "👉 STREAM LINK: https://zzdigital01.thelac.dpdns.org/vtv/boxhits.m3u8"
+              echo "=================================================="
             fi
-
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+            
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
               echo "❌ FFmpeg bị lỗi sập! Log chi tiết:"
-              echo "---------------- FFMEPG LOG ----------------"
-              cat /tmp/ffmpeg.log || true
-              echo "--------------------------------------------"
+              cat /tmp/ffmpeg.log
               exit 1
             fi
-
-            sleep 1
-          done
-
-          # 5. Vòng lặp giám sát (5h50m)
-          START_TIME=$(date +%s)
-          LIMIT_SECONDS=21000
-
-          while true; do
-            NOW=$(date +%s)
-            if [ $(( NOW - START_TIME )) -ge "$LIMIT_SECONDS" ]; then
-              echo "⏰ Hết phiên, nhường chỗ cho Cron tiếp theo..."
-              exit 0
-            fi
-
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] FFmpeg bị ngắt! Đang bật lại..."
-              start_ffmpeg
-              sleep 5
-            fi
-
-            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "🔄 [Auto-Heal] Bore Tunnel bị rớt! Đang kết nối lại..."
-              start_bore
-              sleep 5
-            fi
-
-            find "${HLS_DIR}" -type f -name 'segment_*.ts' -mmin +3 -delete 2>/dev/null || true
-            sleep 10
+            sleep 30
           done
