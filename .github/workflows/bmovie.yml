@@ -3,14 +3,14 @@ name: HLS Restream ABR - Box Movie 1
 on:
   workflow_dispatch:
   schedule:
-    # Cron dự phòng 12 tiếng/lần (phòng ngừa rủi ro đứt chuỗi tự kích hoạt)
+    # Cron dự phòng 12 tiếng/lần (phòng ngừa rủi ro đứt chuỗi)
     - cron: '0 */12 * * *'
 
 concurrency:
   group: boxmovie1-restream
   cancel-in-progress: true
 
-# Cấp quyền để token tự gọi GitHub API kích hoạt job mới nối tiếp
+# Cấp quyền cho GitHub Token để tự nối chuỗi luồng
 permissions:
   contents: read
   actions: write
@@ -18,7 +18,7 @@ permissions:
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Giới hạn 5 tiếng 50 phút
+    timeout-minutes: 350 # Chạy tối đa 5 tiếng 50 phút
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
@@ -30,24 +30,24 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           set -euo pipefail
 
-          # Cài đặt ffmpeg và thư viện convert SVG
+          # Cài đặt ffmpeg và thư viện convert svg
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg librsvg2-bin
 
-          # Cài đặt cloudflared bản mới nhất
+          # Cài đặt Cloudflare Tunnel
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
 
-          # Tạo thư mục RAM Disk cho HLS
+          # Chuẩn bị RAM Disk
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Tải và xử lý Watermark Logo độ mờ 50%
+          # Tải và xử lý logo mờ 50%
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
           ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
@@ -177,13 +177,13 @@ jobs:
           [v480][1:v]overlay=x=W-w-8:y=H-h-8[out480]"
 
           start_ffmpeg() {
-            echo "🚀 Khởi động FFmpeg ABR Engine..."
+            echo "🚀 Khởi động FFmpeg Engine..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -headers "$HTTP_HEADERS" \
+              -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$MPD_URL" \
               -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
@@ -207,7 +207,7 @@ jobs:
           # Khởi động lần đầu
           start_ffmpeg
 
-          # Chờ xuất bản HLS
+          # Đợi khởi tạo phân đoạn HLS
           echo "⏳ Đang kết nối và chờ xuất bản HLS..."
           READY=0
           for i in $(seq 1 40); do
@@ -235,22 +235,22 @@ jobs:
           STALE_SECONDS=0
           
           START_TIME=$(date +%s)
-          AUTO_TRIGGER_SECONDS=19800 # 5 tiếng 30 phút (19800s)
+          AUTO_TRIGGER_SECONDS=19800 # 5 tiếng 30 phút
           NEXT_TRIGGERED=0
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # 1. TỰ NỐI LUỒNG: Sau 5h30m kích hoạt Job mới để thay thế liền mạch
+            # 1. TỰ NỐI LUỒNG: Chạy được 5h30m -> Gọi GitHub API kích hoạt job mới
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "🔄 [5H30M REACHED] Đang kích hoạt phiên mới để duy trì chuỗi 24/7..."
+              echo "🔄 [5H30M REACHED] Đang kích hoạt job mới để duy trì chuỗi 24/7..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
-              echo "✅ Đã gửi lệnh khởi tạo Job mới. Luồng hiện tại tiếp tục duy trì cho đến khi job mới tiếp quản."
+              echo "✅ Đã trigger Job mới. Phiên hiện tại sẽ giữ luồng cho tới khi phiên mới tiếp quản."
             fi
 
-            # 2. Kiểm tra tính sống còn của Web Server & Tunnel
+            # 2. Giám sát Server & Tunnel
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "⚠️ Node.js Server chết, khởi động lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
@@ -263,7 +263,7 @@ jobs:
               echo $! > /tmp/tunnel.pid
             fi
 
-            # 3. Giám sát FFmpeg & Độ mới của Playlist
+            # 3. Giám sát tiến trình FFmpeg & Playlist
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               FFMPEG_ALIVE=0
@@ -281,7 +281,7 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            # 4. Tự phục hồi FFmpeg nếu bị crash hoặc đơ > 40s
+            # 4. Tự phục hồi FFmpeg nếu crash hoặc đơ > 40s
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
               echo "⚠️ FFmpeg gặp sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Đang tự phục hồi..."
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
