@@ -171,6 +171,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Tạo chuỗi headers chuẩn hóa với kết thúc bằng dấu xuống dòng CR-LF cho FFmpeg
+          HTTP_HEADERS=$(printf "User-Agent: %s\r\nReferer: %s\r\n" "$USER_AGENT" "$REFERER")
+
           # Xây dựng Filter Complex tối ưu hóa đồng bộ hệ màu sắc (Format yuv420)
           FILTER_COMPLEX="
           [0:v:0]fps=25,split=2[base720][base480];
@@ -182,11 +185,9 @@ jobs:
           "
           FILTER_COMPLEX=$(echo "$FILTER_COMPLEX" | tr -d '\n')
 
-          # Khởi chạy FFmpeg tích hợp các tham số tự động kết nối lại khi rớt mạng luồng đầu vào
+          # Khởi chạy FFmpeg (Đã loại bỏ các cờ reconnect gây xung đột EOF khi tải manifest)
           nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -user_agent "$USER_AGENT" \
-            -headers "Referer: $REFERER"$'\r\n' \
+            -headers "$HTTP_HEADERS" \
             -cenc_decryption_key "$CLEARKEY_KEY" \
             -i "$MPD_URL" \
             -loop 1 -framerate 25 -i /tmp/logo_final.png \
@@ -203,7 +204,8 @@ jobs:
             -master_pl_name index.m3u8 \
             -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
             -hls_segment_filename "${HLS_DIR}/%v/s_%06d.ts" \
-            "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
+            "${HLS_DIR}/%v/stream.m3u8" \
+            > /tmp/ffmpeg.log 2>&1 &
           
           echo $! > /tmp/ffmpeg.pid
           echo "FFmpeg stream engine started."
