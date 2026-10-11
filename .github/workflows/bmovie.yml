@@ -10,7 +10,7 @@ concurrency:
   group: boxmovie1-restream
   cancel-in-progress: true
 
-# Cấp quyền cho GitHub Token tự kích hoạt phiên workflow mới
+# Cấp quyền để token tự gọi GitHub API kích hoạt job mới nối tiếp
 permissions:
   contents: read
   actions: write
@@ -18,7 +18,7 @@ permissions:
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Giới hạn tối đa 5 tiếng 50 phút
+    timeout-minutes: 350 # Giới hạn 5 tiếng 50 phút
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
@@ -30,22 +30,24 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Fast Setup & Dependencies
+      - name: Install System Dependencies
         run: |
           set -euo pipefail
 
-          # Cài đặt cloudflared và rsvg (bỏ qua các gói ubuntu đã có sẵn)
+          # Cài đặt ffmpeg và thư viện convert SVG
           sudo apt-get update -qq
-          sudo apt-get install -y -qq librsvg2-bin
+          sudo apt-get install -y -qq ffmpeg librsvg2-bin
 
+          # Cài đặt cloudflared bản mới nhất
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
-          sudo dpkg -i /tmp/cf.deb && rm -f /tmp/cf.deb
+          sudo dpkg -i /tmp/cf.deb
+          rm -f /tmp/cf.deb
 
-          # Chuẩn bị RAM Disk
+          # Tạo thư mục RAM Disk cho HLS
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Tải và xử lý Watermark Logo trong suốt 50%
+          # Tải và xử lý Watermark Logo độ mờ 50%
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
           ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
@@ -233,19 +235,19 @@ jobs:
           STALE_SECONDS=0
           
           START_TIME=$(date +%s)
-          AUTO_TRIGGER_SECONDS=19800 # 5 tiếng 30 phút (19800 giây)
+          AUTO_TRIGGER_SECONDS=19800 # 5 tiếng 30 phút (19800s)
           NEXT_TRIGGERED=0
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # 1. TỰ NỐI LUỒNG: Sau 5h30m kích hoạt Job mới để thay thế
+            # 1. TỰ NỐI LUỒNG: Sau 5h30m kích hoạt Job mới để thay thế liền mạch
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               echo "🔄 [5H30M REACHED] Đang kích hoạt phiên mới để duy trì chuỗi 24/7..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
-              echo "✅ Đã gửi lệnh khởi tạo Job mới. Luồng hiện tại tiếp tục chạy cho đến khi phiên mới tiếp quản."
+              echo "✅ Đã gửi lệnh khởi tạo Job mới. Luồng hiện tại tiếp tục duy trì cho đến khi job mới tiếp quản."
             fi
 
             # 2. Kiểm tra tính sống còn của Web Server & Tunnel
@@ -279,7 +281,7 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            # 4. Tự phục hồi FFmpeg nếu bị văng hoặc nghẽn > 40s
+            # 4. Tự phục hồi FFmpeg nếu bị crash hoặc đơ > 40s
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
               echo "⚠️ FFmpeg gặp sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Đang tự phục hồi..."
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
