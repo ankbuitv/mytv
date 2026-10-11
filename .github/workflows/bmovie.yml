@@ -3,26 +3,25 @@ name: HLS Restream ABR - Box Movie 1 (Optimized)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '59 5,11,17,23 * * *'
+    # Chạy mỗi 5 giờ để tối ưu hóa thời gian duy trì luồng phát liên tục
+    - cron: '0 */5 * * *'
 
 concurrency:
   group: boxmovie1-restream
-  cancel-in-progress: false
+  # Tự động hủy phiên cũ khi phiên mới chạy để dọn dẹp tài nguyên và làm mới luồng phát
+  cancel-in-progress: true
 
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 315 # Chạy tối đa 5 tiếng 15 phút (gối đầu 15 phút với chu kỳ cron)
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
-
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
-
       REFERER: "https://vtvprime.vn/"
       HLS_DIR: "/dev/shm/hls/vtv"
-
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
 
     steps:
@@ -32,7 +31,6 @@ jobs:
           set -euo pipefail
 
           sudo apt-get update -qq
-
           sudo apt-get install -y -qq \
             curl \
             nodejs \
@@ -46,6 +44,7 @@ jobs:
             -o /tmp/cloudflared.deb
 
           sudo dpkg -i /tmp/cloudflared.deb
+          rm -f /tmp/cloudflared.deb
 
           mkdir -p \
             "${HLS_DIR}/720p" \
@@ -53,36 +52,24 @@ jobs:
 
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
 
-          rsvg-convert \
-            -w 35 \
-            /tmp/logo.svg \
-            -o /tmp/logo_raw.png
+          # Chuyển đổi SVG sang PNG độ phân giải sắc nét trước khi giảm kích thước
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+          convert /tmp/logo_raw.png -alpha set -channel A -evaluate multiply 0.5 +channel /tmp/logo_final.png
 
-          convert /tmp/logo_raw.png \
-            -alpha set \
-            -channel A \
-            -evaluate multiply 0.5 \
-            +channel \
-            /tmp/logo_final.png
-
-          echo "Dependencies ready"
+          echo "Dependencies ready."
 
       - name: Configure Cloudflare Tunnel
         env:
           TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
           TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
-
         run: |
           set -euo pipefail
 
           mkdir -p ~/.cloudflared
-
-          printf '%s' "$TUNNEL_JSON" \
-            > ~/.cloudflared/credentials.json
-
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
 
-          cat > ~/.cloudflared/config.yml << EOF
+          cat << EOF > ~/.cloudflared/config.yml
           tunnel: $TUNNEL_ID
           credentials-file: /home/runner/.cloudflared/credentials.json
 
@@ -94,29 +81,22 @@ jobs:
 
       - name: Create HLS Server
         run: |
-          cat > /tmp/hls_server.js <<'EOF'
+          cat << 'EOF' > /tmp/hls_server.js
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
 
           const ROOT = '/dev/shm/hls/vtv';
-
           const MIME = {
             '.m3u8': 'application/vnd.apple.mpegurl',
             '.ts': 'video/mp2t'
           };
 
           http.createServer((req, res) => {
-
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-
-            res.setHeader(
-              'Access-Control-Allow-Headers',
-              'Origin, Range, Accept, Content-Type'
-            );
-
-            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('Access-Control-Allow-Headers', 'Origin, Range, Accept, Content-Type');
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
             if (req.method === 'OPTIONS') {
               res.writeHead(204);
@@ -129,10 +109,8 @@ jobs:
             }
 
             let pathname;
-
             try {
-              pathname = new URL(req.url, 'http://localhost').pathname;
-              pathname = decodeURIComponent(pathname);
+              pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
             } catch {
               res.writeHead(400);
               return res.end();
@@ -144,37 +122,25 @@ jobs:
             }
 
             let relative = pathname.slice(4);
-
-            if (
-              relative === '' ||
-              relative === '/' ||
-              relative === '/boxmovie1.m3u8'
-            ) {
+            if (relative === '' || relative === '/' || relative === '/boxmovie1.m3u8') {
               relative = '/index.m3u8';
             }
 
-            const file = path.resolve(
-              ROOT,
-              '.' + relative
-            );
+            const filePath = path.resolve(ROOT, '.' + relative);
 
-            if (
-              file !== ROOT &&
-              !file.startsWith(ROOT + path.sep)
-            ) {
+            // Bảo vệ tránh lỗi Path Traversal bảo mật
+            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) {
               res.writeHead(403);
               return res.end();
             }
 
-            const ext = path.extname(file);
-
+            const ext = path.extname(filePath);
             if (!MIME[ext]) {
               res.writeHead(403);
               return res.end();
             }
 
-            fs.stat(file, (err, stat) => {
-
+            fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) {
                 res.writeHead(404);
                 return res.end();
@@ -182,225 +148,150 @@ jobs:
 
               res.setHeader('Content-Type', MIME[ext]);
               res.setHeader('Content-Length', stat.size);
-
               res.writeHead(200);
 
               if (req.method === 'HEAD') {
                 return res.end();
               }
 
-              const stream = fs.createReadStream(file);
-
+              const stream = fs.createReadStream(filePath);
               stream.on('error', () => {
-                res.destroy();
+                res.destroy(); // Đóng kết nối an toàn khi client ngắt kết nối đột ngột
               });
-
               stream.pipe(res);
             });
-
-          }).listen(5000, '127.0.0.1', () => {
-            console.log('HLS server listening on 5000');
-          });
+          }).listen(5000, '127.0.0.1');
           EOF
 
-          nohup node /tmp/hls_server.js \
-            > /tmp/server.log 2>&1 &
-
+          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
+          echo "HLS Server started on port 5000."
 
       - name: Start FFmpeg ABR
         run: |
           set -euo pipefail
 
+          # Xây dựng Filter Complex tối ưu hóa đồng bộ hệ màu sắc (Format yuv420)
           FILTER_COMPLEX="
-          [0:v:0]
-          fps=25,
-          split=2[base720][base480];
-
-          [1:v]
-          format=rgba,
-          split=2[logo720][logo480];
-
-          [base720]
-          scale=1280:720:flags=fast_bilinear,
-          setsar=1,
-          format=yuv420p[video720];
-
-          [base480]
-          scale=854:480:flags=fast_bilinear,
-          setsar=1,
-          format=yuv420p[video480];
-
-          [video720][logo720]
-          overlay=W-w-10:H-h-10:
-          format=auto:
-          shortest=1,
-          format=yuv420p[out720];
-
-          [video480][logo480]
-          overlay=W-w-8:H-h-8:
-          format=auto:
-          shortest=1,
-          format=yuv420p[out480]
+          [0:v:0]fps=25,split=2[base720][base480];
+          [1:v]format=rgba,split=2[logo720][logo480];
+          [base720]scale=1280:720:flags=fast_bilinear,setsar=1[video720];
+          [base480]scale=854:480:flags=fast_bilinear,setsar=1[video480];
+          [video720][logo720]overlay=x=W-w-10:y=H-h-10:format=yuv420[out720];
+          [video480][logo480]overlay=x=W-w-8:y=H-h-8:format=yuv420[out480]
           "
-
           FILTER_COMPLEX=$(echo "$FILTER_COMPLEX" | tr -d '\n')
 
-          nohup ffmpeg \
-            -hide_banner \
-            -loglevel warning \
-            -nostdin \
-            -thread_queue_size 1024 \
+          # Khởi chạy FFmpeg tích hợp các tham số tự động kết nối lại khi rớt mạng luồng đầu vào
+          nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+            -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
             -user_agent "$USER_AGENT" \
             -headers "Referer: $REFERER"$'\r\n' \
             -cenc_decryption_key "$CLEARKEY_KEY" \
             -i "$MPD_URL" \
-            -loop 1 \
-            -framerate 25 \
-            -i /tmp/logo_final.png \
+            -loop 1 -framerate 25 -i /tmp/logo_final.png \
             -filter_complex "$FILTER_COMPLEX" \
-            -map "[out720]" \
-            -map 0:a:0 \
-            -map "[out480]" \
-            -map 0:a:0 \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -pix_fmt yuv420p \
-            -r 25 \
-            -g 50 \
-            -keyint_min 50 \
-            -sc_threshold 0 \
-            -b:v:0 2000k \
-            -maxrate:v:0 2200k \
-            -bufsize:v:0 4000k \
-            -b:v:1 900k \
-            -maxrate:v:1 1000k \
-            -bufsize:v:1 1800k \
-            -c:a aac \
-            -b:a 96k \
-            -ar 48000 \
-            -ac 2 \
-            -f hls \
-            -hls_time 2 \
-            -hls_list_size 8 \
-            -hls_delete_threshold 4 \
+            -map "[out720]" -map 0:a:0? \
+            -map "[out480]" -map 0:a:0? \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+            -b:v:0 2000k -maxrate:v:0 2200k -bufsize:v:0 4000k \
+            -b:v:1 900k -maxrate:v:1 1000k -bufsize:v:1 1800k \
+            -c:a aac -b:a 96k -ar 48000 -ac 2 \
+            -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
             -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
             -master_pl_name index.m3u8 \
             -var_stream_map "v:0,a:0,name:720p v:1,a:1,name:480p" \
             -hls_segment_filename "${HLS_DIR}/%v/s_%06d.ts" \
-            "${HLS_DIR}/%v/stream.m3u8" \
-            > /tmp/ffmpeg.log 2>&1 &
-
+            "${HLS_DIR}/%v/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
+          
           echo $! > /tmp/ffmpeg.pid
-
-          echo "FFmpeg started"
+          echo "FFmpeg stream engine started."
 
       - name: Start Cloudflare Tunnel
         run: |
-          nohup cloudflared tunnel \
-            --config ~/.cloudflared/config.yml \
-            run \
-            > /tmp/tunnel.log 2>&1 &
-
+          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
+          echo "Cloudflare Tunnel tunnel started."
 
-          echo "Cloudflare Tunnel started"
-
-      - name: Monitor Stream
+      - name: Monitor Stream Health
         run: |
           set -euo pipefail
 
-          echo "Waiting for HLS startup..."
-
+          echo "⏳ Đang kết nối và chờ khởi tạo phân đoạn HLS..."
           READY=0
-
           for i in $(seq 1 60); do
-
-            if [ -s "${HLS_DIR}/index.m3u8" ] &&
-               [ -s "${HLS_DIR}/720p/stream.m3u8" ] &&
+            if [ -s "${HLS_DIR}/index.m3u8" ] && \
+               [ -s "${HLS_DIR}/720p/stream.m3u8" ] && \
                [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
-
               READY=1
               break
             fi
 
             if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
-              echo "FFmpeg exited during startup"
-              tail -100 /tmp/ffmpeg.log
+              echo "❌ Khởi tạo thất bại! FFmpeg đã dừng."
+              cat /tmp/ffmpeg.log
               exit 1
             fi
-
-            sleep 5
+            sleep 3
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "HLS startup timeout"
-            tail -100 /tmp/ffmpeg.log
+            echo "❌ Quá thời gian khởi tạo luồng HLS!"
+            cat /tmp/ffmpeg.log
             exit 1
           fi
 
-          echo "===================================="
-          echo "STREAM READY"
-          echo "https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
-          echo "===================================="
+          echo "=========================================================="
+          echo "✅ STREAM IS ONLINE:"
+          echo "👉 URL: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "=========================================================="
 
-          LAST_SEGMENT=""
-          STALE_COUNT=0
+          TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
+          LAST_MOD_TIME=0
+          STALE_SECONDS=0
 
           while true; do
-
+            # 1. Kiểm tra trạng thái hoạt động của các tiến trình nền
             if ! kill -0 "$(cat /tmp/ffmpeg.pid)" 2>/dev/null; then
-
-              echo "FFmpeg stopped"
-              tail -100 /tmp/ffmpeg.log
-
+              echo "❌ Hệ thống phát hiện FFmpeg đã dừng hoạt động!"
+              tail -n 100 /tmp/ffmpeg.log
               exit 1
             fi
 
             if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
-
-              echo "HLS server stopped"
-              tail -50 /tmp/server.log
-
+              echo "❌ Hệ thống phát hiện Node.js Server đã dừng hoạt động!"
+              cat /tmp/server.log
               exit 1
             fi
 
             if ! kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
-
-              echo "Cloudflare Tunnel stopped"
-              tail -50 /tmp/tunnel.log
-
+              echo "❌ Hệ thống phát hiện Cloudflare Tunnel đã dừng hoạt động!"
+              cat /tmp/tunnel.log
               exit 1
             fi
 
-            CURRENT_SEGMENT=$(
-              find "${HLS_DIR}/720p" \
-                -maxdepth 1 \
-                -name '*.ts' \
-                -printf '%T@ %f\n' \
-                | sort -nr \
-                | head -1 \
-                || true
-            )
-
-            if [ "$CURRENT_SEGMENT" = "$LAST_SEGMENT" ]; then
-              STALE_COUNT=$((STALE_COUNT + 1))
+            # 2. Giám sát ghi đè phân đoạn mới thông qua file playlist (Tránh triệt để lỗi quét find .ts)
+            if [ -f "$TARGET_PLAYLIST" ]; then
+              CURRENT_MOD_TIME=$(stat -c %Y "$TARGET_PLAYLIST" 2>/dev/null || echo 0)
+              
+              if [ "$CURRENT_MOD_TIME" -eq "$LAST_MOD_TIME" ]; then
+                STALE_SECONDS=$((STALE_SECONDS + 10))
+              else
+                STALE_SECONDS=0
+                LAST_MOD_TIME="$CURRENT_MOD_TIME"
+              fi
             else
-              STALE_COUNT=0
-              LAST_SEGMENT="$CURRENT_SEGMENT"
+              STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            if [ "$STALE_COUNT" -ge 6 ]; then
-
-              echo "HLS stalled: no new segments for 60 seconds"
-              tail -100 /tmp/ffmpeg.log
-
+            # Nếu danh sách phát không cập nhật nội dung mới quá 60 giây, luồng phát bị nghẽn (Stall)
+            if [ "$STALE_SECONDS" -ge 60 ]; then
+              echo "❌ Luồng phát bị đóng băng (Stalled): Không có phân đoạn mới được tạo ra trong 60 giây!"
+              tail -n 100 /tmp/ffmpeg.log
               exit 1
             fi
 
-            echo "HLS running | $(date -u '+%H:%M:%S UTC')"
-
+            echo "🚀 [$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Luồng hoạt động bình thường | Playlist age: ${STALE_SECONDS}s."
             sleep 10
-
           done
