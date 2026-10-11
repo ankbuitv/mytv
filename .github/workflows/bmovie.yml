@@ -3,14 +3,12 @@ name: HLS Restream ABR - Box Movie 1
 on:
   workflow_dispatch:
   schedule:
-    # Cron dự phòng 12 tiếng/lần (phòng ngừa rủi ro đứt chuỗi)
     - cron: '0 */12 * * *'
 
 concurrency:
   group: boxmovie1-restream
   cancel-in-progress: true
 
-# Cấp quyền cho GitHub Token để tự nối chuỗi luồng
 permissions:
   contents: read
   actions: write
@@ -18,7 +16,7 @@ permissions:
 jobs:
   hls-proxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # Chạy tối đa 5 tiếng 50 phút
+    timeout-minutes: 350
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
@@ -30,24 +28,20 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
           set -euo pipefail
 
-          # Cài đặt ffmpeg và thư viện convert svg
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg librsvg2-bin
 
-          # Cài đặt Cloudflare Tunnel
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
 
-          # Chuẩn bị RAM Disk
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Tải và xử lý logo mờ 50%
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
           ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
@@ -170,51 +164,76 @@ jobs:
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
+          # Tách riêng logo + video. Không tái sử dụng pad [1:v]
           FILTER_COMPLEX="[0:v:0]fps=25,split=2[base720][base480];\
+          [1:v]format=rgba,split=2[lg720][lg480];\
           [base720]scale=1280:720:flags=fast_bilinear,setsar=1[v720];\
           [base480]scale=854:480:flags=fast_bilinear,setsar=1[v480];\
-          [v720][1:v]overlay=x=W-w-10:y=H-h-10[out720];\
-          [v480][1:v]overlay=x=W-w-8:y=H-h-8[out480]"
+          [v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];\
+          [v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+
+          # Master playlist viết tay — tránh hẳn bug var_stream_map
+          cat > "${HLS_DIR}/index.m3u8" << 'M3U8'
+          #EXTM3U
+          #EXT-X-VERSION:6
+          #EXT-X-INDEPENDENT-SEGMENTS
+          #EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS="avc1.4d401f,mp4a.40.2"
+          720p/stream.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS="avc1.4d401e,mp4a.40.2"
+          480p/stream.m3u8
+          M3U8
 
           start_ffmpeg() {
-            echo "🚀 Khởi động FFmpeg Engine..."
+            echo "🚀 Khởi động FFmpeg ABR Engine..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-            
+
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -headers "$HTTP_HEADERS" \
               -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
-              -i /tmp/logo_final.png \
+              -loop 1 -framerate 25 -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
-              -map "[out720]" -map "[out480]" -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency \
+              \
+              -map "[out720]" -map 0:a:0? \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
               -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v:0 2000k -maxrate:v:0 2200k -bufsize:v:0 4000k \
-              -b:v:1 900k -maxrate:v:1 1000k -bufsize:v:1 1800k \
+              -b:v 2000k -maxrate 2200k -bufsize 4000k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
               -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
-              -master_pl_name index.m3u8 \
-              -var_stream_map "v:0,a:0,name:720p v:1,a:0,name:480p" \
-              -hls_segment_filename "${HLS_DIR}/%v/s_%06d.ts" \
-              "${HLS_DIR}/%v/stream.m3u8" \
+              -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
+              "${HLS_DIR}/720p/stream.m3u8" \
+              \
+              -map "[out480]" -map 0:a:0? \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 900k -maxrate 1000k -bufsize 1800k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 \
+              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
+              "${HLS_DIR}/480p/stream.m3u8" \
               > /tmp/ffmpeg.log 2>&1 &
-            
+
             echo $! > /tmp/ffmpeg.pid
           }
 
-          # Khởi động lần đầu
           start_ffmpeg
 
-          # Đợi khởi tạo phân đoạn HLS
           echo "⏳ Đang kết nối và chờ xuất bản HLS..."
           READY=0
           for i in $(seq 1 40); do
-            if [ -s "${HLS_DIR}/index.m3u8" ] && \
-               [ -s "${HLS_DIR}/720p/stream.m3u8" ]; then
+            if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && \
+               [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
               READY=1
               break
+            fi
+
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "❌ FFmpeg đã dừng ngay lúc khởi động!"
+              cat /tmp/ffmpeg.log || true
+              exit 1
             fi
             sleep 2
           done
@@ -233,24 +252,22 @@ jobs:
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
           LAST_MOD_TIME=0
           STALE_SECONDS=0
-          
+
           START_TIME=$(date +%s)
-          AUTO_TRIGGER_SECONDS=19800 # 5 tiếng 30 phút
+          AUTO_TRIGGER_SECONDS=19800
           NEXT_TRIGGERED=0
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # 1. TỰ NỐI LUỒNG: Chạy được 5h30m -> Gọi GitHub API kích hoạt job mới
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               echo "🔄 [5H30M REACHED] Đang kích hoạt job mới để duy trì chuỗi 24/7..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
-              echo "✅ Đã trigger Job mới. Phiên hiện tại sẽ giữ luồng cho tới khi phiên mới tiếp quản."
+              echo "✅ Đã trigger Job mới. Phiên hiện tại giữ luồng tới khi phiên mới tiếp quản."
             fi
 
-            # 2. Giám sát Server & Tunnel
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "⚠️ Node.js Server chết, khởi động lại..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
@@ -263,7 +280,6 @@ jobs:
               echo $! > /tmp/tunnel.pid
             fi
 
-            # 3. Giám sát tiến trình FFmpeg & Playlist
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               FFMPEG_ALIVE=0
@@ -281,9 +297,9 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            # 4. Tự phục hồi FFmpeg nếu crash hoặc đơ > 40s
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
               echo "⚠️ FFmpeg gặp sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Đang tự phục hồi..."
+              tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
               start_ffmpeg
