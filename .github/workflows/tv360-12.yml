@@ -1,0 +1,249 @@
+name: HLS Restream ABR - TV360+12 (bore.pub 30119)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'
+
+concurrency:
+  group: tv360plus12-restream
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  hls-proxy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    env:
+      WRAP_URL: "https://vmttv.dpdns.org/tv360/?id=tv360-12"
+      CLEARKEY_KEY: "1a0727fcea62de4e4471ebb0aaaec628"
+      USER_AGENT: "Dalvik/2.1.0"
+      HLS_DIR: "/dev/shm/hls/vtv"
+      LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
+      BORE_TO: "bore.pub"
+      BORE_PORT: "30119"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Install System Dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg librsvg2-bin
+          BORE_URL=$(python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://api.github.com/repos/ekzhang/bore/releases/latest')); print(next(a['browser_download_url'] for a in d['assets'] if 'x86_64' in a['name'] and 'linux-musl' in a['name'] and a['name'].endswith('.tar.gz')))")
+          curl -fsSL "$BORE_URL" -o /tmp/bore.tgz
+          tar -xzf /tmp/bore.tgz -C /tmp
+          sudo install -m 755 /tmp/bore /usr/local/bin/bore
+          bore --version
+          rm -rf "${HLS_DIR}"
+          mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
+          echo "Setup ready."
+
+      - name: Start HLS Web Server
+        run: |
+          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text("""
+          const http = require("http");
+          const fs = require("fs");
+          const path = require("path");
+          const ROOT = "/dev/shm/hls/vtv";
+          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          http.createServer((req, res) => {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "*");
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+            if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
+            if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
+            let pathname;
+            try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
+            catch (e) { res.writeHead(400); return res.end(); }
+            if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
+            let relative = pathname.slice(4);
+            if (relative === "" || relative === "/" || relative === "/tv360plus12.m3u8" || relative === "/tv360-12.m3u8") relative = "/index.m3u8";
+            const filePath = path.resolve(ROOT, "." + relative);
+            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
+            const ext = path.extname(filePath);
+            if (!MIME[ext]) { res.writeHead(403); return res.end(); }
+            fs.stat(filePath, (err, stat) => {
+              if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
+              res.setHeader("Content-Type", MIME[ext]);
+              res.setHeader("Content-Length", stat.size);
+              res.writeHead(200);
+              if (req.method === "HEAD") return res.end();
+              const stream = fs.createReadStream(filePath);
+              stream.on("error", () => res.destroy());
+              stream.pipe(res);
+            });
+          }).listen(5000, "127.0.0.1");
+          """)'
+          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          echo "HLS Server started on 127.0.0.1:5000"
+
+      - name: Start bore.pub Tunnel
+        run: |
+          nohup bore local 5000 --to "${BORE_TO}" --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
+          echo $! > /tmp/bore.pid
+          sleep 2
+          if ! kill -0 "$(cat /tmp/bore.pid)" 2>/dev/null; then
+            echo "bore.pub start that bai (port ${BORE_PORT} co the dang bi chiem)."
+            cat /tmp/bore.log || true
+            exit 1
+          fi
+          echo "bore listening: http://${BORE_TO}:${BORE_PORT}"
+
+      - name: Run Stream Engine & Self-Chaining Watchdog
+        run: |
+          set -euo pipefail
+
+          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1980000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.64001f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1196000,AVERAGE-BANDWIDTH=1096000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.64001e,mp4a.40.2\"\n480p/stream.m3u8\n")'
+
+          FILTER_COMPLEX="[0:v:1]setsar=1[v720];[0:v:0]setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+
+          resolve_mpd() {
+            echo "Resolve origin MPD (JWT dính IP runner)..."
+            local url
+            url=$(curl -sS -A "$USER_AGENT" -L --max-redirs 8 -o /dev/null -w "%{url_effective}" "$WRAP_URL" || true)
+            case "$url" in
+              *tv360.vn*) ;;
+              *)
+                echo "Resolve that bai: $url"
+                return 1
+                ;;
+            esac
+            printf '%s' "$url" > /tmp/final.url
+            echo "FINAL=$url"
+          }
+
+          start_ffmpeg() {
+            echo "Khoi dong FFmpeg ABR Engine..."
+            mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+            local FINAL
+            FINAL=$(cat /tmp/final.url)
+            nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+              -protocol_whitelist file,http,https,tcp,tls,crypto \
+              -allowed_extensions ALL \
+              -user_agent "$USER_AGENT" \
+              -rw_timeout 15000000 \
+              -cenc_decryption_key "$CLEARKEY_KEY" \
+              -i "$FINAL" \
+              -loop 1 -framerate 1 -i /tmp/logo_final.png \
+              -filter_complex "$FILTER_COMPLEX" \
+              -map "[out720]" -map 0:a:0? \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 2000k -maxrate 2200k -bufsize 4000k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 \
+              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
+              "${HLS_DIR}/720p/stream.m3u8" \
+              -map "[out480]" -map 0:a:0? \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 900k -maxrate 1000k -bufsize 1800k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 \
+              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
+              "${HLS_DIR}/480p/stream.m3u8" \
+              > /tmp/ffmpeg.log 2>&1 &
+            echo $! > /tmp/ffmpeg.pid
+          }
+
+          resolve_mpd
+          start_ffmpeg
+
+          echo "Dang cho HLS..."
+          READY=0
+          for i in $(seq 1 40); do
+            if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "FFmpeg da dung luc khoi dong!"
+              cat /tmp/ffmpeg.log || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "Loi khoi dong FFmpeg!"
+            cat /tmp/ffmpeg.log || true
+            exit 1
+          fi
+
+          echo "=========================================================="
+          echo "TV360+12 ONLINE: http://bore.pub:30119/vtv/tv360plus12.m3u8"
+          echo "=========================================================="
+
+          TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
+          LAST_MOD_TIME=0
+          STALE_SECONDS=0
+          START_TIME=$(date +%s)
+          AUTO_TRIGGER_SECONDS=19800
+          NEXT_TRIGGERED=0
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+
+            if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
+              echo "[5H30M] Trigger job moi..."
+              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
+              NEXT_TRIGGERED=1
+            fi
+
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+              echo "Restart Node.js..."
+              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+              echo $! > /tmp/server.pid
+            fi
+
+            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
+              echo "Restart bore..."
+              nohup bore local 5000 --to "${BORE_TO}" --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
+              echo $! > /tmp/bore.pid
+            fi
+
+            FFMPEG_ALIVE=1
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              FFMPEG_ALIVE=0
+            fi
+
+            if [ -f "$TARGET_PLAYLIST" ]; then
+              CURRENT_MOD_TIME=$(stat -c %Y "$TARGET_PLAYLIST" 2>/dev/null || echo 0)
+              if [ "$CURRENT_MOD_TIME" -eq "$LAST_MOD_TIME" ]; then
+                STALE_SECONDS=$((STALE_SECONDS + 10))
+              else
+                STALE_SECONDS=0
+                LAST_MOD_TIME="$CURRENT_MOD_TIME"
+              fi
+            else
+              STALE_SECONDS=$((STALE_SECONDS + 10))
+            fi
+
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
+              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart + resolve token moi..."
+              tail -n 50 /tmp/ffmpeg.log || true
+              kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
+              sleep 1
+              resolve_mpd || true
+              start_ffmpeg
+              STALE_SECONDS=0
+              LAST_MOD_TIME=0
+            fi
+
+            RUN_MINS=$((ELAPSED / 60))
+            echo "[$(date -u '+%H:%M:%S UTC')] Running: ${RUN_MINS}m / 330m | Playlist Delay: ${STALE_SECONDS}s"
+            sleep 10
+          done
