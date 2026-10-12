@@ -1,4 +1,4 @@
-name: HLS Restream ABR - TV360+12 (bore.pub 30119)
+name: HLS Restream ABR - TV360+12 (zzdigital03)
 
 on:
   workflow_dispatch:
@@ -24,8 +24,8 @@ jobs:
       USER_AGENT: "Dalvik/2.1.0"
       HLS_DIR: "/dev/shm/hls/vtv"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
-      BORE_TO: "bore.pub"
-      BORE_PORT: "30119"
+      TUNNEL_ID: "660605e2-d28a-43d1-a4e7-889d44fa7450"
+      CF_HOSTNAME: "zzdigital03.thelac.dpdns.org"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
@@ -34,17 +34,26 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg librsvg2-bin
-          BORE_URL=$(python3 -c "import json,urllib.request; d=json.load(urllib.request.urlopen('https://api.github.com/repos/ekzhang/bore/releases/latest')); print(next(a['browser_download_url'] for a in d['assets'] if 'x86_64' in a['name'] and 'linux-musl' in a['name'] and a['name'].endswith('.tar.gz')))")
-          curl -fsSL "$BORE_URL" -o /tmp/bore.tgz
-          tar -xzf /tmp/bore.tgz -C /tmp
-          sudo install -m 755 /tmp/bore /usr/local/bin/bore
-          bore --version
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
+          sudo dpkg -i /tmp/cf.deb
+          rm -f /tmp/cf.deb
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
           ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
           echo "Setup ready."
+
+      - name: Configure Cloudflare Tunnel
+        env:
+          TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS_03 }}
+        run: |
+          set -euo pipefail
+          test -n "$TUNNEL_JSON"
+          mkdir -p ~/.cloudflared
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
+          chmod 600 ~/.cloudflared/credentials.json
+          python3 -c "import os,pathlib; pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text('tunnel: '+os.environ['TUNNEL_ID']+'\ncredentials-file: /home/runner/.cloudflared/credentials.json\n\ningress:\n  - hostname: '+os.environ['CF_HOSTNAME']+'\n    service: http://127.0.0.1:5000\n  - service: http_status:404\n')"
 
       - name: Start HLS Web Server
         run: |
@@ -87,17 +96,17 @@ jobs:
           echo $! > /tmp/server.pid
           echo "HLS Server started on 127.0.0.1:5000"
 
-      - name: Start bore.pub Tunnel
+      - name: Start Cloudflare Tunnel
         run: |
-          nohup bore local 5000 --to "${BORE_TO}" --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
-          echo $! > /tmp/bore.pid
-          sleep 2
-          if ! kill -0 "$(cat /tmp/bore.pid)" 2>/dev/null; then
-            echo "bore.pub start that bai (port ${BORE_PORT} co the dang bi chiem)."
-            cat /tmp/bore.log || true
+          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+          echo $! > /tmp/tunnel.pid
+          sleep 3
+          if ! kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
+            echo "cloudflared chet ngay luc start"
+            cat /tmp/tunnel.log || true
             exit 1
           fi
-          echo "bore listening: http://${BORE_TO}:${BORE_PORT}"
+          echo "Cloudflare Tunnel started."
 
       - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
@@ -108,7 +117,7 @@ jobs:
           FILTER_COMPLEX="[0:v:1]setsar=1[v720];[0:v:0]setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
 
           resolve_mpd() {
-            echo "Resolve origin MPD (JWT dính IP runner)..."
+            echo "Resolve origin MPD (JWT dinh IP runner)..."
             local url
             url=$(curl -sS -A "$USER_AGENT" -L --max-redirs 8 -o /dev/null -w "%{url_effective}" "$WRAP_URL" || true)
             case "$url" in
@@ -183,7 +192,7 @@ jobs:
           fi
 
           echo "=========================================================="
-          echo "TV360+12 ONLINE: http://bore.pub:30119/vtv/tv360plus12.m3u8"
+          echo "TV360+12 ONLINE: https://${CF_HOSTNAME}/vtv/tv360plus12.m3u8"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -209,10 +218,10 @@ jobs:
               echo $! > /tmp/server.pid
             fi
 
-            if ! kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Restart bore..."
-              nohup bore local 5000 --to "${BORE_TO}" --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
-              echo $! > /tmp/bore.pid
+            if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+              echo "Restart cloudflared..."
+              nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+              echo $! > /tmp/tunnel.pid
             fi
 
             FFMPEG_ALIVE=1
