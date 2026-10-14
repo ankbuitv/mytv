@@ -25,8 +25,6 @@ jobs:
       REFERER: "https://vtvprime.vn/"
       HLS_DIR: "/dev/shm/hls/vtv"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # DVR window ~5 phút (2s * 150)
       HLS_LIST_SIZE: "150"
       HLS_DELETE_THRESHOLD: "20"
 
@@ -55,18 +53,18 @@ jobs:
           mkdir -p ~/.cloudflared
           printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
-          python3 -c "
-          import os, pathlib
-          pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text(
-          '''tunnel: ''' + os.environ['TUNNEL_ID'] + '''
+          
+          cat > ~/.cloudflared/config.yml << 'CFEOF'
+          tunnel: $TUNNEL_ID
           credentials-file: /home/runner/.cloudflared/credentials.json
 
           ingress:
             - hostname: zzdigital01.thelac.dpdns.org
               service: http://127.0.0.1:5000
             - service: http_status:404
-          ''')
-          "
+          CFEOF
+          
+          echo "Tunnel config created."
 
       - name: Start HLS Web Server (with /health /stats /thumb)
         run: |
@@ -95,6 +93,7 @@ jobs:
           }
 
           const server = http.createServer((req, res) => {
+            res.on("error", (err) => console.error("Response error:", err.message));
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "*");
@@ -108,6 +107,17 @@ jobs:
             let pathname;
             try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
             catch (e) { res.writeHead(400); return res.end("bad url"); }
+
+            // ===== Root /vtv/ =====
+            if (pathname === "/vtv/" || pathname === "/vtv") {
+              const indexPath = path.join(ROOT, "index.m3u8");
+              if (!fs.existsSync(indexPath)) { res.writeHead(404); return res.end(); }
+              const stat = fs.statSync(indexPath);
+              res.writeHead(200, { "Content-Type": MIME[".m3u8"], "Content-Length": stat.size });
+              if (req.method === "HEAD") return res.end();
+              fs.createReadStream(indexPath).pipe(res);
+              return;
+            }
 
             // ===== Special endpoints =====
             if (pathname === "/vtv/health" || pathname === "/health") {
@@ -163,9 +173,7 @@ jobs:
 
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
-              res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Content-Length", stat.size);
-              res.writeHead(200);
+              res.writeHead(200, { "Content-Type": MIME[ext], "Content-Length": stat.size });
               if (req.method === "HEAD") return res.end();
               const stream = fs.createReadStream(filePath);
               stream.on("error", () => { try { res.destroy(); } catch {} });
@@ -181,15 +189,16 @@ jobs:
           """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
-          sleep 1
-          echo "HLS Server started."
+          sleep 2
+          echo "HLS Server started (PID: $(cat /tmp/server.pid))"
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
-          sleep 2
-          echo "Cloudflare Tunnel started."
+          sleep 3
+          echo "Cloudflare Tunnel started (PID: $(cat /tmp/tunnel.pid))"
+          tail -n 5 /tmp/tunnel.log || true
 
       - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
@@ -208,16 +217,17 @@ jobs:
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          FILTER_COMPLEX="[0:v:2]fps=25,setsar=1[v720];[0:v:1]fps=25,scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];[v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]"
+          # Use stream mapping with fallback
+          FILTER_COMPLEX="[0:v:0]fps=25,setsar=1[v720];[0:v:0]fps=25,scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];[v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]"
 
           RESTART_COUNT=0
           START_TIME=$(date +%s)
 
           start_ffmpeg() {
-            echo "[$(date -u '+%H:%M:%S UTC')] Starting FFmpeg ABR + LL Engine (restart #${RESTART_COUNT})..."
+            echo "[$(date -u '+%H:%M:%S UTC')] Starting FFmpeg ABR (restart #${RESTART_COUNT})..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-            # Clean old segments on restart (player will see discontinuity)
+            # Clean old segments
             rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
             rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
 
@@ -226,7 +236,7 @@ jobs:
               -analyzeduration 15M -probesize 15M \
               -headers "$HTTP_HEADERS" \
               -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 8 \
-              -rw_timeout 20000000 -timeout 20000000 \
+              -rw_timeout 60000000 -timeout 60000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
               -loop 1 -framerate 1 -i /tmp/logo_final.png \
@@ -301,12 +311,11 @@ jobs:
           LAST_MOD1=0
           LAST_MOD2=0
           STALE_SECONDS=0
-          AUTO_TRIGGER_SECONDS=18600   # 5h10m
+          AUTO_TRIGGER_SECONDS=18600
           NEXT_TRIGGERED=0
           LAST_THUMB_TIME=0
           THUMB_INTERVAL=30
 
-          # Init stats
           cat > "${HLS_DIR}/stats.json" << EOF
           {
             "service": "boxmovie1",
@@ -331,14 +340,14 @@ jobs:
               NEXT_TRIGGERED=1
             fi
 
-            # Restart Node nếu chết
+            # Restart Node if dead
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date -u '+%H:%M:%S')] Restarting Node.js server..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
 
-            # Restart tunnel nếu chết
+            # Restart tunnel if dead
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date -u '+%H:%M:%S')] Restarting cloudflared..."
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
@@ -350,7 +359,6 @@ jobs:
               FFMPEG_ALIVE=0
             fi
 
-            # Stale detection
             MOD1=$(stat -c %Y "$TARGET1" 2>/dev/null || echo 0)
             MOD2=$(stat -c %Y "$TARGET2" 2>/dev/null || echo 0)
 
@@ -374,7 +382,7 @@ jobs:
               sleep 8
             fi
 
-            # ===== Thumbnail every ~30s =====
+            # Thumbnail every ~30s
             if [ $((CURRENT_TIME - LAST_THUMB_TIME)) -ge $THUMB_INTERVAL ]; then
               if [ -s "$TARGET1" ]; then
                 ffmpeg -y -hide_banner -loglevel error -i "$TARGET1" -frames:v 1 -q:v 5 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
@@ -382,7 +390,7 @@ jobs:
               fi
             fi
 
-            # ===== Update stats.json =====
+            # Update stats.json
             SEG_COUNT=$(ls -1 "${HLS_DIR}/720p/"*.ts 2>/dev/null | wc -l || echo 0)
             cat > "${HLS_DIR}/stats.json" << EOF
           {
