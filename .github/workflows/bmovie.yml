@@ -26,6 +26,9 @@ jobs:
       HLS_DIR: "/dev/shm/hls/vtv"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # DVR window ~5 phút (2s * 150)
+      HLS_LIST_SIZE: "150"
+      HLS_DELETE_THRESHOLD: "20"
 
     steps:
       - name: Install System Dependencies
@@ -39,8 +42,8 @@ jobs:
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
-          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
+          rsvg-convert -w 38 /tmp/logo.svg -o /tmp/logo_raw.png
+          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.45" /tmp/logo_final.png
           echo "Setup ready."
 
       - name: Configure Cloudflare Tunnel
@@ -52,33 +55,112 @@ jobs:
           mkdir -p ~/.cloudflared
           printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
-          python3 -c "import os,pathlib; pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text('tunnel: '+os.environ['TUNNEL_ID']+'\ncredentials-file: /home/runner/.cloudflared/credentials.json\n\ningress:\n  - hostname: zzdigital01.thelac.dpdns.org\n    service: http://127.0.0.1:5000\n  - service: http_status:404\n')"
+          python3 -c "
+          import os, pathlib
+          pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text(
+          '''tunnel: ''' + os.environ['TUNNEL_ID'] + '''
+          credentials-file: /home/runner/.cloudflared/credentials.json
 
-      - name: Start HLS Web Server
+          ingress:
+            - hostname: zzdigital01.thelac.dpdns.org
+              service: http://127.0.0.1:5000
+            - service: http_status:404
+          ''')
+          "
+
+      - name: Start HLS Web Server (with /health /stats /thumb)
         run: |
-          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text("""
+          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text(r"""
           const http = require("http");
           const fs = require("fs");
           const path = require("path");
           const ROOT = "/dev/shm/hls/vtv";
-          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
-          http.createServer((req, res) => {
+          const MIME = {
+            ".m3u8": "application/vnd.apple.mpegurl",
+            ".ts": "video/mp2t",
+            ".jpg": "image/jpeg",
+            ".json": "application/json",
+            ".png": "image/png"
+          };
+
+          function sendJson(res, code, obj) {
+            const body = JSON.stringify(obj, null, 2);
+            res.writeHead(code, {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": "no-store"
+            });
+            res.end(body);
+          }
+
+          const server = http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "*");
+            res.setHeader("Access-Control-Expose-Headers", "*");
             res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+            res.setHeader("Connection", "keep-alive");
+
             if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
             if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
+
             let pathname;
             try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
-            catch (e) { res.writeHead(400); return res.end(); }
+            catch (e) { res.writeHead(400); return res.end("bad url"); }
+
+            // ===== Special endpoints =====
+            if (pathname === "/vtv/health" || pathname === "/health") {
+              let stats = {};
+              try { stats = JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8")); } catch {}
+              return sendJson(res, 200, {
+                status: "ok",
+                service: "boxmovie1",
+                timestamp: new Date().toISOString(),
+                uptime_seconds: stats.uptime_seconds || 0,
+                ffmpeg_alive: stats.ffmpeg_alive || false
+              });
+            }
+
+            if (pathname === "/vtv/stats" || pathname === "/stats") {
+              try {
+                const stats = JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8"));
+                return sendJson(res, 200, stats);
+              } catch (e) {
+                return sendJson(res, 503, { error: "stats not ready", message: e.message });
+              }
+            }
+
+            if (pathname === "/vtv/thumb.jpg" || pathname === "/thumb.jpg") {
+              const thumbPath = path.join(ROOT, "thumb.jpg");
+              if (!fs.existsSync(thumbPath)) {
+                res.writeHead(404); return res.end("no thumb yet");
+              }
+              const stat = fs.statSync(thumbPath);
+              res.writeHead(200, {
+                "Content-Type": "image/jpeg",
+                "Content-Length": stat.size,
+                "Cache-Control": "no-store"
+              });
+              if (req.method === "HEAD") return res.end();
+              fs.createReadStream(thumbPath).pipe(res);
+              return;
+            }
+
+            // ===== Normal HLS files =====
             if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
+
             let relative = pathname.slice(4);
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
+
             const filePath = path.resolve(ROOT, "." + relative);
-            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
-            const ext = path.extname(filePath);
-            if (!MIME[ext]) { res.writeHead(403); return res.end(); }
+            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) {
+              res.writeHead(403); return res.end();
+            }
+
+            const ext = path.extname(filePath).toLowerCase();
+            if (!MIME[ext]) { res.writeHead(403); return res.end("forbidden ext"); }
+
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
               res.setHeader("Content-Type", MIME[ext]);
@@ -86,75 +168,114 @@ jobs:
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
               const stream = fs.createReadStream(filePath);
-              stream.on("error", () => res.destroy());
+              stream.on("error", () => { try { res.destroy(); } catch {} });
               stream.pipe(res);
             });
-          }).listen(5000, "127.0.0.1");
+          });
+
+          server.keepAliveTimeout = 30000;
+          server.headersTimeout = 35000;
+          server.listen(5000, "127.0.0.1", () => {
+            console.log("HLS Server + endpoints ready on :5000");
+          });
           """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
-          echo "HLS Server started on port 5000."
+          sleep 1
+          echo "HLS Server started."
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
+          sleep 2
           echo "Cloudflare Tunnel started."
 
       - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
           set -euo pipefail
 
-          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
+          # Master playlist (LL-friendly)
+          cat > "${HLS_DIR}/index.m3u8" << 'EOF'
+          #EXTM3U
+          #EXT-X-VERSION:6
+          #EXT-X-INDEPENDENT-SEGMENTS
+          #EXT-X-STREAM-INF:BANDWIDTH=2400000,AVERAGE-BANDWIDTH=2200000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS="avc1.4d401f,mp4a.40.2"
+          720p/stream.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=1200000,AVERAGE-BANDWIDTH=1050000,RESOLUTION=854x480,FRAME-RATE=25,CODECS="avc1.4d401e,mp4a.40.2"
+          480p/stream.m3u8
+          EOF
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          # V2 = native 720p, V1 = native 480p. Khong dung V0 360p.
-          FILTER_COMPLEX="[0:v:2]setsar=1[v720];[0:v:1]scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+          FILTER_COMPLEX="[0:v:2]fps=25,setsar=1[v720];[0:v:1]fps=25,scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];[v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]"
+
+          RESTART_COUNT=0
+          START_TIME=$(date +%s)
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR Engine..."
+            echo "[$(date -u '+%H:%M:%S UTC')] Starting FFmpeg ABR + LL Engine (restart #${RESTART_COUNT})..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+
+            # Clean old segments on restart (player will see discontinuity)
+            rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
+            rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
+
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+              -fflags +genpts+discardcorrupt+igndts \
+              -analyzeduration 15M -probesize 15M \
               -headers "$HTTP_HEADERS" \
-              -rw_timeout 15000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 8 \
+              -rw_timeout 20000000 -timeout 20000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
               -loop 1 -framerate 1 -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
+              \
               -map "[out720]" -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v 2000k -maxrate 2200k -bufsize 4000k \
-              -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 \
+              -force_key_frames "expr:gte(t,n_forced*2)" \
+              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
+              -x264-params "keyint=50:min-keyint=50:scenecut=0:bframes=0:ref=1:rc-lookahead=0" \
+              -b:v 2100k -maxrate 2300k -bufsize 4200k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 -af "aresample=async=1000:first_pts=0" \
+              -max_muxing_queue_size 2048 \
+              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold ${HLS_DELETE_THRESHOLD} \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
+              \
               -map "[out480]" -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v 900k -maxrate 1000k -bufsize 1800k \
-              -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 \
+              -force_key_frames "expr:gte(t,n_forced*2)" \
+              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
+              -x264-params "keyint=50:min-keyint=50:scenecut=0:bframes=0:ref=1:rc-lookahead=0" \
+              -b:v 950k -maxrate 1050k -bufsize 1900k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 -af "aresample=async=1000:first_pts=0" \
+              -max_muxing_queue_size 2048 \
+              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold ${HLS_DELETE_THRESHOLD} \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
               > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
+            echo "FFmpeg PID $(cat /tmp/ffmpeg.pid)"
+            RESTART_COUNT=$((RESTART_COUNT + 1))
           }
 
           start_ffmpeg
 
-          echo "Dang cho HLS..."
+          echo "Waiting for HLS playlists..."
           READY=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 50); do
             if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
               READY=1
               break
             fi
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "FFmpeg da dung luc khoi dong!"
+              echo "FFmpeg died during startup!"
               cat /tmp/ffmpeg.log || true
               exit 1
             fi
@@ -162,40 +283,64 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Loi khoi dong FFmpeg!"
+            echo "Failed to start FFmpeg!"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
 
           echo "=========================================================="
-          echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "BOX MOVIE 1 ONLINE (LL + DVR + Endpoints)"
+          echo "Playlist : https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "Health   : https://zzdigital01.thelac.dpdns.org/vtv/health"
+          echo "Stats    : https://zzdigital01.thelac.dpdns.org/vtv/stats"
+          echo "Thumb    : https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
           echo "=========================================================="
 
-          TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
-          LAST_MOD_TIME=0
+          TARGET1="${HLS_DIR}/720p/stream.m3u8"
+          TARGET2="${HLS_DIR}/480p/stream.m3u8"
+          LAST_MOD1=0
+          LAST_MOD2=0
           STALE_SECONDS=0
-          START_TIME=$(date +%s)
-          AUTO_TRIGGER_SECONDS=19800
+          AUTO_TRIGGER_SECONDS=18600   # 5h10m
           NEXT_TRIGGERED=0
+          LAST_THUMB_TIME=0
+          THUMB_INTERVAL=30
+
+          # Init stats
+          cat > "${HLS_DIR}/stats.json" << EOF
+          {
+            "service": "boxmovie1",
+            "start_time": $(date +%s),
+            "uptime_seconds": 0,
+            "ffmpeg_alive": true,
+            "restart_count": 0,
+            "stale_seconds": 0,
+            "dvr_window_seconds": $((HLS_LIST_SIZE * 2)),
+            "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
+            # Self-chain
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "[5H30M] Trigger job moi..."
+              echo "[$(date -u '+%H:%M:%S')] [5h10m] Triggering next job..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
 
+            # Restart Node nếu chết
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Restart Node.js..."
+              echo "[$(date -u '+%H:%M:%S')] Restarting Node.js server..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
 
+            # Restart tunnel nếu chết
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Restart cloudflared..."
+              echo "[$(date -u '+%H:%M:%S')] Restarting cloudflared..."
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
               echo $! > /tmp/tunnel.pid
             fi
@@ -205,29 +350,64 @@ jobs:
               FFMPEG_ALIVE=0
             fi
 
-            if [ -f "$TARGET_PLAYLIST" ]; then
-              CURRENT_MOD_TIME=$(stat -c %Y "$TARGET_PLAYLIST" 2>/dev/null || echo 0)
-              if [ "$CURRENT_MOD_TIME" -eq "$LAST_MOD_TIME" ]; then
-                STALE_SECONDS=$((STALE_SECONDS + 10))
-              else
-                STALE_SECONDS=0
-                LAST_MOD_TIME="$CURRENT_MOD_TIME"
-              fi
-            else
+            # Stale detection
+            MOD1=$(stat -c %Y "$TARGET1" 2>/dev/null || echo 0)
+            MOD2=$(stat -c %Y "$TARGET2" 2>/dev/null || echo 0)
+
+            if [ "$MOD1" -eq "$LAST_MOD1" ] && [ "$MOD2" -eq "$LAST_MOD2" ]; then
               STALE_SECONDS=$((STALE_SECONDS + 10))
+            else
+              STALE_SECONDS=0
+              LAST_MOD1=$MOD1
+              LAST_MOD2=$MOD2
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
-              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart..."
-              tail -n 50 /tmp/ffmpeg.log || true
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 45 ]; then
+              echo "[$(date -u '+%H:%M:%S')] FFmpeg issue (Alive: $FFMPEG_ALIVE | Stale: ${STALE_SECONDS}s). Restarting..."
+              tail -n 60 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-              sleep 1
+              sleep 2
               start_ffmpeg
               STALE_SECONDS=0
-              LAST_MOD_TIME=0
+              LAST_MOD1=0
+              LAST_MOD2=0
+              sleep 8
             fi
 
+            # ===== Thumbnail every ~30s =====
+            if [ $((CURRENT_TIME - LAST_THUMB_TIME)) -ge $THUMB_INTERVAL ]; then
+              if [ -s "$TARGET1" ]; then
+                ffmpeg -y -hide_banner -loglevel error -i "$TARGET1" -frames:v 1 -q:v 5 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
+                LAST_THUMB_TIME=$CURRENT_TIME
+              fi
+            fi
+
+            # ===== Update stats.json =====
+            SEG_COUNT=$(ls -1 "${HLS_DIR}/720p/"*.ts 2>/dev/null | wc -l || echo 0)
+            cat > "${HLS_DIR}/stats.json" << EOF
+          {
+            "service": "boxmovie1",
+            "start_time": $START_TIME,
+            "uptime_seconds": $ELAPSED,
+            "uptime_human": "$((ELAPSED / 3600))h $(( (ELAPSED % 3600) / 60 ))m",
+            "ffmpeg_alive": $([ "$FFMPEG_ALIVE" -eq 1 ] && echo true || echo false),
+            "restart_count": $RESTART_COUNT,
+            "stale_seconds": $STALE_SECONDS,
+            "dvr_window_seconds": $((HLS_LIST_SIZE * 2)),
+            "approx_segments_720p": $SEG_COUNT,
+            "playlist_720p_age_sec": $((CURRENT_TIME - MOD1)),
+            "playlist_480p_age_sec": $((CURRENT_TIME - MOD2)),
+            "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "endpoints": {
+              "playlist": "/vtv/boxmovie1.m3u8",
+              "health": "/vtv/health",
+              "stats": "/vtv/stats",
+              "thumb": "/vtv/thumb.jpg"
+            }
+          }
+          EOF
+
             RUN_MINS=$((ELAPSED / 60))
-            echo "[$(date -u '+%H:%M:%S UTC')] Running: ${RUN_MINS}m / 330m | Playlist Delay: ${STALE_SECONDS}s"
+            echo "[$(date -u '+%H:%M:%S UTC')] Up: ${RUN_MINS}m/330m | Stale: ${STALE_SECONDS}s | FF: $FFMPEG_ALIVE | Restarts: $RESTART_COUNT | Segs: $SEG_COUNT"
             sleep 10
           done
