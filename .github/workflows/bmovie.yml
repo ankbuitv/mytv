@@ -121,50 +121,19 @@ jobs:
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          slim_mpd() {
-            python3 - << 'PY'
-          import os, re, urllib.request
-          url = os.environ["MPD_URL"]
-          ua = os.environ["USER_AGENT"]
-          ref = os.environ["REFERER"]
-          req = urllib.request.Request(url, headers={"User-Agent": ua, "Referer": ref})
-          xml = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
-          base = url.rsplit("/", 1)[0] + "/"
-          if "<BaseURL>" not in xml:
-              xml = xml.replace("<Period", "<Period", 1)
-              xml = xml.replace("<Period", "<Period", 1)
-              xml = re.sub(r"(<Period[^>]*>)", r"\1\n    <BaseURL>"+base+"</BaseURL>", xml, count=1)
-          xml = re.sub(
-              r'<Representation\b[^>]*\bid="V0"[^>]*/>',
-              "",
-              xml,
-          )
-          xml = re.sub(
-              r'<Representation\b[^>]*\bid="V1"[^>]*/>',
-              "",
-              xml,
-          )
-          Path = __import__("pathlib").Path
-          Path("/tmp/bm1-slim.mpd").write_text(xml, encoding="utf-8")
-          print("slim mpd bytes", Path("/tmp/bm1-slim.mpd").stat().st_size)
-          PY
-          }
-
-          # Khong setpts/fps/async. Overlay 1 lan, split 720/480. Audio asplit.
-          FILTER_COMPLEX="[0:v:0]setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
+          FILTER_COMPLEX="[0:v:2]setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg (slim V2+A0, giu PTS)..."
+            echo "Khoi dong FFmpeg ABR (HTTP MPD, giu PTS)..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-            slim_mpd
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-              -fflags +genpts+discardcorrupt \
+              -fflags +discardcorrupt \
               -thread_queue_size 512 \
               -headers "$HTTP_HEADERS" \
               -rw_timeout 15000000 \
               -timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
-              -i /tmp/bm1-slim.mpd \
+              -i "$MPD_URL" \
               -thread_queue_size 64 \
               -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
