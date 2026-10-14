@@ -61,7 +61,14 @@ jobs:
           const fs = require("fs");
           const path = require("path");
           const ROOT = "/dev/shm/hls/vtv";
-          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          const MIME = {
+            ".m3u8": "application/vnd.apple.mpegurl",
+            ".ts": "video/mp2t",
+            ".m4s": "video/iso.segment",
+            ".mp4": "video/mp4",
+            ".jpg": "image/jpeg",
+            ".json": "application/json"
+          };
           http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -77,7 +84,7 @@ jobs:
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
             const filePath = path.resolve(ROOT, "." + relative);
             if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
-            const ext = path.extname(filePath);
+            const ext = path.extname(filePath).toLowerCase();
             if (!MIME[ext]) { res.writeHead(403); return res.end(); }
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
@@ -107,16 +114,20 @@ jobs:
 
           python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
 
-          HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
+          HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
 
-          # V2 = native 720p, V1 = native 480p. Khong dung V0 360p.
-          FILTER_COMPLEX="[0:v:2]setsar=1[v720];[0:v:1]scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+          FILTER_COMPLEX="[0:v:0]fps=25,setsar=1,split=2[vbase1][vbase2];[vbase1]scale=1280:720:flags=fast_bilinear[v720];[vbase2]scale=854:480:flags=fast_bilinear[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR Engine..."
+            echo "Khởi động FFmpeg fMP4 ABR Engine..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+            rm -f "${HLS_DIR}/720p/"*.m4s "${HLS_DIR}/480p/"*.m4s 2>/dev/null || true
+            
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+              -fflags +genpts+discardcorrupt+igndts \
+              -analyzeduration 10M -probesize 10M \
               -headers "$HTTP_HEADERS" \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
               -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
@@ -127,18 +138,24 @@ jobs:
               -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
               -b:v 2000k -maxrate 2200k -bufsize 4000k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -max_muxing_queue_size 2048 \
+              -f hls -hls_time 2 -hls_list_size 20 -hls_delete_threshold 5 \
+              -hls_segment_type fmp4 \
+              -hls_fmp4_init_filename init.mp4 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
-              -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
+              -hls_segment_filename "${HLS_DIR}/720p/s_%06d.m4s" \
               "${HLS_DIR}/720p/stream.m3u8" \
               -map "[out480]" -map 0:a:0? \
               -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
               -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
               -b:v 900k -maxrate 1000k -bufsize 1800k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -max_muxing_queue_size 2048 \
+              -f hls -hls_time 2 -hls_list_size 20 -hls_delete_threshold 5 \
+              -hls_segment_type fmp4 \
+              -hls_fmp4_init_filename init.mp4 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
-              -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
+              -hls_segment_filename "${HLS_DIR}/480p/s_%06d.m4s" \
               "${HLS_DIR}/480p/stream.m3u8" \
               > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
@@ -146,7 +163,7 @@ jobs:
 
           start_ffmpeg
 
-          echo "Dang cho HLS..."
+          echo "Đang chờ HLS fMP4..."
           READY=0
           for i in $(seq 1 40); do
             if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
@@ -154,7 +171,7 @@ jobs:
               break
             fi
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "FFmpeg da dung luc khoi dong!"
+              echo "FFmpeg đã dừng lúc khởi động!"
               cat /tmp/ffmpeg.log || true
               exit 1
             fi
@@ -162,13 +179,13 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Loi khoi dong FFmpeg!"
+            echo "Lỗi khởi động FFmpeg!"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
 
           echo "=========================================================="
-          echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "BOX MOVIE 1 ONLINE (fMP4): https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -183,7 +200,7 @@ jobs:
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "[5H30M] Trigger job moi..."
+              echo "[5H30M] Trigger job mới..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
@@ -218,7 +235,7 @@ jobs:
             fi
 
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
-              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart..."
+              echo "FFmpeg sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restarting..."
               tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
