@@ -61,12 +61,7 @@ jobs:
           const fs = require("fs");
           const path = require("path");
           const ROOT = "/dev/shm/hls/vtv";
-          const MIME = {
-            ".m3u8": "application/vnd.apple.mpegurl",
-            ".ts": "video/mp2t",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg"
-          };
+          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t",".jpg":"image/jpeg",".jpeg":"image/jpeg"};
           http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -79,7 +74,7 @@ jobs:
             if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
             let relative = pathname.slice(4);
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
-            if (relative === "/thumb.jpg" || relative === "/thumbnail.jpg") relative = "/thumb.jpg";
+            if (relative === "/thumbnail.jpg") relative = "/thumb.jpg";
             const filePath = path.resolve(ROOT, "." + relative);
             if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
             const ext = path.extname(filePath);
@@ -93,33 +88,30 @@ jobs:
                 }
                 const buf = Buffer.from(body);
                 res.setHeader("Content-Type", MIME[ext]);
-                res.setHeader("Cache-Control", "no-store, no-cache, max-age=0");
+                res.setHeader("Cache-Control", "no-store, max-age=0");
                 res.setHeader("Content-Length", buf.length);
                 res.writeHead(200);
                 if (req.method === "HEAD") return res.end();
                 return res.end(buf);
               }
-              const cache = (ext === ".jpg" || ext === ".jpeg") ? "no-store, max-age=0" : "public, max-age=8";
               res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Cache-Control", cache);
+              res.setHeader("Cache-Control", (ext === ".jpg") ? "no-store, max-age=0" : "public, max-age=8");
               res.setHeader("Content-Length", stat.size);
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
-              const stream = fs.createReadStream(filePath);
-              stream.on("error", () => res.destroy());
-              stream.pipe(res);
+              const s = fs.createReadStream(filePath);
+              s.on("error", () => res.destroy());
+              s.pipe(res);
             });
           }).listen(5000, "127.0.0.1");
           """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
-          echo "HLS Server started on port 5000."
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
-          echo "Cloudflare Tunnel started."
 
       - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
@@ -129,27 +121,57 @@ jobs:
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          FILTER_COMPLEX="[0:v:2]fps=25,setpts=PTS-STARTPTS,setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=3[out720][tmp480][thumbsrc];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[thumbsrc]fps=1/10,scale=320:180:flags=fast_bilinear[thumb];[0:a:0]asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,asplit=2[a720][a480]"
+          slim_mpd() {
+            python3 - << 'PY'
+          import os, re, urllib.request
+          url = os.environ["MPD_URL"]
+          ua = os.environ["USER_AGENT"]
+          ref = os.environ["REFERER"]
+          req = urllib.request.Request(url, headers={"User-Agent": ua, "Referer": ref})
+          xml = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+          base = url.rsplit("/", 1)[0] + "/"
+          if "<BaseURL>" not in xml:
+              xml = xml.replace("<Period", "<Period", 1)
+              xml = xml.replace("<Period", "<Period", 1)
+              xml = re.sub(r"(<Period[^>]*>)", r"\1\n    <BaseURL>"+base+"</BaseURL>", xml, count=1)
+          xml = re.sub(
+              r'<Representation\b[^>]*\bid="V0"[^>]*/>',
+              "",
+              xml,
+          )
+          xml = re.sub(
+              r'<Representation\b[^>]*\bid="V1"[^>]*/>',
+              "",
+              xml,
+          )
+          Path = __import__("pathlib").Path
+          Path("/tmp/bm1-slim.mpd").write_text(xml, encoding="utf-8")
+          print("slim mpd bytes", Path("/tmp/bm1-slim.mpd").stat().st_size)
+          PY
+          }
+
+          # Khong setpts/fps/async. Overlay 1 lan, split 720/480. Audio asplit.
+          FILTER_COMPLEX="[0:v:0]setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR + DVR 30p + thumb..."
+            echo "Khoi dong FFmpeg (slim V2+A0, giu PTS)..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+            slim_mpd
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -fflags +genpts+discardcorrupt \
-              -flags low_delay \
-              -thread_queue_size 1024 \
+              -thread_queue_size 512 \
               -headers "$HTTP_HEADERS" \
               -rw_timeout 15000000 \
               -timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
-              -i "$MPD_URL" \
+              -i /tmp/bm1-slim.mpd \
               -thread_queue_size 64 \
               -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
               -map "[out720]" -map "[a720]" \
               -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
-              -x264-params "keyint=100:min-keyint=100:scenecut=0:force-cfr=1:open-gop=0" \
-              -pix_fmt yuv420p -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
+              -x264-params "keyint=100:min-keyint=100:scenecut=0:open-gop=0" \
+              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
               -b:v 1800k -maxrate 2000k -bufsize 3600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
               -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
@@ -158,22 +180,29 @@ jobs:
               "${HLS_DIR}/720p/stream.m3u8" \
               -map "[out480]" -map "[a480]" \
               -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
-              -x264-params "keyint=100:min-keyint=100:scenecut=0:force-cfr=1:open-gop=0" \
-              -pix_fmt yuv420p -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
+              -x264-params "keyint=100:min-keyint=100:scenecut=0:open-gop=0" \
+              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
               -b:v 800k -maxrate 900k -bufsize 1600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
               -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
-              -map "[thumb]" -update 1 -q:v 6 -f image2 "${HLS_DIR}/thumb.jpg" \
               > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
           }
 
+          snap_thumb() {
+            local ts
+            ts=$(ls -1t "${HLS_DIR}/720p"/s_*.ts 2>/dev/null | head -n 1 || true)
+            [ -n "$ts" ] || return 0
+            ffmpeg -y -hide_banner -loglevel error -ss 0.4 -i "$ts" -frames:v 1 \
+              -vf "scale=320:180:flags=fast_bilinear" -q:v 6 "${HLS_DIR}/thumb.jpg" || true
+          }
+
           start_ffmpeg
 
-          echo "Dang cho HLS (toi thieu 5 segment ~20s)..."
+          echo "Dang cho HLS..."
           READY=0
           for i in $(seq 1 60); do
             C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
@@ -195,6 +224,7 @@ jobs:
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
+          snap_thumb
 
           echo "=========================================================="
           echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
@@ -207,25 +237,22 @@ jobs:
           START_TIME=$(date +%s)
           AUTO_TRIGGER_SECONDS=19800
           NEXT_TRIGGERED=0
+          THUMB_TICK=0
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "[5H30M] Trigger job moi..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
 
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Restart Node.js..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
-
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
-              echo "Restart cloudflared..."
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
               echo $! > /tmp/tunnel.pid
             fi
@@ -247,8 +274,8 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 50 ]; then
-              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart..."
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 80 ]; then
+              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s)"
               tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
@@ -257,7 +284,12 @@ jobs:
               LAST_MOD_TIME=0
             fi
 
-            RUN_MINS=$((ELAPSED / 60))
-            echo "[$(date -u '+%H:%M:%S UTC')] Running: ${RUN_MINS}m / 330m | Playlist Delay: ${STALE_SECONDS}s"
+            THUMB_TICK=$((THUMB_TICK + 10))
+            if [ "$THUMB_TICK" -ge 10 ]; then
+              snap_thumb
+              THUMB_TICK=0
+            fi
+
+            echo "[$(date -u '+%H:%M:%S UTC')] Running: $((ELAPSED / 60))m / 330m | Delay: ${STALE_SECONDS}s"
             sleep 10
           done
