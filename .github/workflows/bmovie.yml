@@ -18,17 +18,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
 
-    steps:
-      - name: Debug Environment
-        run: |
-          echo "=== System Info ==="
-          echo "Date: $(date -u)"
-          echo "Runner: $(hostname)"
-          ffmpeg -version | head -1
-          node --version
-          echo ""
+    env:
+      MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
+      CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
+      USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
+      REFERER: "https://vtvprime.vn/"
+      HLS_DIR: "/dev/shm/hls/vtv"
+      LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Dependencies
+    steps:
+      - name: Install System Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -36,21 +36,12 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
-          echo "Dependencies ready."
-
-      - name: Prepare HLS Directory
-        run: |
-          set -euo pipefail
-          export HLS_DIR="/dev/shm/hls/vtv"
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-          
-          # Prepare logo
-          curl -fsSL "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg" -o /tmp/logo.svg
-          rsvg-convert -w 38 /tmp/logo.svg -o /tmp/logo_raw.png
-          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.45" /tmp/logo_final.png
-          echo "Logo ready."
-          ls -la /tmp/logo_final.png
+          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
+          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
+          echo "Setup ready."
 
       - name: Configure Cloudflare Tunnel
         env:
@@ -61,497 +52,182 @@ jobs:
           mkdir -p ~/.cloudflared
           printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
-          
-          cat > ~/.cloudflared/config.yml << EOF
-tunnel: $TUNNEL_ID
-credentials-file: /home/runner/.cloudflared/credentials.json
-
-ingress:
-  - hostname: zzdigital01.thelac.dpdns.org
-    service: http://127.0.0.1:5000
-  - service: http_status:404
-EOF
-          echo "Tunnel config ready."
+          python3 -c "import os,pathlib; pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text('tunnel: '+os.environ['TUNNEL_ID']+'\ncredentials-file: /home/runner/.cloudflared/credentials.json\n\ningress:\n  - hostname: zzdigital01.thelac.dpdns.org\n    service: http://127.0.0.1:5000\n  - service: http_status:404\n')"
 
       - name: Start HLS Web Server
         run: |
-          set -euo pipefail
-          cat > /tmp/hls_server.js << 'SERVEREOF'
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const ROOT = "/dev/shm/hls/vtv";
-const MIME = {
-  ".m3u8": "application/vnd.apple.mpegurl",
-  ".ts": "video/mp2t",
-  ".jpg": "image/jpeg",
-  ".json": "application/json"
-};
-
-const server = http.createServer((req, res) => {
-  res.on("error", () => {});
-  
-  const sendJson = (code, obj) => {
-    const body = JSON.stringify(obj);
-    res.writeHead(code, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body),
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store"
-    });
-    res.end(body);
-  };
-
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Cache-Control", "no-store");
-
-  if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
-  if (!["GET", "HEAD"].includes(req.method)) { res.writeHead(405); return res.end(); }
-
-  let pathname;
-  try {
-    pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
-  } catch {
-    res.writeHead(400); return res.end();
-  }
-
-  // Root /vtv/
-  if (pathname === "/vtv/" || pathname === "/vtv") {
-    const filePath = path.join(ROOT, "index.m3u8");
-    if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end(); }
-    const stat = fs.statSync(filePath);
-    res.writeHead(200, { "Content-Type": MIME[".m3u8"], "Content-Length": stat.size });
-    if (req.method === "HEAD") return res.end();
-    fs.createReadStream(filePath).pipe(res);
-    return;
-  }
-
-  // /health
-  if (pathname === "/vtv/health" || pathname === "/health") {
-    let stats = {};
-    try { stats = JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8")); } catch {}
-    sendJson(200, {
-      status: "ok",
-      service: "boxmovie1",
-      timestamp: new Date().toISOString(),
-      uptime_seconds: stats.uptime_seconds || 0,
-      ffmpeg_alive: stats.ffmpeg_alive || false
-    });
-    return;
-  }
-
-  // /stats
-  if (pathname === "/vtv/stats" || pathname === "/stats") {
-    try {
-      const stats = JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8"));
-      sendJson(200, stats);
-    } catch {
-      sendJson(503, { error: "stats not ready" });
-    }
-    return;
-  }
-
-  // /thumb.jpg
-  if (pathname === "/vtv/thumb.jpg" || pathname === "/thumb.jpg") {
-    const filePath = path.join(ROOT, "thumb.jpg");
-    if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end("no thumb"); }
-    const stat = fs.statSync(filePath);
-    res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": stat.size });
-    if (req.method === "HEAD") return res.end();
-    fs.createReadStream(filePath).pipe(res);
-    return;
-  }
-
-  // HLS files
-  if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
-
-  let relative = pathname.slice(4);
-  if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") {
-    relative = "/index.m3u8";
-  }
-
-  const filePath = path.resolve(ROOT, "." + relative);
-  if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) {
-    res.writeHead(403); return res.end();
-  }
-
-  const ext = path.extname(filePath).toLowerCase();
-  if (!MIME[ext]) { res.writeHead(403); return res.end(); }
-
-  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    res.writeHead(404); return res.end();
-  }
-
-  const stat = fs.statSync(filePath);
-  res.writeHead(200, { "Content-Type": MIME[ext], "Content-Length": stat.size });
-  if (req.method === "HEAD") return res.end();
-  fs.createReadStream(filePath).pipe(res);
-});
-
-server.keepAliveTimeout = 30000;
-server.listen(5000, "127.0.0.1", () => console.log("Server ready on :5000"));
-SERVEREOF
-
+          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text("""
+          const http = require("http");
+          const fs = require("fs");
+          const path = require("path");
+          const ROOT = "/dev/shm/hls/vtv";
+          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          http.createServer((req, res) => {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "*");
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+            if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
+            if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
+            let pathname;
+            try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
+            catch (e) { res.writeHead(400); return res.end(); }
+            if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
+            let relative = pathname.slice(4);
+            if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
+            const filePath = path.resolve(ROOT, "." + relative);
+            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
+            const ext = path.extname(filePath);
+            if (!MIME[ext]) { res.writeHead(403); return res.end(); }
+            fs.stat(filePath, (err, stat) => {
+              if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
+              res.setHeader("Content-Type", MIME[ext]);
+              res.setHeader("Content-Length", stat.size);
+              res.writeHead(200);
+              if (req.method === "HEAD") return res.end();
+              const stream = fs.createReadStream(filePath);
+              stream.on("error", () => res.destroy());
+              stream.pipe(res);
+            });
+          }).listen(5000, "127.0.0.1");
+          """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
-          sleep 2
-          echo "Server PID: $(cat /tmp/server.pid)"
+          echo "HLS Server started on port 5000."
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
-          sleep 3
-          echo "Tunnel PID: $(cat /tmp/tunnel.pid)"
+          echo "Cloudflare Tunnel started."
 
-      - name: Probe MPD Manifest
+      - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
           set -euo pipefail
-          export MPD_URL="https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
-          export CLEARKEY_KEY="6d54358306571658ffdb952c6560688b"
-          
-          echo "=== Testing MPD access ==="
-          
-          curl -v \
-            -H "User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36" \
-            -H "Referer: https://vtvprime.vn/" \
-            -H "Origin: https://vtvprime.vn" \
-            "${MPD_URL}" \
-            -o /tmp/test_manifest.mpd \
-            --connect-timeout 15 \
-            --max-time 30 \
-            2>&1 | tail -20
-          
-          if [ ! -s /tmp/test_manifest.mpd ]; then
-            echo "❌ Cannot fetch MPD - exiting"
-            exit 1
-          fi
-          
-          echo "✅ MPD fetched, size: $(stat -c %s /tmp/test_manifest.mpd) bytes"
-          echo "=== First 1000 chars ==="
-          head -c 1000 /tmp/test_manifest.mpd
-          echo ""
-          echo "=== Checking for CENC/DRM ==="
-          grep -o 'cenc:pssh[^"]*' /tmp/test_manifest.mpd || echo "No cenc:pssh found"
-          grep -o 'default_KID[^"]*' /tmp/test_manifest.mpd || echo "No default_KID found"
 
-      - name: Probe Stream Structure
-        run: |
-          set -euo pipefail
-          export MPD_URL="https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
-          
-          echo "=== Probing stream with ffmpeg ==="
-          
-          ffprobe -v quiet -print_format json -show_streams \
-            -headers "User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n' \
-            "${MPD_URL}" \
-            > /tmp/probe.json 2>&1 || true
-          
-          if [ -s /tmp/probe.json ]; then
-            echo "=== Video streams found ==="
-            cat /tmp/probe.json | grep -A5 '"codec_type": "video"' | head -30 || true
-            echo "=== Audio streams found ==="
-            cat /tmp/probe.json | grep -A5 '"codec_type": "audio"' | head -20 || true
-          else
-            echo "Probe failed, will try direct input"
-            cat /tmp/probe.json || true
-          fi
+          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
 
-      - name: Run Stream Engine
-        run: |
-          set -euo pipefail
-          
-          export MPD_URL="https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
-          export CLEARKEY_KEY="6d54358306571658ffdb952c6560688b"
-          export HLS_DIR="/dev/shm/hls/vtv"
-          export HLS_LIST_SIZE="150"
-          export HLS_DELETE_THRESHOLD="20"
-          
-          HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
-          
-          cat > "${HLS_DIR}/index.m3u8" << 'EOF'
-#EXTM3U
-#EXT-X-VERSION:6
-#EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-STREAM-INF:BANDWIDTH=2400000,AVERAGE-BANDWIDTH=2200000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS="avc1.4d401f,mp4a.40.2"
-720p/stream.m3u8
-#EXT-X-STREAM-INF:BANDWIDTH=1200000,AVERAGE-BANDWIDTH=1050000,RESOLUTION=854x480,FRAME-RATE=25,CODECS="avc1.4d401e,mp4a.40.2"
-480p/stream.m3u8
-EOF
-          
-          RESTART_COUNT=0
-          START_TIME=$(date +%s)
-          FFMPEG_LOG="/tmp/ffmpeg.log"
-          
+          HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
+
+          # V2 = native 720p, V1 = native 480p. Khong dung V0 360p.
+          FILTER_COMPLEX="[0:v:2]setsar=1[v720];[0:v:1]scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+
           start_ffmpeg() {
-            echo "[$(date -u '+%H:%M:%S UTC')] Starting FFmpeg (restart #${RESTART_COUNT})..."
-            
+            echo "Khoi dong FFmpeg ABR Engine..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-            
-            rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
-            rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
-            
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-              -fflags +genpts+discardcorrupt+igndts \
-              -analyzeduration 10M -probesize 10M \
               -headers "$HTTP_HEADERS" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
-              -rw_timeout 30000000 \
+              -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
               -loop 1 -framerate 1 -i /tmp/logo_final.png \
-              -filter_complex "
-                [0:v:0]fps=25,setsar=1[vbase];
-                [vbase]scale=1280:720:flags=fast_bilinear,setsar=1[v720];
-                [vbase]scale=854:480:flags=fast_bilinear,setsar=1[v480];
-                [1:v]format=rgba,split=2[lg720][lg480];
-                [v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];
-                [v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]
-              " \
+              -filter_complex "$FILTER_COMPLEX" \
               -map "[out720]" -map 0:a:0? \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 \
-              -force_key_frames "expr:gte(t,n_forced*2)" \
-              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
-              -b:v 2100k -maxrate 2300k -bufsize 4200k \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 2000k -maxrate 2200k -bufsize 4000k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -max_muxing_queue_size 2048 \
-              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold ${HLS_DELETE_THRESHOLD} \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
+              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
               -map "[out480]" -map 0:a:0? \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 \
-              -force_key_frames "expr:gte(t,n_forced*2)" \
-              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
-              -b:v 950k -maxrate 1050k -bufsize 1900k \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 900k -maxrate 1000k -bufsize 1800k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -max_muxing_queue_size 2048 \
-              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold ${HLS_DELETE_THRESHOLD} \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
+              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
-              > "$FFMPEG_LOG" 2>&1 &
-            
+              > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
-            echo "FFmpeg PID: $(cat /tmp/ffmpeg.pid)"
-            RESTART_COUNT=$((RESTART_COUNT + 1))
           }
-          
+
           start_ffmpeg
-          
-          echo "Waiting for HLS playlists..."
+
+          echo "Dang cho HLS..."
           READY=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 40); do
             if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
-              echo "✅ Playlists ready after ${i}x2s"
               READY=1
               break
             fi
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "❌ FFmpeg died at attempt $i"
-              echo "=== Last 30 lines of log ==="
-              tail -30 "$FFMPEG_LOG"
-              if [ "$i" -ge 3 ]; then
-                echo "Retrying..."
-                start_ffmpeg
-              else
-                exit 1
-              fi
+              echo "FFmpeg da dung luc khoi dong!"
+              cat /tmp/ffmpeg.log || true
+              exit 1
             fi
             sleep 2
           done
-          
+
           if [ "$READY" -ne 1 ]; then
-            echo "❌ Failed to start in 120s"
-            echo "=== Full log ==="
-            cat "$FFMPEG_LOG"
+            echo "Loi khoi dong FFmpeg!"
+            cat /tmp/ffmpeg.log || true
             exit 1
           fi
-          
-          echo ""
-          echo "========================================"
-          echo "🎬 BOX MOVIE 1 ONLINE"
-          echo "Playlist : https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
-          echo "Health   : https://zzdigital01.thelac.dpdns.org/vtv/health"
-          echo "Stats    : https://zzdigital01.thelac.dpdns.org/vtv/stats"
-          echo "Thumb    : https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
-          echo "========================================"
 
-      - name: Watchdog Loop
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          
-          export HLS_DIR="/dev/shm/hls/vtv"
-          export HLS_LIST_SIZE="150"
-          
-          TARGET1="${HLS_DIR}/720p/stream.m3u8"
-          TARGET2="${HLS_DIR}/480p/stream.m3u8"
-          
-          START_TIME=$(date +%s)
-          RESTART_COUNT=0
-          LAST_MOD1=0
-          LAST_MOD2=0
+          echo "=========================================================="
+          echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "=========================================================="
+
+          TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
+          LAST_MOD_TIME=0
           STALE_SECONDS=0
-          
-          RESTART_FILE="/tmp/restart_count"
-          [ -f "$RESTART_FILE" ] && RESTART_COUNT=$(cat "$RESTART_FILE") || RESTART_COUNT=0
-          
-          AUTO_TRIGGER_SECONDS=18600
+          START_TIME=$(date +%s)
+          AUTO_TRIGGER_SECONDS=19800
           NEXT_TRIGGERED=0
-          LAST_THUMB=0
-          THUMB_INTERVAL=30
-          
-          init_stats() {
-            cat > "${HLS_DIR}/stats.json" << EOF
-{
-  "service": "boxmovie1",
-  "start_time": $START_TIME,
-  "uptime_seconds": 0,
-  "ffmpeg_alive": true,
-  "restart_count": $RESTART_COUNT,
-  "stale_seconds": 0,
-  "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
-          }
-          init_stats
-          
-          start_ffmpeg() {
-            RESTART_COUNT=$((RESTART_COUNT + 1))
-            echo $RESTART_COUNT > "$RESTART_FILE"
-            
-            echo "[$(date -u '+%H:%M:%S UTC')] Starting FFmpeg (restart #${RESTART_COUNT})..."
-            
-            rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
-            rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
-            
-            HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
-            
-            nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-              -fflags +genpts+discardcorrupt+igndts \
-              -analyzeduration 10M -probesize 10M \
-              -headers "$HTTP_HEADERS" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
-              -rw_timeout 30000000 \
-              -cenc_decryption_key "6d54358306571658ffdb952c6560688b" \
-              -i "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd" \
-              -loop 1 -framerate 1 -i /tmp/logo_final.png \
-              -filter_complex "
-                [0:v:0]fps=25,setsar=1[vbase];
-                [vbase]scale=1280:720:flags=fast_bilinear,setsar=1[v720];
-                [vbase]scale=854:480:flags=fast_bilinear,setsar=1[v480];
-                [1:v]format=rgba,split=2[lg720][lg480];
-                [v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];
-                [v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]
-              " \
-              -map "[out720]" -map 0:a:0? \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -force_key_frames "expr:gte(t,n_forced*2)" \
-              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
-              -b:v 2100k -maxrate 2300k -bufsize 4200k \
-              -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -max_muxing_queue_size 2048 \
-              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold 20 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
-              -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
-              "${HLS_DIR}/720p/stream.m3u8" \
-              -map "[out480]" -map 0:a:0? \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -force_key_frames "expr:gte(t,n_forced*2)" \
-              -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
-              -b:v 950k -maxrate 1050k -bufsize 1900k \
-              -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -max_muxing_queue_size 2048 \
-              -f hls -hls_time 2 -hls_list_size ${HLS_LIST_SIZE} -hls_delete_threshold 20 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
-              -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
-              "${HLS_DIR}/480p/stream.m3u8" \
-              > /tmp/ffmpeg.log 2>&1 &
-            
-            echo $! > /tmp/ffmpeg.pid
-          }
-          
+
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
-            RUN_MINS=$((ELAPSED / 60))
-            
+
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "[$(date -u '+%H:%M:%S')] ⏰ 5h10m reached, triggering next run..."
+              echo "[5H30M] Trigger job moi..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
-            
+
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date -u '+%H:%M:%S')] 🔄 Restarting Node server..."
+              echo "Restart Node.js..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
-            
+
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date -u '+%H:%M:%S')] 🔄 Restarting tunnel..."
+              echo "Restart cloudflared..."
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
               echo $! > /tmp/tunnel.pid
             fi
-            
+
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               FFMPEG_ALIVE=0
             fi
-            
-            MOD1=$(stat -c %Y "$TARGET1" 2>/dev/null || echo 0)
-            MOD2=$(stat -c %Y "$TARGET2" 2>/dev/null || echo 0)
-            
-            if [ "$MOD1" -eq "$LAST_MOD1" ] && [ "$MOD2" -eq "$LAST_MOD2" ]; then
-              STALE_SECONDS=$((STALE_SECONDS + 10))
+
+            if [ -f "$TARGET_PLAYLIST" ]; then
+              CURRENT_MOD_TIME=$(stat -c %Y "$TARGET_PLAYLIST" 2>/dev/null || echo 0)
+              if [ "$CURRENT_MOD_TIME" -eq "$LAST_MOD_TIME" ]; then
+                STALE_SECONDS=$((STALE_SECONDS + 10))
+              else
+                STALE_SECONDS=0
+                LAST_MOD_TIME="$CURRENT_MOD_TIME"
+              fi
             else
-              STALE_SECONDS=0
-              LAST_MOD1=$MOD1
-              LAST_MOD2=$MOD2
+              STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
-            
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 45 ]; then
-              echo "[$(date -u '+%H:%M:%S')] ⚠️ FFmpeg issue (Alive: $FFMPEG_ALIVE | Stale: ${STALE_SECONDS}s). Restarting..."
-              tail -20 /tmp/ffmpeg.log || true
+
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
+              echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart..."
+              tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-              sleep 2
+              sleep 1
               start_ffmpeg
               STALE_SECONDS=0
-              LAST_MOD1=0
-              LAST_MOD2=0
-              sleep 8
+              LAST_MOD_TIME=0
             fi
-            
-            if [ $((CURRENT_TIME - LAST_THUMB)) -ge $THUMB_INTERVAL ]; then
-              if [ -s "$TARGET1" ]; then
-                ffmpeg -y -hide_banner -loglevel error \
-                  -i "$TARGET1" -frames:v 1 -q:v 5 \
-                  "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
-                LAST_THUMB=$CURRENT_TIME
-              fi
-            fi
-            
-            SEG_COUNT=$(ls -1 "${HLS_DIR}/720p/"*.ts 2>/dev/null | wc -l || echo 0)
-            cat > "${HLS_DIR}/stats.json" << EOF
-{
-  "service": "boxmovie1",
-  "start_time": $START_TIME,
-  "uptime_seconds": $ELAPSED,
-  "uptime_human": "${RUN_MINS}m / 330m",
-  "ffmpeg_alive": $([ "$FFMPEG_ALIVE" -eq 1 ] && echo true || echo false),
-  "restart_count": $RESTART_COUNT,
-  "stale_seconds": $STALE_SECONDS,
-  "approx_segments_720p": $SEG_COUNT,
-  "last_update": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
-            
-            echo "[$(date -u '+%H:%M:%S UTC')] Up: ${RUN_MINS}m | Stale: ${STALE_SECONDS}s | FF: $FFMPEG_ALIVE | Restarts: $RESTART_COUNT | Segs: $SEG_COUNT"
+
+            RUN_MINS=$((ELAPSED / 60))
+            echo "[$(date -u '+%H:%M:%S UTC')] Running: ${RUN_MINS}m / 330m | Playlist Delay: ${STALE_SECONDS}s"
             sleep 10
           done
