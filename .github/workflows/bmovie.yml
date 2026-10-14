@@ -62,8 +62,8 @@ jobs:
           printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
           
-          cat > ~/.cloudflared/config.yml << 'EOF'
-tunnel: ${{ secrets.CF_TUNNEL_ID }}
+          cat > ~/.cloudflared/config.yml << EOF
+tunnel: $TUNNEL_ID
 credentials-file: /home/runner/.cloudflared/credentials.json
 
 ingress:
@@ -214,7 +214,6 @@ SERVEREOF
           
           echo "=== Testing MPD access ==="
           
-          # Test with curl first
           curl -v \
             -H "User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36" \
             -H "Referer: https://vtvprime.vn/" \
@@ -245,7 +244,6 @@ SERVEREOF
           
           echo "=== Probing stream with ffmpeg ==="
           
-          # Probe to see available streams
           ffprobe -v quiet -print_format json -show_streams \
             -headers "User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n' \
             "${MPD_URL}" \
@@ -265,20 +263,14 @@ SERVEREOF
         run: |
           set -euo pipefail
           
-          # ===== CONFIG =====
           export MPD_URL="https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
           export CLEARKEY_KEY="6d54358306571658ffdb952c6560688b"
           export HLS_DIR="/dev/shm/hls/vtv"
           export HLS_LIST_SIZE="150"
           export HLS_DELETE_THRESHOLD="20"
           
-          # Headers với CRLF
-          HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36\r
-Referer: https://vtvprime.vn/\r
-Origin: https://vtvprime.vn\r
-"
+          HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
           
-          # Create master playlist
           cat > "${HLS_DIR}/index.m3u8" << 'EOF'
 #EXTM3U
 #EXT-X-VERSION:6
@@ -298,13 +290,8 @@ EOF
             
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             
-            # Clean old segments
             rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
             rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
-            
-            # Build ffmpeg command
-            # Sử dụng [0:v:0] cho video (adaptive), scale 720p và 480p
-            # Overlay logo ở góc phải dưới
             
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -fflags +genpts+discardcorrupt+igndts \
@@ -323,7 +310,6 @@ EOF
                 [v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];
                 [v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]
               " \
-              \
               -map "[out720]" -map 0:a:0? \
               -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
               -pix_fmt yuv420p -r 25 \
@@ -336,7 +322,6 @@ EOF
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
-              \
               -map "[out480]" -map 0:a:0? \
               -c:v libx264 -preset veryfast -tune zerolatency -profile:v main -level 3.1 \
               -pix_fmt yuv420p -r 25 \
@@ -358,7 +343,6 @@ EOF
           
           start_ffmpeg
           
-          # Wait for playlists
           echo "Waiting for HLS playlists..."
           READY=0
           for i in $(seq 1 60); do
@@ -398,6 +382,8 @@ EOF
           echo "========================================"
 
       - name: Watchdog Loop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           
@@ -407,18 +393,16 @@ EOF
           TARGET1="${HLS_DIR}/720p/stream.m3u8"
           TARGET2="${HLS_DIR}/480p/stream.m3u8"
           
-          # Stats init
           START_TIME=$(date +%s)
           RESTART_COUNT=0
           LAST_MOD1=0
           LAST_MOD2=0
           STALE_SECONDS=0
           
-          # For restart counting - read from file
           RESTART_FILE="/tmp/restart_count"
           [ -f "$RESTART_FILE" ] && RESTART_COUNT=$(cat "$RESTART_FILE") || RESTART_COUNT=0
           
-          AUTO_TRIGGER_SECONDS=18600  # 5h10m
+          AUTO_TRIGGER_SECONDS=18600
           NEXT_TRIGGERED=0
           LAST_THUMB=0
           THUMB_INTERVAL=30
@@ -447,10 +431,7 @@ EOF
             rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
             rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
             
-            HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36\r
-Referer: https://vtvprime.vn/\r
-Origin: https://vtvprime.vn\r
-"
+            HTTP_HEADERS="User-Agent: Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"$'\r\n'"Referer: https://vtvprime.vn/"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
             
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -fflags +genpts+discardcorrupt+igndts \
@@ -501,14 +482,12 @@ Origin: https://vtvprime.vn\r
             ELAPSED=$((CURRENT_TIME - START_TIME))
             RUN_MINS=$((ELAPSED / 60))
             
-            # Auto-chain at 5h10m
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               echo "[$(date -u '+%H:%M:%S')] ⏰ 5h10m reached, triggering next run..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
             
-            # Restart dead processes
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date -u '+%H:%M:%S')] 🔄 Restarting Node server..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
@@ -521,13 +500,11 @@ Origin: https://vtvprime.vn\r
               echo $! > /tmp/tunnel.pid
             fi
             
-            # FFmpeg status
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               FFMPEG_ALIVE=0
             fi
             
-            # Stale detection
             MOD1=$(stat -c %Y "$TARGET1" 2>/dev/null || echo 0)
             MOD2=$(stat -c %Y "$TARGET2" 2>/dev/null || echo 0)
             
@@ -539,9 +516,8 @@ Origin: https://vtvprime.vn\r
               LAST_MOD2=$MOD2
             fi
             
-            # Restart FFmpeg if dead or stale
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 45 ]; then
-              echo "[$(date -u '+%H:%M:%S')] ⚠️  FFmpeg issue (Alive: $FFMPEG_ALIVE | Stale: ${STALE_SECONDS}s). Restarting..."
+              echo "[$(date -u '+%H:%M:%S')] ⚠️ FFmpeg issue (Alive: $FFMPEG_ALIVE | Stale: ${STALE_SECONDS}s). Restarting..."
               tail -20 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 2
@@ -552,7 +528,6 @@ Origin: https://vtvprime.vn\r
               sleep 8
             fi
             
-            # Thumbnail every 30s
             if [ $((CURRENT_TIME - LAST_THUMB)) -ge $THUMB_INTERVAL ]; then
               if [ -s "$TARGET1" ]; then
                 ffmpeg -y -hide_banner -loglevel error \
@@ -562,7 +537,6 @@ Origin: https://vtvprime.vn\r
               fi
             fi
             
-            # Update stats
             SEG_COUNT=$(ls -1 "${HLS_DIR}/720p/"*.ts 2>/dev/null | wc -l || echo 0)
             cat > "${HLS_DIR}/stats.json" << EOF
 {
