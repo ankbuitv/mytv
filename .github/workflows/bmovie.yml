@@ -61,12 +61,16 @@ jobs:
           const fs = require("fs");
           const path = require("path");
           const ROOT = "/dev/shm/hls/vtv";
-          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          const MIME = {
+            ".m3u8": "application/vnd.apple.mpegurl",
+            ".ts": "video/mp2t",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg"
+          };
           http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "*");
-            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
             if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
             if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
             let pathname;
@@ -75,13 +79,29 @@ jobs:
             if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
             let relative = pathname.slice(4);
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
+            if (relative === "/thumb.jpg" || relative === "/thumbnail.jpg") relative = "/thumb.jpg";
             const filePath = path.resolve(ROOT, "." + relative);
             if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
             const ext = path.extname(filePath);
             if (!MIME[ext]) { res.writeHead(403); return res.end(); }
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
+              if (ext === ".m3u8") {
+                let body = fs.readFileSync(filePath, "utf8");
+                if (body.indexOf("#EXTINF") !== -1 && body.indexOf("#EXT-X-START") === -1) {
+                  body = body.replace("#EXTM3U", "#EXTM3U\\n#EXT-X-START:TIME-OFFSET=-20.0");
+                }
+                const buf = Buffer.from(body);
+                res.setHeader("Content-Type", MIME[ext]);
+                res.setHeader("Cache-Control", "no-store, no-cache, max-age=0");
+                res.setHeader("Content-Length", buf.length);
+                res.writeHead(200);
+                if (req.method === "HEAD") return res.end();
+                return res.end(buf);
+              }
+              const cache = (ext === ".jpg" || ext === ".jpeg") ? "no-store, max-age=0" : "public, max-age=8";
               res.setHeader("Content-Type", MIME[ext]);
+              res.setHeader("Cache-Control", cache);
               res.setHeader("Content-Length", stat.size);
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
@@ -105,51 +125,60 @@ jobs:
         run: |
           set -euo pipefail
 
-          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
+          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1896000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=996000,AVERAGE-BANDWIDTH=896000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          # V2 = native 720p, V1 = native 480p. Khong dung V0 360p.
-          FILTER_COMPLEX="[0:v:2]setsar=1[v720];[0:v:1]scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+          FILTER_COMPLEX="[0:v:2]fps=25,setpts=PTS-STARTPTS,setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=3[out720][tmp480][thumbsrc];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[thumbsrc]fps=1/10,scale=320:180:flags=fast_bilinear[thumb];[0:a:0]asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,asplit=2[a720][a480]"
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR Engine..."
+            echo "Khoi dong FFmpeg ABR + DVR 30p + thumb..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+              -fflags +genpts+discardcorrupt \
+              -flags low_delay \
+              -thread_queue_size 1024 \
               -headers "$HTTP_HEADERS" \
               -rw_timeout 15000000 \
+              -timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
-              -loop 1 -framerate 1 -i /tmp/logo_final.png \
+              -thread_queue_size 64 \
+              -i /tmp/logo_final.png \
               -filter_complex "$FILTER_COMPLEX" \
-              -map "[out720]" -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v 2000k -maxrate 2200k -bufsize 4000k \
+              -map "[out720]" -map "[a720]" \
+              -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
+              -x264-params "keyint=100:min-keyint=100:scenecut=0:force-cfr=1:open-gop=0" \
+              -pix_fmt yuv420p -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
+              -b:v 1800k -maxrate 2000k -bufsize 3600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
-              -map "[out480]" -map 0:a:0? \
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
-              -pix_fmt yuv420p -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
-              -b:v 900k -maxrate 1000k -bufsize 1800k \
+              -map "[out480]" -map "[a480]" \
+              -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
+              -x264-params "keyint=100:min-keyint=100:scenecut=0:force-cfr=1:open-gop=0" \
+              -pix_fmt yuv420p -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
+              -b:v 800k -maxrate 900k -bufsize 1600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 2 -hls_list_size 8 -hls_delete_threshold 4 \
-              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file \
+              -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
+              -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
+              -map "[thumb]" -update 1 -q:v 6 -f image2 "${HLS_DIR}/thumb.jpg" \
               > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
           }
 
           start_ffmpeg
 
-          echo "Dang cho HLS..."
+          echo "Dang cho HLS (toi thieu 5 segment ~20s)..."
           READY=0
-          for i in $(seq 1 40); do
-            if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
+          for i in $(seq 1 60); do
+            C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
+            C480=$(grep -c "^#EXTINF" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || echo 0)
+            if [ "$C720" -ge 5 ] && [ "$C480" -ge 5 ]; then
               READY=1
               break
             fi
@@ -169,6 +198,7 @@ jobs:
 
           echo "=========================================================="
           echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "THUMB: https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -217,7 +247,7 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 50 ]; then
               echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restart..."
               tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
