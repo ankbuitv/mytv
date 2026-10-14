@@ -38,10 +38,14 @@ jobs:
           rm -f /tmp/cf.deb
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
-          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
-          echo "Setup ready."
+          
+          # Tải logo và xử lý trong suốt
+          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg || true
+          if [ -s /tmp/logo.svg ]; then
+            rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
+            ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png 2>/dev/null || true
+          fi
+          echo "Dependencies & Logo ready."
 
       - name: Configure Cloudflare Tunnel
         env:
@@ -112,11 +116,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Tạo Master Playlist ABR
           python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2296000,AVERAGE-BANDWIDTH=2096000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1096000,AVERAGE-BANDWIDTH=996000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'"Origin: https://vtvprime.vn"$'\r\n'
 
-          FILTER_COMPLEX="[0:v:0]fps=25,setsar=1,split=2[vbase1][vbase2];[vbase1]scale=1280:720:flags=fast_bilinear[v720];[vbase2]scale=854:480:flags=fast_bilinear[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+          # Xử lý Filter Complex (có logo hoặc không logo tùy tình trạng tải)
+          if [ -f /tmp/logo_final.png ]; then
+            FILTER_COMPLEX="[0:v:0]fps=25,setsar=1,split=2[vbase1][vbase2];[vbase1]scale=1280:720:flags=fast_bilinear[v720];[vbase2]scale=854:480:flags=fast_bilinear[v480];[1:v]format=rgba,split=2[lg720][lg480];[v720][lg720]overlay=x=W-w-10:y=H-h-10:format=auto[out720];[v480][lg480]overlay=x=W-w-8:y=H-h-8:format=auto[out480]"
+            EXTRA_INPUT="-loop 1 -framerate 1 -i /tmp/logo_final.png"
+          else
+            FILTER_COMPLEX="[0:v:0]fps=25,setsar=1,split=2[vbase1][vbase2];[vbase1]scale=1280:720:flags=fast_bilinear[out720];[vbase2]scale=854:480:flags=fast_bilinear[out480]"
+            EXTRA_INPUT=""
+          fi
 
           start_ffmpeg() {
             echo "Khởi động FFmpeg fMP4 ABR Engine..."
@@ -127,11 +139,11 @@ jobs:
               -fflags +genpts+discardcorrupt+igndts \
               -analyzeduration 10M -probesize 10M \
               -headers "$HTTP_HEADERS" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
+              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -rw_timeout 15000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
-              -loop 1 -framerate 1 -i /tmp/logo_final.png \
+              $EXTRA_INPUT \
               -filter_complex "$FILTER_COMPLEX" \
               -map "[out720]" -map 0:a:0? \
               -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
@@ -199,29 +211,34 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
+            # Trigger tự động chuyển tiếp Job tại mốc 5h30m
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               echo "[5H30M] Trigger job mới..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
 
+            # Kiểm tra và khôi phục Node.js Server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               echo "Restart Node.js..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
 
+            # Kiểm tra và khôi phục Cloudflare Tunnel
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
               echo "Restart cloudflared..."
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
               echo $! > /tmp/tunnel.pid
             fi
 
+            # Trạng thái tiến trình FFmpeg
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               FFMPEG_ALIVE=0
             fi
 
+            # Kiểm tra đợt ghi đĩa gần nhất (Stale Detection)
             if [ -f "$TARGET_PLAYLIST" ]; then
               CURRENT_MOD_TIME=$(stat -c %Y "$TARGET_PLAYLIST" 2>/dev/null || echo 0)
               if [ "$CURRENT_MOD_TIME" -eq "$LAST_MOD_TIME" ]; then
@@ -234,8 +251,9 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
+            # Khởi động lại FFmpeg nếu chết hoặc bị đứng (trên 40s không cập nhật playlist)
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 40 ]; then
-              echo "FFmpeg sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restarting..."
+              echo "FFmpeg gặp sự cố (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s). Restarting..."
               tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
