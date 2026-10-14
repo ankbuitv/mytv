@@ -20,9 +20,13 @@ jobs:
 
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
+      # backup nếu cần: https://livevlisctcdnw.seenow.vn/mean/BM1/manifest.mpd
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
+      # Nếu cần dạng kid:key thì dùng: a7c942778e874d43be92b8d0a0cd11b4:6d54358306571658ffdb952c6560688b
       USER_AGENT: "Mozilla/5.0 (Linux; Android 14; Google TV Streamer Build/UTT3.240625.001.K5; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.60 Mobile Safari/537.36"
+      USER_AGENT_FALLBACK: "Dalvik/2.1.0 (Linux; U; Android 14; Google TV Streamer Build/UTT3.240625.001.K5)"
       REFERER: "https://vtvprime.vn/"
+      ORIGIN: "https://vtvprime.vn"
       HLS_DIR: "/dev/shm/hls/vtv"
       ADS_DIR: "/dev/shm/ads"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
@@ -43,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg librsvg2-bin jq
+          sudo apt-get install -y -qq ffmpeg librsvg2-bin jq curl
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
@@ -51,19 +55,21 @@ jobs:
           rm -rf "${HLS_DIR}" "${ADS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p" "${ADS_DIR}"
 
-          # Logo
+          # Logo (fix -update 1)
           curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
           rsvg-convert -w 38 /tmp/logo.svg -o /tmp/logo_raw.png
-          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.45" /tmp/logo_final.png
+          ffmpeg -y -hide_banner -loglevel error -i /tmp/logo_raw.png \
+            -vf "format=rgba,colorchannelmixer=aa=0.45" \
+            -frames:v 1 -update 1 /tmp/logo_final.png
 
-          # Copy ads từ repo vào shm + tạo transparent
+          # Ads + transparent
           if [ -d "ads" ]; then
             cp -r ads/* "${ADS_DIR}/" 2>/dev/null || true
           fi
-          # Transparent 512x512 (đủ lớn)
-          ffmpeg -y -f lavfi -i "color=c=black@0.0:s=512x512,format=rgba" -frames:v 1 "${ADS_DIR}/transparent.png"
-          # Current ad ban đầu = transparent
-          cp "${ADS_DIR}/transparent.png" "${HLS_DIR}/current_ad.png"
+          ffmpeg -y -hide_banner -loglevel error -f lavfi \
+            -i "color=c=black@0.0:s=512x512,format=rgba" \
+            -frames:v 1 -update 1 "${ADS_DIR}/transparent.png"
+          cp -f "${ADS_DIR}/transparent.png" "${HLS_DIR}/current_ad.png"
           echo "Setup + ads ready."
 
       - name: Configure Cloudflare Tunnel
@@ -87,7 +93,7 @@ jobs:
           ''')
           "
 
-      - name: Start HLS Web Server (health/stats/thumb/ads)
+      - name: Start HLS Web Server
         run: |
           python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text(r"""
           const http = require("http");
@@ -101,7 +107,6 @@ jobs:
             ".json": "application/json",
             ".png": "image/png"
           };
-
           function sendJson(res, code, obj) {
             const body = JSON.stringify(obj, null, 2);
             res.writeHead(code, {
@@ -112,17 +117,14 @@ jobs:
             });
             res.end(body);
           }
-
           const server = http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "*");
             res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
             res.setHeader("Connection", "keep-alive");
-
             if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
             if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
-
             let pathname;
             try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
             catch (e) { res.writeHead(400); return res.end("bad url"); }
@@ -135,29 +137,18 @@ jobs:
                 service: "boxmovie1",
                 timestamp: new Date().toISOString(),
                 uptime_seconds: stats.uptime_seconds || 0,
-                ffmpeg_alive: stats.ffmpeg_alive || false,
+                ffmpeg_alive: !!stats.ffmpeg_alive,
                 ad_active: stats.ad_active || false
               });
             }
-
             if (pathname === "/vtv/stats" || pathname === "/stats") {
-              try {
-                const stats = JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8"));
-                return sendJson(res, 200, stats);
-              } catch (e) {
-                return sendJson(res, 503, { error: "stats not ready" });
-              }
+              try { return sendJson(res, 200, JSON.parse(fs.readFileSync(ROOT + "/stats.json", "utf8"))); }
+              catch (e) { return sendJson(res, 503, { error: "stats not ready" }); }
             }
-
             if (pathname === "/vtv/ads" || pathname === "/ads") {
-              try {
-                const adsState = JSON.parse(fs.readFileSync(ROOT + "/ads_state.json", "utf8"));
-                return sendJson(res, 200, adsState);
-              } catch (e) {
-                return sendJson(res, 503, { error: "ads state not ready" });
-              }
+              try { return sendJson(res, 200, JSON.parse(fs.readFileSync(ROOT + "/ads_state.json", "utf8"))); }
+              catch (e) { return sendJson(res, 503, { error: "ads state not ready" }); }
             }
-
             if (pathname === "/vtv/thumb.jpg" || pathname === "/thumb.jpg") {
               const thumbPath = path.join(ROOT, "thumb.jpg");
               if (!fs.existsSync(thumbPath)) { res.writeHead(404); return res.end("no thumb"); }
@@ -167,20 +158,13 @@ jobs:
               fs.createReadStream(thumbPath).pipe(res);
               return;
             }
-
             if (!pathname.startsWith("/vtv")) { res.writeHead(404); return res.end(); }
-
             let relative = pathname.slice(4);
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
-
             const filePath = path.resolve(ROOT, "." + relative);
-            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) {
-              res.writeHead(403); return res.end();
-            }
-
+            if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
             const ext = path.extname(filePath).toLowerCase();
             if (!MIME[ext]) { res.writeHead(403); return res.end("forbidden"); }
-
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
               res.setHeader("Content-Type", MIME[ext]);
@@ -190,10 +174,9 @@ jobs:
               fs.createReadStream(filePath).on("error", () => res.destroy()).pipe(res);
             });
           });
-
           server.keepAliveTimeout = 30000;
           server.headersTimeout = 35000;
-          server.listen(5000, "127.0.0.1", () => console.log("Server + endpoints ready"));
+          server.listen(5000, "127.0.0.1", () => console.log("Server ready"));
           """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
@@ -210,7 +193,6 @@ jobs:
           set -euo pipefail
           export TZ=Asia/Ho_Chi_Minh
 
-          # Master playlist
           cat > "${HLS_DIR}/index.m3u8" << 'EOF'
           #EXTM3U
           #EXT-X-VERSION:6
@@ -221,10 +203,9 @@ jobs:
           480p/stream.m3u8
           EOF
 
-          HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
+          # Headers mạnh
+          HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'"Origin: ${ORIGIN}"$'\r\n'"Accept: */*"$'\r\n'
 
-          # Filter: logo + current_ad (hot-swap)
-          # Ad position: bottom-right (W-w-12:H-h-12). Muốn đổi góc sửa chỗ này.
           FILTER_COMPLEX="[0:v:2]fps=25,setsar=1[v720];[0:v:1]fps=25,scale=854:480:flags=fast_bilinear,setsar=1[v480];[1:v]format=rgba,split=2[lg720][lg480];[2:v]format=rgba,split=2[ad720][ad480];[v720][lg720]overlay=x=W-w-12:y=H-h-12:format=auto[tmp720];[tmp720][ad720]overlay=x=W-w-12:y=H-h-12:format=auto[out720];[v480][lg480]overlay=x=W-w-10:y=H-h-10:format=auto[tmp480];[tmp480][ad480]overlay=x=W-w-10:y=H-h-10:format=auto[out480]"
 
           RESTART_COUNT=0
@@ -232,18 +213,50 @@ jobs:
           AD_ACTIVE=""
           AD_END_TIME=0
 
+          # ===== Pre-check MPD =====
+          check_mpd() {
+            local code
+            code=$(curl -sS -o /tmp/mpd_test.xml -w "%{http_code}" \
+              -A "$USER_AGENT" \
+              -e "$REFERER" \
+              -H "Origin: $ORIGIN" \
+              --connect-timeout 10 --max-time 25 \
+              "$MPD_URL" || echo "000")
+            if [ "$code" = "200" ] && grep -q "<MPD" /tmp/mpd_test.xml 2>/dev/null; then
+              echo "MPD OK (HTTP $code)"
+              return 0
+            fi
+            echo "MPD check failed (HTTP $code)"
+            head -c 300 /tmp/mpd_test.xml 2>/dev/null || true
+            return 1
+          }
+
+          echo "=== Pre-check MPD ==="
+          for t in 1 2 3 4 5 6 7 8; do
+            if check_mpd; then break; fi
+            echo "Retry pre-check $t/8 ..."
+            sleep 4
+          done
+
           start_ffmpeg() {
-            echo "[$(date '+%H:%M:%S')] Starting FFmpeg (hot-swap ready) #${RESTART_COUNT}"
+            echo "[$(date '+%H:%M:%S')] Starting FFmpeg #${RESTART_COUNT}"
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             rm -f "${HLS_DIR}/720p/"*.ts "${HLS_DIR}/480p/"*.ts 2>/dev/null || true
             rm -f "${HLS_DIR}/720p/stream.m3u8" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || true
 
+            # Đảm bảo current_ad tồn tại
+            [ -f "${HLS_DIR}/current_ad.png" ] || cp -f "${ADS_DIR}/transparent.png" "${HLS_DIR}/current_ad.png"
+
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -fflags +genpts+discardcorrupt+igndts \
-              -analyzeduration 15M -probesize 15M \
+              -analyzeduration 20M -probesize 20M \
+              -user_agent "$USER_AGENT" \
               -headers "$HTTP_HEADERS" \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 8 \
-              -rw_timeout 20000000 -timeout 20000000 \
+              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 \
+              -reconnect_on_network_error 1 -reconnect_on_http_error "4xx,5xx" \
+              -reconnect_delay_max 12 \
+              -rw_timeout 30000000 -timeout 30000000 \
+              -multiple_requests 1 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
               -loop 1 -framerate 1 -i /tmp/logo_final.png \
@@ -280,51 +293,59 @@ jobs:
               > /tmp/ffmpeg.log 2>&1 &
             echo $! > /tmp/ffmpeg.pid
             RESTART_COUNT=$((RESTART_COUNT + 1))
+            sleep 2
           }
 
-          # ===== Hot-swap functions =====
           activate_ad() {
-            local src="$1"
-            local width="$2"
-            local opacity="$3"
-            local id="$4"
-            echo "[$(date '+%H:%M:%S')] ACTIVATING AD: $id (width=$width, opacity=$opacity)"
-            # Pre-process: scale + opacity → temp then atomic mv
+            local src="$1" width="$2" opacity="$3" id="$4"
+            echo "[$(date '+%H:%M:%S')] ACTIVATING AD: $id (w=$width, op=$opacity)"
             ffmpeg -y -hide_banner -loglevel error -i "$src" \
               -vf "scale=${width}:-1:flags=lanczos,format=rgba,colorchannelmixer=aa=${opacity}" \
-              "${HLS_DIR}/current_ad_tmp.png"
+              -frames:v 1 -update 1 "${HLS_DIR}/current_ad_tmp.png"
             mv -f "${HLS_DIR}/current_ad_tmp.png" "${HLS_DIR}/current_ad.png"
             AD_ACTIVE="$id"
           }
 
           deactivate_ad() {
-            echo "[$(date '+%H:%M:%S')] DEACTIVATING AD (swap transparent)"
+            echo "[$(date '+%H:%M:%S')] DEACTIVATING AD"
             cp -f "${ADS_DIR}/transparent.png" "${HLS_DIR}/current_ad.png"
             AD_ACTIVE=""
             AD_END_TIME=0
           }
 
-          # State files
-          STATE_FILE="${HLS_DIR}/ads_state.json"
           PLAYED_FILE="${HLS_DIR}/ads_played.json"
           echo '{"played":[]}' > "$PLAYED_FILE"
-          echo '{"active":null,"upcoming":[]}' > "$STATE_FILE"
+          echo '{"active":null}' > "${HLS_DIR}/ads_state.json"
 
+          # ===== Start với retry =====
           start_ffmpeg
 
-          # Wait ready
           READY=0
-          for i in $(seq 1 50); do
-            if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then READY=1; break; fi
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              cat /tmp/ffmpeg.log || true; exit 1
+          for i in $(seq 1 90); do
+            if [ -s "${HLS_DIR}/720p/stream.m3u8" ] && [ -s "${HLS_DIR}/480p/stream.m3u8" ]; then
+              READY=1
+              break
             fi
-            sleep 2
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "[$(date '+%H:%M:%S')] FFmpeg dead during start (try $i). Log:"
+              tail -n 40 /tmp/ffmpeg.log || true
+              echo "--- retry start ---"
+              sleep 5
+              check_mpd || true
+              start_ffmpeg
+            fi
+            sleep 3
           done
-          if [ "$READY" -ne 1 ]; then cat /tmp/ffmpeg.log || true; exit 1; fi
+
+          if [ "$READY" -ne 1 ]; then
+            echo "FAILED to get playlists after many retries"
+            tail -n 100 /tmp/ffmpeg.log || true
+            # Không exit 1 vội — vẫn vào loop để watchdog tiếp tục thử
+            echo "Entering watchdog anyway..."
+          fi
 
           echo "=========================================================="
-          echo "BOX MOVIE 1 ONLINE + HOT-SWAP ADS (no restart)"
+          echo "BOX MOVIE 1 ONLINE + HOT-SWAP ADS"
           echo "Playlist : https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "Health   : https://zzdigital01.thelac.dpdns.org/vtv/health"
           echo "Stats    : https://zzdigital01.thelac.dpdns.org/vtv/stats"
@@ -347,14 +368,12 @@ jobs:
             ELAPSED=$((CURRENT_TIME - START_TIME))
             NOW_HM=$(date +%H:%M)
 
-            # Self-chain
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               echo "[$(date '+%H:%M:%S')] Trigger next job..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
               NEXT_TRIGGERED=1
             fi
 
-            # Restart node/tunnel nếu chết
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
@@ -367,7 +386,6 @@ jobs:
             FFMPEG_ALIVE=1
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then FFMPEG_ALIVE=0; fi
 
-            # Stale check
             MOD1=$(stat -c %Y "$TARGET1" 2>/dev/null || echo 0)
             MOD2=$(stat -c %Y "$TARGET2" 2>/dev/null || echo 0)
             if [ "$MOD1" -eq "$LAST_MOD1" ] && [ "$MOD2" -eq "$LAST_MOD2" ]; then
@@ -378,28 +396,26 @@ jobs:
               LAST_MOD2=$MOD2
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 45 ]; then
-              echo "[$(date '+%H:%M:%S')] FFmpeg issue → restart"
-              tail -n 40 /tmp/ffmpeg.log || true
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 50 ]; then
+              echo "[$(date '+%H:%M:%S')] FFmpeg issue (alive=$FFMPEG_ALIVE stale=${STALE_SECONDS}s) → restart"
+              tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-              sleep 2
+              sleep 3
+              check_mpd || true
               start_ffmpeg
               STALE_SECONDS=0
               LAST_MOD1=0
               LAST_MOD2=0
-              sleep 8
+              sleep 10
             fi
 
-            # ===== HOT-SWAP ADS LOGIC (play once) =====
+            # Hot-swap ads (play once)
             if [ -f "${ADS_DIR}/ads.json" ]; then
-              # Deactivate nếu hết giờ
               if [ -n "$AD_ACTIVE" ] && [ "$CURRENT_TIME" -ge "$AD_END_TIME" ]; then
                 deactivate_ad
-                # Đánh dấu đã played
-                jq --arg id "$AD_ACTIVE" '.played += [$id]' "$PLAYED_FILE" > /tmp/p.json && mv /tmp/p.json "$PLAYED_FILE"
+                jq --arg id "$AD_ACTIVE" '.played += [$id]' "$PLAYED_FILE" > /tmp/p.json && mv /tmp/p.json "$PLAYED_FILE" || true
               fi
 
-              # Tìm ad đến giờ (chưa played)
               while read -r ad; do
                 id=$(echo "$ad" | jq -r '.id')
                 file=$(echo "$ad" | jq -r '.file')
@@ -408,8 +424,7 @@ jobs:
                 width=$(echo "$ad" | jq -r '.width // 200')
                 opacity=$(echo "$ad" | jq -r '.opacity // 0.7')
                 enabled=$(echo "$ad" | jq -r '.enabled // true')
-
-                played=$(jq -r --arg id "$id" '.played | index($id)' "$PLAYED_FILE")
+                played=$(jq -r --arg id "$id" '.played | index($id)' "$PLAYED_FILE" 2>/dev/null || echo "null")
                 if [ "$enabled" = "true" ] && [ "$played" = "null" ] && [ "$NOW_HM" = "$start" ] && [ -z "$AD_ACTIVE" ]; then
                   src="${ADS_DIR}/${file}"
                   if [ -f "$src" ]; then
@@ -420,13 +435,15 @@ jobs:
               done < <(jq -c '.[]' "${ADS_DIR}/ads.json" 2>/dev/null || true)
             fi
 
-            # Thumbnail
+            # Thumb
             if [ $((CURRENT_TIME - LAST_THUMB_TIME)) -ge $THUMB_INTERVAL ]; then
-              ffmpeg -y -hide_banner -loglevel error -i "$TARGET1" -frames:v 1 -q:v 5 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
+              if [ -s "$TARGET1" ]; then
+                ffmpeg -y -hide_banner -loglevel error -i "$TARGET1" \
+                  -frames:v 1 -update 1 -q:v 5 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
+              fi
               LAST_THUMB_TIME=$CURRENT_TIME
             fi
 
-            # Update stats + ads_state
             SEG_COUNT=$(ls -1 "${HLS_DIR}/720p/"*.ts 2>/dev/null | wc -l || echo 0)
             cat > "${HLS_DIR}/stats.json" << EOF
           {
@@ -448,12 +465,12 @@ jobs:
           {
             "active": "$AD_ACTIVE",
             "end_time": $AD_END_TIME,
-            "played": $(cat "$PLAYED_FILE" | jq '.played'),
+            "played": $(cat "$PLAYED_FILE" 2>/dev/null | jq '.played' || echo '[]'),
             "current_time_vn": "$NOW_HM",
-            "note": "Hot-swap no-restart. Upload ảnh vào ads/ + sửa ads.json"
+            "note": "Hot-swap no-restart. Put images in ads/ + ads.json"
           }
           EOF
 
-            echo "[$(date '+%H:%M:%S')] Up: $((ELAPSED/60))m | Stale: ${STALE_SECONDS}s | FF: $FFMPEG_ALIVE | AD: ${AD_ACTIVE:-none}"
+            echo "[$(date '+%H:%M:%S')] Up: $((ELAPSED/60))m | Stale: ${STALE_SECONDS}s | FF: $FFMPEG_ALIVE | AD: ${AD_ACTIVE:-none} | Segs: $SEG_COUNT"
             sleep 10
           done
