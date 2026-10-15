@@ -42,11 +42,11 @@ jobs:
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Logo (opacity ~55%)
+          # Logo siêu nhỏ 48x48 (opacity ~55%)
           if curl -fsSL "$LOGO_URL" -o /tmp/logo.svg; then
-            rsvg-convert -w 140 /tmp/logo.svg -o /tmp/logo_raw.png || true
+            rsvg-convert -w 48 /tmp/logo.svg -o /tmp/logo_raw.png || true
             if [ -f /tmp/logo_raw.png ]; then
-              ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.55,scale=140:140:force_original_aspect_ratio=decrease" /tmp/logo_final.png || true
+              ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.55,scale=48:48:force_original_aspect_ratio=decrease" /tmp/logo_final.png || true
             fi
           fi
           if [ ! -f /tmp/logo_final.png ]; then
@@ -54,16 +54,16 @@ jobs:
             echo "Logo fallback used"
           fi
 
-          # QR (opacity ~80%)
+          # QR siêu nhỏ 48x48 (opacity ~80%)
           if curl -fsSL "$QR_URL" -o /tmp/qr_raw.png; then
-            ffmpeg -y -i /tmp/qr_raw.png -vf "format=rgba,colorchannelmixer=aa=0.80,scale=140:140:force_original_aspect_ratio=decrease" /tmp/qr_final.png || true
+            ffmpeg -y -i /tmp/qr_raw.png -vf "format=rgba,colorchannelmixer=aa=0.80,scale=48:48:force_original_aspect_ratio=decrease" /tmp/qr_final.png || true
           fi
           if [ ! -f /tmp/qr_final.png ]; then
             cp /tmp/logo_final.png /tmp/qr_final.png
             echo "QR fallback used"
           fi
 
-          echo "Setup ready. Logo + QR loaded."
+          echo "Setup ready. Logo + QR 48x48 loaded."
 
       - name: Configure Cloudflare Tunnel
         env:
@@ -117,7 +117,7 @@ jobs:
               if (ext === ".m3u8") {
                 let body = fs.readFileSync(filePath, "utf8");
                 if (body.indexOf("#EXTINF") !== -1 && body.indexOf("#EXT-X-START") === -1) {
-                  body = body.replace("#EXTM3U", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=-12.0");
+                  body = body.replace("#EXTM3U", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=-8.0");
                 }
                 const buf = Buffer.from(body);
                 res.setHeader("Content-Type", MIME[ext]);
@@ -128,7 +128,7 @@ jobs:
                 return res.end(buf);
               }
               res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Cache-Control", (ext === ".jpg") ? "no-store, max-age=0" : "public, max-age=8");
+              res.setHeader("Cache-Control", (ext === ".jpg") ? "no-store, max-age=0" : "public, max-age=6");
               res.setHeader("Content-Length", stat.size);
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
@@ -164,36 +164,37 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Master playlist chuẩn hơn (7)
           cat > "${HLS_DIR}/index.m3u8" << 'EOF'
           #EXTM3U
           #EXT-X-VERSION:6
           #EXT-X-INDEPENDENT-SEGMENTS
-          #EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1896000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS="avc1.4d401f,mp4a.40.2"
+          #EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1896000,RESOLUTION=1280x720,FRAME-RATE=25.000,CODECS="avc1.4d401f,mp4a.40.2",CLOSED-CAPTIONS=NONE
           720p/stream.m3u8
-          #EXT-X-STREAM-INF:BANDWIDTH=996000,AVERAGE-BANDWIDTH=896000,RESOLUTION=854x480,FRAME-RATE=25,CODECS="avc1.4d401e,mp4a.40.2"
+          #EXT-X-STREAM-INF:BANDWIDTH=996000,AVERAGE-BANDWIDTH=896000,RESOLUTION=854x480,FRAME-RATE=25.000,CODECS="avc1.4d401e,mp4a.40.2",CLOSED-CAPTIONS=NONE
           480p/stream.m3u8
           EOF
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
           CYCLE=$((LOGO_SEC + QR_SEC))
 
-          # Filter sạch + HDR→SDR + dynamic size + cycle
+          # Filter: logo/QR 48px + timestamp chỉ khi QR + HDR→SDR
           FILTER_COMPLEX="
           [0:v:2]setsar=1,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p[base];
-          [1:v]format=rgba,scale=140:140[lg];
-          [2:v]format=rgba,scale=140:140[qr];
-          color=c=black@0.40:s=160x160:d=1[bg];
+          [1:v]format=rgba,scale=48:48[lg];
+          [2:v]format=rgba,scale=48:48[qr];
+          color=c=black@0.40:s=56x56:d=1[bg];
           [bg][qr]overlay=(W-w)/2:(H-h)/2[qrbg];
-          [qrbg]drawtext=text='%{localtime\:%H\\:%M\\:%S} UTC+7':fontcolor=white:fontsize=13:box=1:boxcolor=black@0.55:boxborderw=3:x=(w-text_w)/2:y=h-text_h-5[qrts];
-          [base][lg]overlay=x=W-w-18:y=H-h-18:enable='lt(mod(t\,${CYCLE})\,${LOGO_SEC})'[tmp1];
-          [tmp1][qrts]overlay=x=W-w-18:y=H-h-18:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[outv];
+          [qrbg]drawtext=text='%{localtime\:%H\\:%M\\:%S} UTC+7':fontcolor=white:fontsize=9:box=1:boxcolor=black@0.55:boxborderw=2:x=(w-text_w)/2:y=h-text_h-3:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[qrts];
+          [base][lg]overlay=x=W-w-12:y=H-h-12:enable='lt(mod(t\,${CYCLE})\,${LOGO_SEC})'[tmp1];
+          [tmp1][qrts]overlay=x=W-w-12:y=H-h-12:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[outv];
           [outv]split=2[out720][tmp480];
           [tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];
           [0:a:0]asplit=2[a720][a480]
           "
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR + Logo/QR + HDR→SDR..."
+            echo "Khoi dong FFmpeg (low-latency direction + Logo/QR 48px + HDR→SDR)..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             rm -f "${HLS_DIR}/720p"/s_*.ts "${HLS_DIR}/480p"/s_*.ts 2>/dev/null || true
 
@@ -211,22 +212,22 @@ jobs:
               -i /tmp/qr_final.png \
               -filter_complex "$FILTER_COMPLEX" \
               -map "[out720]" -map "[a720]" \
-              -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
-              -x264-params "keyint=100:min-keyint=100:scenecut=0:open-gop=0" \
-              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
-              -b:v 1800k -maxrate 2000k -bufsize 3600k \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -x264-params "keyint=50:min-keyint=50:scenecut=0:open-gop=0" \
+              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 1800k -maxrate 2000k -bufsize 2000k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 6 \
+              -f hls -hls_time 2 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 4 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
               -map "[out480]" -map "[a480]" \
-              -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
-              -x264-params "keyint=100:min-keyint=100:scenecut=0:open-gop=0" \
-              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
-              -b:v 800k -maxrate 900k -bufsize 1600k \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 3.1 \
+              -x264-params "keyint=50:min-keyint=50:scenecut=0:open-gop=0" \
+              -pix_fmt yuv420p -fps_mode cfr -r 25 -g 50 -keyint_min 50 -sc_threshold 0 \
+              -b:v 800k -maxrate 900k -bufsize 1000k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 6 \
+              -f hls -hls_time 2 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 4 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
@@ -234,18 +235,14 @@ jobs:
             echo $! > /tmp/ffmpeg.pid
           }
 
-          # Thumbnail thường + grid 3x3
           snap_thumb() {
             local ts
             ts=$(ls -1t "${HLS_DIR}/720p"/s_*.ts 2>/dev/null | head -n 1 || true)
             if [ -z "$ts" ] || [ ! -f "$ts" ]; then
               return 0
             fi
-            # Ảnh đơn
-            ffmpeg -y -hide_banner -loglevel error -ss 0.3 -i "$ts" -frames:v 1 \
+            ffmpeg -y -hide_banner -loglevel error -ss 0.2 -i "$ts" -frames:v 1 \
               -vf "scale=320:180:flags=fast_bilinear" -q:v 6 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
-
-            # Grid 3x3
             ffmpeg -y -hide_banner -loglevel error -i "$ts" -frames:v 9 \
               -vf "scale=160:90:flags=fast_bilinear,tile=3x3" -q:v 7 "${HLS_DIR}/thumb_grid.jpg" 2>/dev/null || true
           }
@@ -255,10 +252,10 @@ jobs:
           for attempt in $(seq 1 $MAX_START_RETRY); do
             start_ffmpeg
             echo "Cho HLS (lan $attempt)..."
-            for i in $(seq 1 50); do
+            for i in $(seq 1 40); do
               C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
               C480=$(grep -c "^#EXTINF" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || echo 0)
-              if [ "$C720" -ge 5 ] && [ "$C480" -ge 5 ]; then
+              if [ "$C720" -ge 6 ] && [ "$C480" -ge 6 ]; then
                 READY=1
                 break 2
               fi
@@ -284,14 +281,14 @@ jobs:
           echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "THUMB: https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
           echo "GRID:  https://zzdigital01.thelac.dpdns.org/vtv/thumb_grid.jpg"
-          echo "Logo ${LOGO_SEC}s ↔ QR ${QR_SEC}s + HDR→SDR + timestamp UTC+7"
+          echo "Logo 48px ${LOGO_SEC}s ↔ QR 48px ${QR_SEC}s + HDR→SDR + LL direction"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
           LAST_MOD_TIME=0
           STALE_SECONDS=0
           START_TIME=$(date +%s)
-          AUTO_TRIGGER_SECONDS=19800
+          AUTO_TRIGGER_SECONDS=19500   # sớm hơn một chút để warm-up
           NEXT_TRIGGERED=0
           THUMB_TICK=0
           LOG_ROTATE_TICK=0
@@ -300,12 +297,12 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # Warm-up self-chain (10)
+            # 9. Warm-up self-chain
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "Warm-up: trigger next workflow..."
+              echo "Warm-up: trigger next workflow (pre-buffer)..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || {
-                echo "gh workflow run failed, retry in 60s"
-                sleep 60
+                echo "gh workflow run failed, retry in 45s"
+                sleep 45
                 gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
               }
             fi
@@ -338,7 +335,7 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 70 ]; then
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 60 ]; then
               echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s)"
               tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
@@ -346,11 +343,11 @@ jobs:
               start_ffmpeg
               STALE_SECONDS=0
               LAST_MOD_TIME=0
-              sleep 8
+              sleep 6
             fi
 
             THUMB_TICK=$((THUMB_TICK + 10))
-            if [ "$THUMB_TICK" -ge 30 ]; then
+            if [ "$THUMB_TICK" -ge 25 ]; then
               snap_thumb
               THUMB_TICK=0
             fi
@@ -363,9 +360,9 @@ jobs:
             fi
 
             SHM_USE=$(df /dev/shm 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%' || echo 0)
-            if [ "${SHM_USE:-0}" -gt 85 ]; then
-              echo "WARN: /dev/shm ${SHM_USE}% — force clean old segments"
-              find "${HLS_DIR}/720p" "${HLS_DIR}/480p" -name 's_*.ts' -mmin +3 -delete 2>/dev/null || true
+            if [ "${SHM_USE:-0}" -gt 80 ]; then
+              echo "WARN: /dev/shm ${SHM_USE}% — force clean"
+              find "${HLS_DIR}/720p" "${HLS_DIR}/480p" -name 's_*.ts' -mmin +2 -delete 2>/dev/null || true
             fi
 
             echo "[$(date -u '+%H:%M:%S UTC')] Running: $((ELAPSED / 60))m / 330m | Delay: ${STALE_SECONDS}s | shm: ${SHM_USE}%"
