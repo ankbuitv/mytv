@@ -42,11 +42,11 @@ jobs:
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
 
-          # Logo
+          # Logo (opacity ~55%)
           if curl -fsSL "$LOGO_URL" -o /tmp/logo.svg; then
-            rsvg-convert -w 120 /tmp/logo.svg -o /tmp/logo_raw.png || true
+            rsvg-convert -w 140 /tmp/logo.svg -o /tmp/logo_raw.png || true
             if [ -f /tmp/logo_raw.png ]; then
-              ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.55,scale=120:120:force_original_aspect_ratio=decrease" /tmp/logo_final.png || true
+              ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.55,scale=140:140:force_original_aspect_ratio=decrease" /tmp/logo_final.png || true
             fi
           fi
           if [ ! -f /tmp/logo_final.png ]; then
@@ -54,9 +54,9 @@ jobs:
             echo "Logo fallback used"
           fi
 
-          # QR
+          # QR (opacity ~80%)
           if curl -fsSL "$QR_URL" -o /tmp/qr_raw.png; then
-            ffmpeg -y -i /tmp/qr_raw.png -vf "format=rgba,scale=120:120:force_original_aspect_ratio=decrease" /tmp/qr_final.png || true
+            ffmpeg -y -i /tmp/qr_raw.png -vf "format=rgba,colorchannelmixer=aa=0.80,scale=140:140:force_original_aspect_ratio=decrease" /tmp/qr_final.png || true
           fi
           if [ ! -f /tmp/qr_final.png ]; then
             cp /tmp/logo_final.png /tmp/qr_final.png
@@ -107,6 +107,7 @@ jobs:
             let relative = pathname.slice(4);
             if (relative === "" || relative === "/" || relative === "/boxmovie1.m3u8") relative = "/index.m3u8";
             if (relative === "/thumbnail.jpg") relative = "/thumb.jpg";
+            if (relative === "/thumb_grid.jpg") relative = "/thumb_grid.jpg";
             const filePath = path.resolve(ROOT, "." + relative);
             if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
             const ext = path.extname(filePath).toLowerCase();
@@ -163,7 +164,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Master playlist
           cat > "${HLS_DIR}/index.m3u8" << 'EOF'
           #EXTM3U
           #EXT-X-VERSION:6
@@ -175,13 +175,25 @@ jobs:
           EOF
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
-
-          # Filter: logo 120s → QR 30s + fade + nền mờ + timestamp UTC+7
           CYCLE=$((LOGO_SEC + QR_SEC))
-          FILTER_COMPLEX="[0:v:2]setsar=1[base];[1:v]format=rgba,scale=120:120[lg];[2:v]format=rgba,scale=120:120[qr];color=c=black@0.45:s=140x140:d=1[bg];[bg][qr]overlay=(W-w)/2:(H-h)/2[qrbg];[qrbg]drawtext=text='%{localtime\:%H\\:%M\\:%S} UTC+7':fontcolor=white:fontsize=14:box=1:boxcolor=black@0.55:boxborderw=4:x=(w-text_w)/2:y=h-text_h-6:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[qrts];[base][lg]overlay=x=W-w-16:y=H-h-16:enable='lt(mod(t\,${CYCLE})\,${LOGO_SEC})':format=auto:repeatlast=0[tmp1];[tmp1][qrts]overlay=x=W-w-16:y=H-h-16:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})':format=auto:repeatlast=0[outv];[outv]split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
+
+          # Filter sạch + HDR→SDR + dynamic size + cycle
+          FILTER_COMPLEX="
+          [0:v:2]setsar=1,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p[base];
+          [1:v]format=rgba,scale=140:140[lg];
+          [2:v]format=rgba,scale=140:140[qr];
+          color=c=black@0.40:s=160x160:d=1[bg];
+          [bg][qr]overlay=(W-w)/2:(H-h)/2[qrbg];
+          [qrbg]drawtext=text='%{localtime\:%H\\:%M\\:%S} UTC+7':fontcolor=white:fontsize=13:box=1:boxcolor=black@0.55:boxborderw=3:x=(w-text_w)/2:y=h-text_h-5[qrts];
+          [base][lg]overlay=x=W-w-18:y=H-h-18:enable='lt(mod(t\,${CYCLE})\,${LOGO_SEC})'[tmp1];
+          [tmp1][qrts]overlay=x=W-w-18:y=H-h-18:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[outv];
+          [outv]split=2[out720][tmp480];
+          [tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];
+          [0:a:0]asplit=2[a720][a480]
+          "
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR + Logo/QR cycle..."
+            echo "Khoi dong FFmpeg ABR + Logo/QR + HDR→SDR..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             rm -f "${HLS_DIR}/720p"/s_*.ts "${HLS_DIR}/480p"/s_*.ts 2>/dev/null || true
 
@@ -222,32 +234,37 @@ jobs:
             echo $! > /tmp/ffmpeg.pid
           }
 
+          # Thumbnail thường + grid 3x3
           snap_thumb() {
             local ts
             ts=$(ls -1t "${HLS_DIR}/720p"/s_*.ts 2>/dev/null | head -n 1 || true)
             if [ -z "$ts" ] || [ ! -f "$ts" ]; then
               return 0
             fi
+            # Ảnh đơn
             ffmpeg -y -hide_banner -loglevel error -ss 0.3 -i "$ts" -frames:v 1 \
               -vf "scale=320:180:flags=fast_bilinear" -q:v 6 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
+
+            # Grid 3x3
+            ffmpeg -y -hide_banner -loglevel error -i "$ts" -frames:v 9 \
+              -vf "scale=160:90:flags=fast_bilinear,tile=3x3" -q:v 7 "${HLS_DIR}/thumb_grid.jpg" 2>/dev/null || true
           }
 
-          # Start với retry
           MAX_START_RETRY=4
           READY=0
           for attempt in $(seq 1 $MAX_START_RETRY); do
             start_ffmpeg
             echo "Cho HLS (lan $attempt)..."
-            for i in $(seq 1 45); do
+            for i in $(seq 1 50); do
               C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
               C480=$(grep -c "^#EXTINF" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || echo 0)
-              if [ "$C720" -ge 4 ] && [ "$C480" -ge 4 ]; then
+              if [ "$C720" -ge 5 ] && [ "$C480" -ge 5 ]; then
                 READY=1
                 break 2
               fi
               if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
                 echo "FFmpeg chet som, log:"
-                tail -n 40 /tmp/ffmpeg.log || true
+                tail -n 60 /tmp/ffmpeg.log || true
                 break
               fi
               sleep 2
@@ -266,7 +283,8 @@ jobs:
           echo "=========================================================="
           echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "THUMB: https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
-          echo "Logo ${LOGO_SEC}s ↔ QR ${QR_SEC}s + timestamp UTC+7"
+          echo "GRID:  https://zzdigital01.thelac.dpdns.org/vtv/thumb_grid.jpg"
+          echo "Logo ${LOGO_SEC}s ↔ QR ${QR_SEC}s + HDR→SDR + timestamp UTC+7"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -282,8 +300,9 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
+            # Warm-up self-chain (10)
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "Trigger next workflow..."
+              echo "Warm-up: trigger next workflow..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || {
                 echo "gh workflow run failed, retry in 60s"
                 sleep 60
@@ -321,7 +340,7 @@ jobs:
 
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 70 ]; then
               echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s)"
-              tail -n 30 /tmp/ffmpeg.log || true
+              tail -n 50 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
               start_ffmpeg
@@ -331,7 +350,7 @@ jobs:
             fi
 
             THUMB_TICK=$((THUMB_TICK + 10))
-            if [ "$THUMB_TICK" -ge 20 ]; then
+            if [ "$THUMB_TICK" -ge 30 ]; then
               snap_thumb
               THUMB_TICK=0
             fi
