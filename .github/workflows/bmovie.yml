@@ -17,7 +17,6 @@ jobs:
   hls-proxy:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
-
     env:
       MPD_URL: "https://livebytsctbu.vtvprime.vn/mean/BM1/manifest.mpd"
       CLEARKEY_KEY: "6d54358306571658ffdb952c6560688b"
@@ -25,23 +24,46 @@ jobs:
       REFERER: "https://vtvprime.vn/"
       HLS_DIR: "/dev/shm/hls/vtv"
       LOGO_URL: "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg"
+      QR_URL: "https://i.ibb.co/JFwFnKZ9/download.png"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HLS_LIST_SIZE: "180"
+      LOGO_SEC: "120"
+      QR_SEC: "30"
 
     steps:
       - name: Install System Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg librsvg2-bin
+          sudo apt-get install -y -qq ffmpeg librsvg2-bin jq
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
-          curl -fsSL "$LOGO_URL" -o /tmp/logo.svg
-          rsvg-convert -w 35 /tmp/logo.svg -o /tmp/logo_raw.png
-          ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.5" /tmp/logo_final.png
-          echo "Setup ready."
+
+          # Logo
+          if curl -fsSL "$LOGO_URL" -o /tmp/logo.svg; then
+            rsvg-convert -w 120 /tmp/logo.svg -o /tmp/logo_raw.png || true
+            if [ -f /tmp/logo_raw.png ]; then
+              ffmpeg -y -i /tmp/logo_raw.png -vf "format=rgba,colorchannelmixer=aa=0.55,scale=120:120:force_original_aspect_ratio=decrease" /tmp/logo_final.png || true
+            fi
+          fi
+          if [ ! -f /tmp/logo_final.png ]; then
+            printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82' > /tmp/logo_final.png
+            echo "Logo fallback used"
+          fi
+
+          # QR
+          if curl -fsSL "$QR_URL" -o /tmp/qr_raw.png; then
+            ffmpeg -y -i /tmp/qr_raw.png -vf "format=rgba,scale=120:120:force_original_aspect_ratio=decrease" /tmp/qr_final.png || true
+          fi
+          if [ ! -f /tmp/qr_final.png ]; then
+            cp /tmp/logo_final.png /tmp/qr_final.png
+            echo "QR fallback used"
+          fi
+
+          echo "Setup ready. Logo + QR loaded."
 
       - name: Configure Cloudflare Tunnel
         env:
@@ -52,11 +74,21 @@ jobs:
           mkdir -p ~/.cloudflared
           printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
           chmod 600 ~/.cloudflared/credentials.json
-          python3 -c "import os,pathlib; pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text('tunnel: '+os.environ['TUNNEL_ID']+'\ncredentials-file: /home/runner/.cloudflared/credentials.json\n\ningress:\n  - hostname: zzdigital01.thelac.dpdns.org\n    service: http://127.0.0.1:5000\n  - service: http_status:404\n')"
+          python3 -c "
+          import os, pathlib
+          pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text(
+            'tunnel: ' + os.environ['TUNNEL_ID'] + '''
+          credentials-file: /home/runner/.cloudflared/credentials.json
+          ingress:
+            - hostname: zzdigital01.thelac.dpdns.org
+              service: http://127.0.0.1:5000
+            - service: http_status:404
+          ''')
+          "
 
       - name: Start HLS Web Server
         run: |
-          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text("""
+          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text(r"""
           const http = require("http");
           const fs = require("fs");
           const path = require("path");
@@ -77,14 +109,14 @@ jobs:
             if (relative === "/thumbnail.jpg") relative = "/thumb.jpg";
             const filePath = path.resolve(ROOT, "." + relative);
             if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) { res.writeHead(403); return res.end(); }
-            const ext = path.extname(filePath);
+            const ext = path.extname(filePath).toLowerCase();
             if (!MIME[ext]) { res.writeHead(403); return res.end(); }
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
               if (ext === ".m3u8") {
                 let body = fs.readFileSync(filePath, "utf8");
                 if (body.indexOf("#EXTINF") !== -1 && body.indexOf("#EXT-X-START") === -1) {
-                  body = body.replace("#EXTM3U", "#EXTM3U\\n#EXT-X-START:TIME-OFFSET=-20.0");
+                  body = body.replace("#EXTM3U", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=-12.0");
                 }
                 const buf = Buffer.from(body);
                 res.setHeader("Content-Type", MIME[ext]);
@@ -107,35 +139,64 @@ jobs:
           """)'
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
+          sleep 1
+          if ! kill -0 "$(cat /tmp/server.pid)" 2>/dev/null; then
+            echo "HLS server failed to start"
+            cat /tmp/server.log || true
+            exit 1
+          fi
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
           echo $! > /tmp/tunnel.pid
+          for i in $(seq 1 30); do
+            if grep -q "Registered tunnel connection" /tmp/tunnel.log 2>/dev/null || \
+               grep -q "Connection.*registered" /tmp/tunnel.log 2>/dev/null; then
+              echo "Tunnel up"
+              break
+            fi
+            sleep 1
+          done
 
       - name: Run Stream Engine & Self-Chaining Watchdog
         run: |
           set -euo pipefail
 
-          python3 -c 'from pathlib import Path; import os; Path(os.environ["HLS_DIR"]).joinpath("index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1896000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS=\"avc1.4d401f,mp4a.40.2\"\n720p/stream.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=996000,AVERAGE-BANDWIDTH=896000,RESOLUTION=854x480,FRAME-RATE=25,CODECS=\"avc1.4d401e,mp4a.40.2\"\n480p/stream.m3u8\n")'
+          # Master playlist
+          cat > "${HLS_DIR}/index.m3u8" << 'EOF'
+          #EXTM3U
+          #EXT-X-VERSION:6
+          #EXT-X-INDEPENDENT-SEGMENTS
+          #EXT-X-STREAM-INF:BANDWIDTH=2096000,AVERAGE-BANDWIDTH=1896000,RESOLUTION=1280x720,FRAME-RATE=25,CODECS="avc1.4d401f,mp4a.40.2"
+          720p/stream.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=996000,AVERAGE-BANDWIDTH=896000,RESOLUTION=854x480,FRAME-RATE=25,CODECS="avc1.4d401e,mp4a.40.2"
+          480p/stream.m3u8
+          EOF
 
           HTTP_HEADERS="User-Agent: ${USER_AGENT}"$'\r\n'"Referer: ${REFERER}"$'\r\n'
 
-          FILTER_COMPLEX="[0:v:2]setsar=1[base];[1:v]format=rgba[lg];[base][lg]overlay=x=W-w-10:y=H-h-10:format=auto:repeatlast=1,split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
+          # Filter: logo 120s → QR 30s + fade + nền mờ + timestamp UTC+7
+          CYCLE=$((LOGO_SEC + QR_SEC))
+          FILTER_COMPLEX="[0:v:2]setsar=1[base];[1:v]format=rgba,scale=120:120[lg];[2:v]format=rgba,scale=120:120[qr];color=c=black@0.45:s=140x140:d=1[bg];[bg][qr]overlay=(W-w)/2:(H-h)/2[qrbg];[qrbg]drawtext=text='%{localtime\:%H\\:%M\\:%S} UTC+7':fontcolor=white:fontsize=14:box=1:boxcolor=black@0.55:boxborderw=4:x=(w-text_w)/2:y=h-text_h-6:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})'[qrts];[base][lg]overlay=x=W-w-16:y=H-h-16:enable='lt(mod(t\,${CYCLE})\,${LOGO_SEC})':format=auto:repeatlast=0[tmp1];[tmp1][qrts]overlay=x=W-w-16:y=H-h-16:enable='gte(mod(t\,${CYCLE})\,${LOGO_SEC})':format=auto:repeatlast=0[outv];[outv]split=2[out720][tmp480];[tmp480]scale=854:480:flags=fast_bilinear,setsar=1[out480];[0:a:0]asplit=2[a720][a480]"
 
           start_ffmpeg() {
-            echo "Khoi dong FFmpeg ABR (HTTP MPD, giu PTS)..."
+            echo "Khoi dong FFmpeg ABR + Logo/QR cycle..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
+            rm -f "${HLS_DIR}/720p"/s_*.ts "${HLS_DIR}/480p"/s_*.ts 2>/dev/null || true
+
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-              -fflags +discardcorrupt \
-              -thread_queue_size 512 \
+              -fflags +discardcorrupt+genpts \
+              -thread_queue_size 1024 \
               -headers "$HTTP_HEADERS" \
-              -rw_timeout 15000000 \
-              -timeout 15000000 \
+              -rw_timeout 20000000 \
+              -timeout 20000000 \
               -cenc_decryption_key "$CLEARKEY_KEY" \
               -i "$MPD_URL" \
               -thread_queue_size 64 \
               -i /tmp/logo_final.png \
+              -thread_queue_size 64 \
+              -i /tmp/qr_final.png \
               -filter_complex "$FILTER_COMPLEX" \
               -map "[out720]" -map "[a720]" \
               -c:v libx264 -preset ultrafast -profile:v main -level 3.1 \
@@ -143,7 +204,7 @@ jobs:
               -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
               -b:v 1800k -maxrate 2000k -bufsize 3600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
+              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 6 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/720p/s_%06d.ts" \
               "${HLS_DIR}/720p/stream.m3u8" \
@@ -153,7 +214,7 @@ jobs:
               -pix_fmt yuv420p -fps_mode cfr -r 25 -g 100 -keyint_min 100 -sc_threshold 0 \
               -b:v 800k -maxrate 900k -bufsize 1600k \
               -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 4 -hls_list_size 450 -hls_delete_threshold 8 \
+              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" -hls_delete_threshold 6 \
               -hls_flags delete_segments+omit_endlist+independent_segments+temp_file+program_date_time \
               -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" \
               "${HLS_DIR}/480p/stream.m3u8" \
@@ -164,40 +225,48 @@ jobs:
           snap_thumb() {
             local ts
             ts=$(ls -1t "${HLS_DIR}/720p"/s_*.ts 2>/dev/null | head -n 1 || true)
-            [ -n "$ts" ] || return 0
-            ffmpeg -y -hide_banner -loglevel error -ss 0.4 -i "$ts" -frames:v 1 \
-              -vf "scale=320:180:flags=fast_bilinear" -q:v 6 "${HLS_DIR}/thumb.jpg" || true
+            if [ -z "$ts" ] || [ ! -f "$ts" ]; then
+              return 0
+            fi
+            ffmpeg -y -hide_banner -loglevel error -ss 0.3 -i "$ts" -frames:v 1 \
+              -vf "scale=320:180:flags=fast_bilinear" -q:v 6 "${HLS_DIR}/thumb.jpg" 2>/dev/null || true
           }
 
-          start_ffmpeg
-
-          echo "Dang cho HLS..."
+          # Start với retry
+          MAX_START_RETRY=4
           READY=0
-          for i in $(seq 1 60); do
-            C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
-            C480=$(grep -c "^#EXTINF" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || echo 0)
-            if [ "$C720" -ge 5 ] && [ "$C480" -ge 5 ]; then
-              READY=1
-              break
-            fi
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "FFmpeg da dung luc khoi dong!"
-              cat /tmp/ffmpeg.log || true
-              exit 1
-            fi
+          for attempt in $(seq 1 $MAX_START_RETRY); do
+            start_ffmpeg
+            echo "Cho HLS (lan $attempt)..."
+            for i in $(seq 1 45); do
+              C720=$(grep -c "^#EXTINF" "${HLS_DIR}/720p/stream.m3u8" 2>/dev/null || echo 0)
+              C480=$(grep -c "^#EXTINF" "${HLS_DIR}/480p/stream.m3u8" 2>/dev/null || echo 0)
+              if [ "$C720" -ge 4 ] && [ "$C480" -ge 4 ]; then
+                READY=1
+                break 2
+              fi
+              if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+                echo "FFmpeg chet som, log:"
+                tail -n 40 /tmp/ffmpeg.log || true
+                break
+              fi
+              sleep 2
+            done
+            kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
             sleep 2
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Loi khoi dong FFmpeg!"
+            echo "Loi khoi dong FFmpeg sau $MAX_START_RETRY lan!"
             cat /tmp/ffmpeg.log || true
             exit 1
           fi
-          snap_thumb
 
+          snap_thumb
           echo "=========================================================="
           echo "BOX MOVIE 1 ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
           echo "THUMB: https://zzdigital01.thelac.dpdns.org/vtv/thumb.jpg"
+          echo "Logo ${LOGO_SEC}s ↔ QR ${QR_SEC}s + timestamp UTC+7"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -207,21 +276,28 @@ jobs:
           AUTO_TRIGGER_SECONDS=19800
           NEXT_TRIGGERED=0
           THUMB_TICK=0
+          LOG_ROTATE_TICK=0
 
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
-              NEXT_TRIGGERED=1
+              echo "Trigger next workflow..."
+              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || {
+                echo "gh workflow run failed, retry in 60s"
+                sleep 60
+                gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
+              }
             fi
 
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+              echo "Restart HLS server"
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             fi
             if ! kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+              echo "Restart tunnel"
               nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
               echo $! > /tmp/tunnel.pid
             fi
@@ -243,22 +319,36 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 80 ]; then
+            if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 70 ]; then
               echo "FFmpeg su co (Alive: $FFMPEG_ALIVE, Stalled: ${STALE_SECONDS}s)"
-              tail -n 50 /tmp/ffmpeg.log || true
+              tail -n 30 /tmp/ffmpeg.log || true
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
               start_ffmpeg
               STALE_SECONDS=0
               LAST_MOD_TIME=0
+              sleep 8
             fi
 
             THUMB_TICK=$((THUMB_TICK + 10))
-            if [ "$THUMB_TICK" -ge 10 ]; then
+            if [ "$THUMB_TICK" -ge 20 ]; then
               snap_thumb
               THUMB_TICK=0
             fi
 
-            echo "[$(date -u '+%H:%M:%S UTC')] Running: $((ELAPSED / 60))m / 330m | Delay: ${STALE_SECONDS}s"
+            LOG_ROTATE_TICK=$((LOG_ROTATE_TICK + 10))
+            if [ "$LOG_ROTATE_TICK" -ge 600 ]; then
+              tail -n 200 /tmp/ffmpeg.log > /tmp/ffmpeg.log.tmp 2>/dev/null || true
+              mv /tmp/ffmpeg.log.tmp /tmp/ffmpeg.log 2>/dev/null || true
+              LOG_ROTATE_TICK=0
+            fi
+
+            SHM_USE=$(df /dev/shm 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%' || echo 0)
+            if [ "${SHM_USE:-0}" -gt 85 ]; then
+              echo "WARN: /dev/shm ${SHM_USE}% — force clean old segments"
+              find "${HLS_DIR}/720p" "${HLS_DIR}/480p" -name 's_*.ts' -mmin +3 -delete 2>/dev/null || true
+            fi
+
+            echo "[$(date -u '+%H:%M:%S UTC')] Running: $((ELAPSED / 60))m / 330m | Delay: ${STALE_SECONDS}s | shm: ${SHM_USE}%"
             sleep 10
           done
