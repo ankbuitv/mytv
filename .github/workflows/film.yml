@@ -61,22 +61,32 @@ jobs:
               if (req.method === "HEAD") return res.end();
               fs.createReadStream(filePath).pipe(res);
             });
-          }).listen(5000, "127.0.0.1");
+          }).listen(5000, "127.0.0.1", () => console.log("Server started"));
           EOFJS
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
           sleep 2
+          if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+            echo "Server failed"
+            cat /tmp/server.log
+            exit 1
+          fi
+          echo "Server OK"
 
       - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
           echo $! > /tmp/cf.pid
-          sleep 8
-          PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || echo "PENDING")
+          sleep 10
+          PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | tail -1 || echo "")
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "Tunnel failed to start"
+            cat /tmp/cf.log
+            exit 1
+          fi
           echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo "========================================"
-          echo "PUBLIC URL: $PUBLIC_URL/film.m3u8"
-          echo "========================================"
+          echo ""
+          echo "✅ TUNNEL OK: $PUBLIC_URL/film.m3u8"
 
       - name: Film Stream Engine
         run: |
@@ -99,12 +109,8 @@ jobs:
             local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
 
             local late=$((now_min - start_min))
-            if [ "$late" -lt 0 ]; then late=0; fi
-            if [ "$late" -gt "$duration" ]; then
-              echo "-1"
-              return
-            fi
-
+            [ "$late" -lt 0 ] && late=0
+            [ "$late" -gt "$duration" ] && echo "-1" && return
             echo $((late * 60))
           }
 
@@ -117,32 +123,23 @@ jobs:
             url=$(echo "$url" | sed 's/\.$//')
 
             local seek_sec=$(calc_seek "$start_min" "$duration")
-
-            if [ "$seek_sec" == "-1" ]; then
-              echo "[$(date '+%H:%M:%S')] SKIP: $name (quá giờ)"
-              return
-            fi
+            [ "$seek_sec" == "-1" ] && echo "[SKIP] $name (quá giờ)" && return
 
             local seek_min=$((seek_sec / 60))
-            echo "[$(date '+%H:%M:%S')] >>> $name (seek $seek_min:$((seek_sec % 60)))"
-            echo "URL: $url"
+            echo "[$(date '+%H:%M:%S')] >>> $name (seek ${seek_min}m)"
 
-            if [ -f /tmp/ffmpeg.pid ]; then
-              kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-              sleep 1
-            fi
-
+            [ -f /tmp/ffmpeg.pid ] && kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
             rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
 
             if is_youtube "$url"; then
-              # YouTube via yt-dlp
-              echo "[DEBUG] YouTube source"
+              echo "[YT] Processing..."
+              # YouTube: download to MP4, then seek + transcode
               nohup bash -c "
-                yt-dlp -f best -o - '$url' 2>/dev/null | \
+                yt-dlp -f best -o /tmp/yt_video.mp4 '$url' 2>/dev/null && \
                 ffmpeg -hide_banner -loglevel warning -nostdin \
                   -re \
                   -ss $seek_sec \
-                  -f mpegts -i - \
+                  -i /tmp/yt_video.mp4 \
                   -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
                   -x264-params 'keyint=48:scenecut=0' \
                   -pix_fmt yuv420p -r 25 -g 48 \
@@ -154,8 +151,8 @@ jobs:
                   ${HLS_DIR}/stream.m3u8
               " > /tmp/ffmpeg.log 2>&1 &
             else
-              # M3U8 / MP4 with curl headers
-              echo "[DEBUG] M3U8/MP4 source"
+              echo "[HLS/MP4] Processing..."
+              # M3U8/MP4: direct with headers
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -re \
                 -timeout 30000000 \
@@ -185,18 +182,34 @@ jobs:
 
           LAST_URL=""
           LOOP_COUNT=0
+          CHECK_TUNNEL=0
 
           while true; do
             LOOP_COUNT=$((LOOP_COUNT + 1))
+            CHECK_TUNNEL=$((CHECK_TUNNEL + 1))
 
+            # Revive server
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
+              echo "[REVIVE] Server died, restart..."
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
+              sleep 2
             fi
 
+            # Revive tunnel
             if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
+              echo "[REVIVE] Tunnel died, restart..."
               nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
               echo $! > /tmp/cf.pid
+              sleep 8
+            fi
+
+            # Check tunnel every 5 loops
+            if [ "$CHECK_TUNNEL" -ge 5 ]; then
+              if ! curl -fsSL --max-time 5 "http://localhost:5000/stream.m3u8" > /dev/null 2>&1; then
+                echo "[WARN] Local server not responding"
+              fi
+              CHECK_TUNNEL=0
             fi
 
             SCHED=$(fetch_schedule)
@@ -206,7 +219,7 @@ jobs:
             CUR_DUR=$(echo "$SCHED" | jq -r '.current.duration // 120')
 
             if [ -z "$CUR_URL" ]; then
-              echo "[$(date '+%H:%M:%S')] Chờ lịch..."
+              echo "[$(date '+%H:%M:%S')] Waiting for schedule..."
               sleep 30
               continue
             fi
@@ -219,7 +232,7 @@ jobs:
 
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date '+%H:%M:%S')] FFmpeg died"
-              tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
+              tail -n 3 /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
               sleep 5
               continue
@@ -227,10 +240,11 @@ jobs:
 
             if [ -f "${HLS_DIR}/stream.m3u8" ]; then
               SEG=$(grep -c "^seg_" "${HLS_DIR}/stream.m3u8" 2>/dev/null || echo 0)
-              echo "[$(date '+%H:%M:%S')] $CUR_NAME | Seg: $SEG"
+              echo "[$(date '+%H:%M:%S')] OK: $CUR_NAME | Segments: $SEG"
             fi
 
             if [ "$LOOP_COUNT" -ge 1380 ]; then
+              echo "[CHAIN] Trigger next run"
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" 2>/dev/null || true
               LOOP_COUNT=0
             fi
