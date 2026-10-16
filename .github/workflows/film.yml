@@ -1,4 +1,4 @@
-name: HLS Film Channel
+name: HLS Film Channel (Bore Public)
 
 on:
   workflow_dispatch:
@@ -9,246 +9,157 @@ concurrency:
   group: film-channel
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  actions: write
-
 jobs:
   film-restream:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
       SCHEDULE_API: "https://ads.ankb.qzz.io/api/schedule/current"
-      HLS_DIR: "/tmp/hls/film" # Đã đổi từ /dev/shm sang /tmp để tránh tràn bộ nhớ
+      HLS_DIR: "/tmp/hls/film"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      HLS_LIST_SIZE: "15" # Giảm danh sách segment lưu tạm
 
     steps:
-      - name: Install Dependencies
+      - name: Install Tools, Caddy & Bore
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg jq curl python3-pip
+          sudo apt-get install -y -qq ffmpeg jq curl python3-pip caddy
           pip install -q --break-system-packages yt-dlp || pip install -q yt-dlp
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
-          sudo dpkg -i /tmp/cf.deb
-          rm -f /tmp/cf.deb
+          
+          # Tải Bore CLI
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
+          sudo mv /tmp/bore /usr/local/bin/
+          
+          # Tạo thư mục lưu HLS
           mkdir -p "${HLS_DIR}"
 
-      - name: Start HLS Web Server
+      - name: Start Caddy Web Server
         run: |
-          cat > /tmp/hls_server.js << 'EOFJS'
-          const http = require("http");
-          const fs = require("fs");
-          const path = require("path");
-          const ROOT = "/tmp/hls/film";
-          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
-          http.createServer((req, res) => {
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
-            let pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
-            if (pathname === "/" || pathname === "/film.m3u8") pathname = "/stream.m3u8";
-            const filePath = path.resolve(ROOT, "." + pathname);
-            if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end(); }
-            const ext = path.extname(filePath).toLowerCase();
-            if (!MIME[ext]) { res.writeHead(404); return res.end(); }
-            fs.stat(filePath, (err, stat) => {
-              if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
-              res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Cache-Control", "no-store, max-age=0");
-              res.writeHead(200);
-              if (req.method === "HEAD") return res.end();
-              fs.createReadStream(filePath).pipe(res);
-            });
-          }).listen(5000, "127.0.0.1", () => console.log("Server started"));
-          EOFJS
-          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-          echo $! > /tmp/server.pid
-          sleep 2
-          if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-            echo "Server failed"
-            cat /tmp/server.log
+          cat << 'EOF' > /tmp/Caddyfile
+          :5000 {
+              root * /tmp/hls/film
+              file_server
+              header Access-Control-Allow-Origin "*"
+              header Cache-Control "no-cache, no-store, must-revalidate"
+          }
+          EOF
+          caddy start --config /tmp/Caddyfile
+          echo "✅ Caddy Server đã chạy tại cổng 5000"
+
+      - name: Start Bore Tunnel
+        run: |
+          # Chạy bore public port 5000 lên bore.pub
+          nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
+          sleep 5
+          
+          # Lấy Port ngẫu nhiên do bore.pub cấp
+          BORE_PORT=$(grep -oP 'listening at bore.pub:\K[0-9]+' /tmp/bore.log | tail -1 || echo "")
+          
+          if [ -z "$BORE_PORT" ]; then
+            echo "❌ Không thể khởi tạo Bore Tunnel!"
+            cat /tmp/bore.log
             exit 1
           fi
-          echo "Server OK"
+          
+          STREAM_URL="http://bore.pub:${BORE_PORT}/stream.m3u8"
+          echo "BORE_PORT=$BORE_PORT" >> $GITHUB_ENV
+          
+          echo "================================================="
+          echo "🎬 STREAM URL CỦA BẠN:"
+          echo "$STREAM_URL"
+          echo "================================================="
 
-      - name: Start Cloudflare Tunnel
+      - name: Main Stream Engine
         run: |
-          nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
-          echo $! > /tmp/cf.pid
-          sleep 10
-          PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | tail -1 || echo "")
-          if [ -z "$PUBLIC_URL" ]; then
-            echo "Tunnel failed to start"
-            cat /tmp/cf.log
-            exit 1
-          fi
-          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo "✅ TUNNEL OK: $PUBLIC_URL/film.m3u8"
-
-      - name: Film Stream Engine
-        run: |
-          set -euo pipefail
-
-          fetch_schedule() {
-            curl -fsSL --max-time 10 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
+          fetch_url() {
+            curl -fsSL --max-time 10 "$SCHEDULE_API" | jq -r '.current.url // empty'
           }
 
-          is_youtube() {
-            [[ "$1" =~ youtu(\.be|be\.com) ]]
+          fetch_name() {
+            curl -fsSL --max-time 10 "$SCHEDULE_API" | jq -r '.current.name // "Phim"'
           }
-
-          calc_seek() {
-            local start_min="$1"
-            local duration="$2"
-
-            local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
-            local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
-            local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
-
-            local late=$((now_min - start_min))
-            if [ "$late" -lt 0 ]; then late=0; fi
-            if [ "$late" -gt "$duration" ]; then echo "-1"; return; fi
-            echo $((late * 60))
-          }
-
-          stream_film() {
-            local url="$1"
-            local name="$2"
-            local start_min="$3"
-            local duration="$4"
-
-            url=$(echo "$url" | sed 's/\.$//')
-
-            local seek_sec=$(calc_seek "$start_min" "$duration")
-            if [ "$seek_sec" = "-1" ]; then echo "[SKIP] $name (quá giờ)"; return; fi
-
-            local seek_min=$((seek_sec / 60))
-            echo "[$(date '+%H:%M:%S')] >>> $name (seek ${seek_min}m)"
-
-            if [ -f /tmp/ffmpeg.pid ]; then
-              kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-            fi
-            rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
-
-            if is_youtube "$url"; then
-              echo "[YT] Processing (Streaming pipe)..."
-              nohup bash -c "
-                yt-dlp -g -f 'best[ext=mp4]/best' '$url' | {
-                  read -r stream_url
-                  ffmpeg -hide_banner -loglevel warning -nostdin \
-                    -re \
-                    -ss $seek_sec \
-                    -i \"\$stream_url\" \
-                    -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
-                    -x264-params 'keyint=48:scenecut=0' \
-                    -pix_fmt yuv420p -r 25 -g 48 \
-                    -b:v 3000k -maxrate 3500k -bufsize 5000k \
-                    -c:a aac -b:a 96k -ar 48000 -ac 2 \
-                    -f hls -hls_time 4 -hls_list_size ${HLS_LIST_SIZE} \
-                    -hls_flags delete_segments+omit_endlist \
-                    -hls_segment_filename ${HLS_DIR}/seg_%05d.ts \
-                    ${HLS_DIR}/stream.m3u8
-                }
-              " > /tmp/ffmpeg.log 2>&1 &
-            else
-              echo "[HLS/MP4] Processing..."
-              nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-                -re \
-                -timeout 30000000 \
-                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                -referer "https://kkphim.com/" \
-                -ss "$seek_sec" \
-                -i "$url" \
-                -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
-                -x264-params "keyint=48:scenecut=0" \
-                -pix_fmt yuv420p -r 25 -g 48 \
-                -b:v 3000k -maxrate 3500k -bufsize 5000k \
-                -c:a aac -b:a 96k -ar 48000 -ac 2 \
-                -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
-                -hls_flags delete_segments+omit_endlist \
-                -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
-                "${HLS_DIR}/stream.m3u8" \
-                > /tmp/ffmpeg.log 2>&1 &
-            fi
-
-            echo $! > /tmp/ffmpeg.pid
-            sleep 3
-          }
-
-          echo "========== FILM CHANNEL =========="
-          echo "URL: $PUBLIC_URL/film.m3u8"
-          echo "===================================="
 
           LAST_URL=""
-          LOOP_COUNT=0
-          CHECK_TUNNEL=0
 
           while true; do
-            LOOP_COUNT=$((LOOP_COUNT + 1))
-            CHECK_TUNNEL=$((CHECK_TUNNEL + 1))
-
-            # Revive server
-            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[REVIVE] Server died, restart..."
-              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-              echo $! > /tmp/server.pid
-              sleep 2
+            # 1. Tự khôi phục Caddy nếu bị nghẽn
+            if ! pgrep -x "caddy" > /dev/null; then
+              echo "[REVIVE] Caddy Server dừng, đang bật lại..."
+              caddy start --config /tmp/Caddyfile
             fi
 
-            # Revive tunnel
-            if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[REVIVE] Tunnel died, restart..."
-              nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
-              echo $! > /tmp/cf.pid
-              sleep 8
+            # 2. Tự khôi phục Bore Tunnel nếu mất kết nối
+            if ! pgrep -x "bore" > /dev/null; then
+              echo "[REVIVE] Bore Tunnel mất kết nối, đang mở lại port..."
+              nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             fi
 
-            # Check tunnel
-            if [ "$CHECK_TUNNEL" -ge 5 ]; then
-              if ! curl -fsSL --max-time 5 "http://localhost:5000/stream.m3u8" > /dev/null 2>&1; then
-                echo "[WARN] Local server not responding"
-              fi
-              CHECK_TUNNEL=0
-            fi
-
-            SCHED=$(fetch_schedule)
-            CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
-            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // ""')
-            CUR_START=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
-            CUR_DUR=$(echo "$SCHED" | jq -r '.current.duration // 120')
+            CUR_URL=$(fetch_url)
+            CUR_NAME=$(fetch_name)
 
             if [ -z "$CUR_URL" ]; then
-              echo "[$(date '+%H:%M:%S')] Waiting for schedule..."
+              echo "[$(date '+%H:%M:%S')] ⏳ Chưa có lịch phát, đợi 30s..."
               sleep 30
               continue
             fi
 
+            # Nếu có URL mới / Đổi phim
             if [ "$CUR_URL" != "$LAST_URL" ]; then
+              echo "[$(date '+%H:%M:%S')] 🚀 Đổi phim: $CUR_NAME"
               LAST_URL="$CUR_URL"
-              stream_film "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DUR"
-              sleep 5
+              
+              # Tắt FFmpeg cũ
+              if [ -f /tmp/ffmpeg.pid ]; then
+                kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
+              fi
+
+              # Xóa segments cũ
+              rm -f ${HLS_DIR}/*
+
+              # Xử lý nguồn phát
+              if [[ "$CUR_URL" =~ youtu(\.be|be\.com) ]]; then
+                INPUT_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$CUR_URL" 2>/dev/null || echo "")
+              else
+                INPUT_URL="$CUR_URL"
+              fi
+
+              if [ -z "$INPUT_URL" ]; then
+                echo "❌ Không lấy được link stream từ: $CUR_URL"
+                LAST_URL=""
+                sleep 10
+                continue
+              fi
+
+              # Chạy FFmpeg ngầm và ghi PID
+              nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+                -re \
+                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+                -referer "https://kkphim.com/" \
+                -i "$INPUT_URL" \
+                -c:v libx264 -preset ultrafast -tune zerolatency \
+                -pix_fmt yuv420p -g 48 \
+                -b:v 2500k -maxrate 3000k -bufsize 4000k \
+                -c:a aac -b:a 128k -ar 44100 \
+                -f hls -hls_time 4 -hls_list_size 10 \
+                -hls_flags delete_segments+omit_endlist \
+                -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
+                "${HLS_DIR}/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
+              
+              echo $! > /tmp/ffmpeg.pid
+              echo "[$(date '+%H:%M:%S')] 🟢 FFmpeg đã khởi động"
             fi
 
+            # Kiểm tra xem FFmpeg có bị die không
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date '+%H:%M:%S')] FFmpeg died"
-              tail -n 10 /tmp/ffmpeg.log 2>/dev/null || true
+              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg bị dừng! Log lỗi cuối:"
+              tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
-              sleep 5
+              sleep 10
               continue
             fi
 
-            if [ -f "${HLS_DIR}/stream.m3u8" ]; then
-              SEG=$(grep -c "^seg_" "${HLS_DIR}/stream.m3u8" 2>/dev/null || echo 0)
-              echo "[$(date '+%H:%M:%S')] OK: $CUR_NAME | Segments: $SEG"
-            fi
-
-            if [ "$LOOP_COUNT" -ge 1380 ]; then
-              echo "[CHAIN] Trigger next run"
-              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" || true
-              LOOP_COUNT=0
-            fi
+            # Đếm số segment .ts
+            SEG_COUNT=$(ls -1 ${HLS_DIR}/*.ts 2>/dev/null | wc -l)
+            echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments active: $SEG_COUNT"
 
             sleep 15
           done
