@@ -28,7 +28,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg jq curl
+          sudo apt-get install -y -qq ffmpeg jq curl python3-pip
+          pip install -q yt-dlp
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
           sudo dpkg -i /tmp/cf.deb
           rm -f /tmp/cf.deb
@@ -45,7 +46,6 @@ jobs:
           const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
           http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
             if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
             let pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
             if (pathname === "/" || pathname === "/film.m3u8") pathname = "/stream.m3u8";
@@ -74,7 +74,6 @@ jobs:
           sleep 8
           PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || echo "PENDING")
           echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo ""
           echo "========================================"
           echo "PUBLIC URL: $PUBLIC_URL/film.m3u8"
           echo "========================================"
@@ -87,27 +86,25 @@ jobs:
             curl -fsSL --max-time 10 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
           }
 
+          is_youtube() {
+            [[ "$1" =~ youtu(\.be|be\.com) ]]
+          }
+
           calc_seek() {
             local start_min="$1"
             local duration="$2"
 
-            # VN time now
             local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
             local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
             local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
 
-            # Tính muộn bao nhiêu phút
             local late=$((now_min - start_min))
-            if [ "$late" -lt 0 ]; then
-              late=0
-            fi
+            if [ "$late" -lt 0 ]; then late=0; fi
             if [ "$late" -gt "$duration" ]; then
-              # Quá giờ, bỏ qua
               echo "-1"
               return
             fi
 
-            # Chuyển thành giây
             echo $((late * 60))
           }
 
@@ -117,49 +114,69 @@ jobs:
             local start_min="$3"
             local duration="$4"
 
-            # Trim URL (xóa dấu chấm cuối)
             url=$(echo "$url" | sed 's/\.$//')
 
             local seek_sec=$(calc_seek "$start_min" "$duration")
 
             if [ "$seek_sec" == "-1" ]; then
-              echo "[$(date '+%H:%M:%S')] >>> SKIP: $name (quá giờ)"
+              echo "[$(date '+%H:%M:%S')] SKIP: $name (quá giờ)"
               return
             fi
 
             local seek_min=$((seek_sec / 60))
-            echo "[$(date '+%H:%M:%S')] >>> STREAM: $name (seek $seek_min:$((seek_sec % 60)) s)"
+            echo "[$(date '+%H:%M:%S')] >>> $name (seek $seek_min:$((seek_sec % 60)))"
             echo "URL: $url"
-            echo "Seek: $seek_sec giây"
 
-            # Kill old
             if [ -f /tmp/ffmpeg.pid ]; then
               kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
             fi
 
             rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
-            mkdir -p "${HLS_DIR}"
 
-            # FFmpeg with seek
-            nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-              -re \
-              -timeout 30000000 \
-              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              -ss "$seek_sec" \
-              -i "$url" \
-              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
-              -x264-params "keyint=48:scenecut=0" \
-              -pix_fmt yuv420p -r 25 -g 48 \
-              -b:v 3000k -maxrate 3500k -bufsize 5000k \
-              -c:a aac -b:a 96k -ar 48000 -ac 2 \
-              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
-              -hls_flags delete_segments+omit_endlist \
-              -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
-              "${HLS_DIR}/stream.m3u8" \
-              > /tmp/ffmpeg.log 2>&1 &
+            if is_youtube "$url"; then
+              # YouTube via yt-dlp
+              echo "[DEBUG] YouTube source"
+              nohup bash -c "
+                yt-dlp -f best -o - '$url' 2>/dev/null | \
+                ffmpeg -hide_banner -loglevel warning -nostdin \
+                  -re \
+                  -ss $seek_sec \
+                  -f mpegts -i - \
+                  -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
+                  -x264-params 'keyint=48:scenecut=0' \
+                  -pix_fmt yuv420p -r 25 -g 48 \
+                  -b:v 3000k -maxrate 3500k -bufsize 5000k \
+                  -c:a aac -b:a 96k -ar 48000 -ac 2 \
+                  -f hls -hls_time 4 -hls_list_size ${HLS_LIST_SIZE} \
+                  -hls_flags delete_segments+omit_endlist \
+                  -hls_segment_filename ${HLS_DIR}/seg_%05d.ts \
+                  ${HLS_DIR}/stream.m3u8
+              " > /tmp/ffmpeg.log 2>&1 &
+            else
+              # M3U8 / MP4 with curl headers
+              echo "[DEBUG] M3U8/MP4 source"
+              nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+                -re \
+                -timeout 30000000 \
+                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -referer "https://kkphim.com/" \
+                -ss "$seek_sec" \
+                -i "$url" \
+                -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
+                -x264-params "keyint=48:scenecut=0" \
+                -pix_fmt yuv420p -r 25 -g 48 \
+                -b:v 3000k -maxrate 3500k -bufsize 5000k \
+                -c:a aac -b:a 96k -ar 48000 -ac 2 \
+                -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
+                -hls_flags delete_segments+omit_endlist \
+                -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
+                "${HLS_DIR}/stream.m3u8" \
+                > /tmp/ffmpeg.log 2>&1 &
+            fi
 
             echo $! > /tmp/ffmpeg.pid
+            sleep 3
           }
 
           echo "========== FILM CHANNEL =========="
@@ -172,7 +189,6 @@ jobs:
           while true; do
             LOOP_COUNT=$((LOOP_COUNT + 1))
 
-            # Revive services
             if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
@@ -183,7 +199,6 @@ jobs:
               echo $! > /tmp/cf.pid
             fi
 
-            # Get schedule
             SCHED=$(fetch_schedule)
             CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
             CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // ""')
@@ -196,14 +211,12 @@ jobs:
               continue
             fi
 
-            # URL khác → stream mới
             if [ "$CUR_URL" != "$LAST_URL" ]; then
               LAST_URL="$CUR_URL"
               stream_film "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DUR"
               sleep 5
             fi
 
-            # Check FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date '+%H:%M:%S')] FFmpeg died"
               tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
@@ -212,7 +225,6 @@ jobs:
               continue
             fi
 
-            # Check segments
             if [ -f "${HLS_DIR}/stream.m3u8" ]; then
               SEG=$(grep -c "^seg_" "${HLS_DIR}/stream.m3u8" 2>/dev/null || echo 0)
               echo "[$(date '+%H:%M:%S')] $CUR_NAME | Seg: $SEG"
