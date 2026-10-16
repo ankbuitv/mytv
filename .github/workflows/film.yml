@@ -21,233 +21,146 @@ jobs:
       SCHEDULE_API: "https://ads.ankb.qzz.io/api/schedule/current"
       HLS_DIR: "/dev/shm/hls/film"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      HLS_LIST_SIZE: "40"
 
     steps:
-      - name: Install Dependencies
+      - name: Setup
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg jq curl python3-pip
           pip install -q yt-dlp
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
-          sudo dpkg -i /tmp/cf.deb
-          rm -f /tmp/cf.deb
-          rm -rf "${HLS_DIR}"
-          mkdir -p "${HLS_DIR}"
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb | sudo dpkg -i /dev/stdin
+          rm -rf "$HLS_DIR"
+          mkdir -p "$HLS_DIR"
 
-      - name: Start HLS Web Server
+      - name: Start Server
         run: |
-          cat > /tmp/hls_server.js << 'EOFJS'
-          const http = require("http");
-          const fs = require("fs");
-          const path = require("path");
-          const ROOT = "/dev/shm/hls/film";
-          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          node -e "
+          const http = require('http');
+          const fs = require('fs');
+          const path = require('path');
           http.createServer((req, res) => {
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
-            let pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
-            if (pathname === "/" || pathname === "/film.m3u8") pathname = "/stream.m3u8";
-            const filePath = path.resolve(ROOT, "." + pathname);
-            if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end(); }
-            const ext = path.extname(filePath).toLowerCase();
-            if (!MIME[ext]) { res.writeHead(404); return res.end(); }
-            fs.stat(filePath, (err, stat) => {
-              if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
-              res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Cache-Control", "no-store, max-age=0");
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+            let p = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+            if (p === '/' || p === '/film.m3u8') p = '/stream.m3u8';
+            const f = path.resolve('$HLS_DIR', '.' + p);
+            if (!f.startsWith('$HLS_DIR')) { res.writeHead(403); return res.end(); }
+            fs.stat(f, (e, s) => {
+              if (e || !s.isFile()) { res.writeHead(404); return res.end(); }
+              res.setHeader('Content-Type', p.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
+              res.setHeader('Cache-Control', 'no-store');
               res.writeHead(200);
-              if (req.method === "HEAD") return res.end();
-              fs.createReadStream(filePath).pipe(res);
+              if (req.method !== 'HEAD') fs.createReadStream(f).pipe(res);
+              else res.end();
             });
-          }).listen(5000, "127.0.0.1", () => console.log("Server started"));
-          EOFJS
-          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-          echo $! > /tmp/server.pid
-          sleep 2
-          if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-            echo "Server failed"
-            cat /tmp/server.log
-            exit 1
-          fi
-          echo "Server OK"
+          }).listen(5000, '127.0.0.1');
+          " > /tmp/server.js &
+          sleep 1
 
-      - name: Start Cloudflare Tunnel
+      - name: Start Tunnel
         run: |
           nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
-          echo $! > /tmp/cf.pid
-          sleep 10
-          PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | tail -1 || echo "")
-          if [ -z "$PUBLIC_URL" ]; then
-            echo "Tunnel failed to start"
-            cat /tmp/cf.log
-            exit 1
-          fi
-          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo ""
-          echo "✅ TUNNEL OK: $PUBLIC_URL/film.m3u8"
+          sleep 8
+          URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | tail -1)
+          echo "STREAM_URL=$URL/film.m3u8" >> $GITHUB_ENV
+          echo "Stream: $URL/film.m3u8"
 
-      - name: Film Stream Engine
+      - name: Stream
         run: |
-          set -euo pipefail
-
-          fetch_schedule() {
-            curl -fsSL --max-time 10 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
+          fetch_sched() {
+            curl -fsSL --max-time 8 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
           }
 
-          is_youtube() {
-            [[ "$1" =~ youtu(\.be|be\.com) ]]
+          is_yt() { [[ "$1" =~ youtu ]]; }
+
+          seek_calc() {
+            local s=$1 d=$2
+            local h=$(TZ=Asia/Ho_Chi_Minh date +%H)
+            local m=$(TZ=Asia/Ho_Chi_Minh date +%M)
+            local now=$((10#$h*60+10#$m))
+            local late=$((now-s))
+            [ $late -lt 0 ] && late=0
+            [ $late -gt $d ] && echo -1 && return
+            echo $((late*60))
           }
 
-          calc_seek() {
-            local start_min="$1"
-            local duration="$2"
-
-            local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
-            local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
-            local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
-
-            local late=$((now_min - start_min))
-            [ "$late" -lt 0 ] && late=0
-            [ "$late" -gt "$duration" ] && echo "-1" && return
-            echo $((late * 60))
-          }
-
-          stream_film() {
-            local url="$1"
-            local name="$2"
-            local start_min="$3"
-            local duration="$4"
-
+          run_ffmpeg() {
+            local url="$1" name="$2" start="$3" dur="$4"
             url=$(echo "$url" | sed 's/\.$//')
-
-            local seek_sec=$(calc_seek "$start_min" "$duration")
-            [ "$seek_sec" == "-1" ] && echo "[SKIP] $name (quá giờ)" && return
-
-            local seek_min=$((seek_sec / 60))
-            echo "[$(date '+%H:%M:%S')] >>> $name (seek ${seek_min}m)"
-
-            [ -f /tmp/ffmpeg.pid ] && kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
-            rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
-
-            if is_youtube "$url"; then
-              echo "[YT] Processing..."
-              # YouTube: download to MP4, then seek + transcode
-              nohup bash -c "
-                yt-dlp -f best -o /tmp/yt_video.mp4 '$url' 2>/dev/null && \
-                ffmpeg -hide_banner -loglevel warning -nostdin \
-                  -re \
-                  -ss $seek_sec \
-                  -i /tmp/yt_video.mp4 \
-                  -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
-                  -x264-params 'keyint=48:scenecut=0' \
-                  -pix_fmt yuv420p -r 25 -g 48 \
-                  -b:v 3000k -maxrate 3500k -bufsize 5000k \
-                  -c:a aac -b:a 96k -ar 48000 -ac 2 \
-                  -f hls -hls_time 4 -hls_list_size ${HLS_LIST_SIZE} \
-                  -hls_flags delete_segments+omit_endlist \
-                  -hls_segment_filename ${HLS_DIR}/seg_%05d.ts \
-                  ${HLS_DIR}/stream.m3u8
-              " > /tmp/ffmpeg.log 2>&1 &
+            
+            local sk=$(seek_calc "$start" "$dur")
+            [ "$sk" == "-1" ] && echo "SKIP: $name (quá giờ)" && return
+            
+            pkill -f ffmpeg 2>/dev/null || true
+            rm -f "$HLS_DIR"/*.ts "$HLS_DIR"/stream.m3u8
+            
+            echo "[$(date '+%H:%M:%S')] START: $name (seek $sk s)"
+            
+            local cmd="ffmpeg -hide_banner -loglevel info -nostdin -re"
+            
+            if is_yt "$url"; then
+              cmd="$cmd -ss $sk -i pipe:0 -c:v libx264 -preset ultrafast -tune zerolatency -b:v 2500k -c:a aac -b:a 96k -f hls -hls_time 4 -hls_list_size 30 -hls_flags delete_segments+omit_endlist -hls_segment_filename '$HLS_DIR/seg_%05d.ts' '$HLS_DIR/stream.m3u8'"
+              yt-dlp -f best -o - "$url" 2>/dev/null | eval "$cmd" > /tmp/ff.log 2>&1 &
             else
-              echo "[HLS/MP4] Processing..."
-              # M3U8/MP4: direct with headers
-              nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-                -re \
-                -timeout 30000000 \
-                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                -referer "https://kkphim.com/" \
-                -ss "$seek_sec" \
-                -i "$url" \
-                -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
-                -x264-params "keyint=48:scenecut=0" \
-                -pix_fmt yuv420p -r 25 -g 48 \
-                -b:v 3000k -maxrate 3500k -bufsize 5000k \
-                -c:a aac -b:a 96k -ar 48000 -ac 2 \
-                -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
-                -hls_flags delete_segments+omit_endlist \
-                -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
-                "${HLS_DIR}/stream.m3u8" \
-                > /tmp/ffmpeg.log 2>&1 &
+              cmd="$cmd -timeout 30000000 -user_agent 'Mozilla/5.0' -ss $sk -i '$url' -c:v libx264 -preset ultrafast -tune zerolatency -b:v 2500k -c:a aac -b:a 96k -f hls -hls_time 4 -hls_list_size 30 -hls_flags delete_segments+omit_endlist -hls_segment_filename '$HLS_DIR/seg_%05d.ts' '$HLS_DIR/stream.m3u8'"
+              eval "$cmd" > /tmp/ff.log 2>&1 &
             fi
-
-            echo $! > /tmp/ffmpeg.pid
-            sleep 3
+            
+            echo $! > /tmp/ff.pid
+            sleep 4
           }
 
-          echo "========== FILM CHANNEL =========="
-          echo "URL: $PUBLIC_URL/film.m3u8"
-          echo "===================================="
-
-          LAST_URL=""
-          LOOP_COUNT=0
-          CHECK_TUNNEL=0
-
+          last="" loop=0
           while true; do
-            LOOP_COUNT=$((LOOP_COUNT + 1))
-            CHECK_TUNNEL=$((CHECK_TUNNEL + 1))
-
-            # Revive server
-            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[REVIVE] Server died, restart..."
-              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
-              echo $! > /tmp/server.pid
-              sleep 2
-            fi
-
-            # Revive tunnel
-            if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[REVIVE] Tunnel died, restart..."
-              nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
-              echo $! > /tmp/cf.pid
-              sleep 8
-            fi
-
-            # Check tunnel every 5 loops
-            if [ "$CHECK_TUNNEL" -ge 5 ]; then
-              if ! curl -fsSL --max-time 5 "http://localhost:5000/stream.m3u8" > /dev/null 2>&1; then
-                echo "[WARN] Local server not responding"
-              fi
-              CHECK_TUNNEL=0
-            fi
-
-            SCHED=$(fetch_schedule)
-            CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
-            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // ""')
-            CUR_START=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
-            CUR_DUR=$(echo "$SCHED" | jq -r '.current.duration // 120')
-
-            if [ -z "$CUR_URL" ]; then
-              echo "[$(date '+%H:%M:%S')] Waiting for schedule..."
-              sleep 30
-              continue
-            fi
-
-            if [ "$CUR_URL" != "$LAST_URL" ]; then
-              LAST_URL="$CUR_URL"
-              stream_film "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DUR"
+            loop=$((loop+1))
+            
+            SCHED=$(fetch_sched)
+            url=$(echo "$SCHED" | jq -r '.current.url // empty')
+            name=$(echo "$SCHED" | jq -r '.current.name // ""')
+            start=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
+            dur=$(echo "$SCHED" | jq -r '.current.duration // 120')
+            
+            [ -z "$url" ] && { echo "WAIT"; sleep 30; continue; }
+            
+            if [ "$url" != "$last" ]; then
+              last="$url"
+              run_ffmpeg "$url" "$name" "$start" "$dur"
               sleep 5
             fi
-
-            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date '+%H:%M:%S')] FFmpeg died"
-              tail -n 3 /tmp/ffmpeg.log 2>/dev/null || true
-              LAST_URL=""
+            
+            if ! kill -0 "$(cat /tmp/ff.pid 2>/dev/null)" 2>/dev/null; then
+              echo "DIED: $(head -5 /tmp/ff.log 2>/dev/null)"
+              last=""
               sleep 5
               continue
             fi
-
-            if [ -f "${HLS_DIR}/stream.m3u8" ]; then
-              SEG=$(grep -c "^seg_" "${HLS_DIR}/stream.m3u8" 2>/dev/null || echo 0)
-              echo "[$(date '+%H:%M:%S')] OK: $CUR_NAME | Segments: $SEG"
+            
+            if [ -f "$HLS_DIR/stream.m3u8" ]; then
+              seg=$(grep -c "^seg_" "$HLS_DIR/stream.m3u8" 2>/dev/null || echo 0)
+              echo "[$(date '+%H:%M:%S')] $name | seg=$seg"
+            else
+              echo "[$(date '+%H:%M:%S')] NO M3U8 YET"
             fi
-
-            if [ "$LOOP_COUNT" -ge 1380 ]; then
-              echo "[CHAIN] Trigger next run"
-              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" 2>/dev/null || true
-              LOOP_COUNT=0
+            
+            if [ $loop -ge 1380 ]; then
+              gh workflow run "$GITHUB_WORKFLOW" --ref "$GITHUB_REF_NAME" 2>/dev/null || true
+              loop=0
             fi
-
+            
             sleep 15
           done
+
+      - name: Save Logs
+        if: always()
+        run: |
+          mkdir -p /tmp/artifacts
+          cp /tmp/ff.log /tmp/artifacts/ 2>/dev/null || echo "no ffmpeg log"
+          cp /tmp/cf.log /tmp/artifacts/ 2>/dev/null || echo "no cf log"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: /tmp/artifacts/
+          retention-days: 1
