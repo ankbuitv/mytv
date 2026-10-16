@@ -3,7 +3,7 @@ name: HLS Film Channel
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'   # tự chạy lại mỗi 6 tiếng
+    - cron: '0 */6 * * *'
 
 concurrency:
   group: film-channel
@@ -21,40 +21,19 @@ jobs:
       SCHEDULE_API: "https://ads.ankb.qzz.io/api/schedule/current"
       HLS_DIR: "/dev/shm/hls/film"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      HLS_LIST_SIZE: "30"
+      HLS_LIST_SIZE: "40"
 
     steps:
       - name: Install Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg jq
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
-          sudo dpkg -i /tmp/cf.deb
-          rm -f /tmp/cf.deb
+          sudo apt-get install -y -qq ffmpeg jq curl
+          # Cài bore
+          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz | tar xz -C /tmp
+          sudo mv /tmp/bore /usr/local/bin/
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}"
-
-      - name: Configure Cloudflare Tunnel
-        env:
-          TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
-          TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.cloudflared
-          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
-          chmod 600 ~/.cloudflared/credentials.json
-          python3 -c "
-          import os, pathlib
-          pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text(
-            'tunnel: ' + os.environ['TUNNEL_ID'] + '''
-          credentials-file: /home/runner/.cloudflared/credentials.json
-          ingress:
-            - hostname: zzdigital01.thelac.dpdns.org
-              service: http://127.0.0.1:5000
-            - service: http_status:404
-          ''')
-          "
 
       - name: Start HLS Web Server
         run: |
@@ -67,7 +46,6 @@ jobs:
           http.createServer((req, res) => {
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-            res.setHeader("Access-Control-Allow-Headers", "*");
             if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
             let pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
             if (pathname === "/" || pathname === "/film.m3u8") pathname = "/stream.m3u8";
@@ -79,7 +57,6 @@ jobs:
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
               res.setHeader("Content-Type", MIME[ext]);
               res.setHeader("Cache-Control", "no-store");
-              res.setHeader("Content-Length", stat.size);
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
               fs.createReadStream(filePath).pipe(res);
@@ -90,11 +67,15 @@ jobs:
           echo $! > /tmp/server.pid
           sleep 1
 
-      - name: Start Cloudflare Tunnel
+      - name: Start bore.pub tunnel
         run: |
-          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
-          echo $! > /tmp/tunnel.pid
-          sleep 3
+          nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
+          echo $! > /tmp/bore.pid
+          sleep 4
+          # Lấy public URL
+          PUBLIC_URL=$(grep -o 'https://[a-z0-9]*\.bore\.pub' /tmp/bore.log | head -1 || true)
+          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+          echo "Bore public URL: $PUBLIC_URL"
 
       - name: Film Engine
         run: |
@@ -110,11 +91,25 @@ jobs:
           start_play() {
             local url="$1"
             local name="$2"
+            local start_minutes="$3"   # phút bắt đầu theo lịch (ví dụ 9h = 540)
+            local duration="$4"        # thời lượng phim (phút)
 
-            echo ">>> Bắt đầu chiếu: $name"
-            echo "    URL: $url"
+            # Tính số giây cần seek
+            local now=$(date +%s)
+            local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
+            local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
+            local current_minutes=$((10#$vn_hour * 60 + 10#$vn_min))
+            local late_minutes=$((current_minutes - start_minutes))
+            if [ "$late_minutes" -lt 0 ]; then late_minutes=0; fi
+            if [ "$late_minutes" -gt "$duration" ]; then
+              echo "Đã quá giờ chiếu phim này → bỏ qua"
+              return
+            fi
+            local seek_seconds=$((late_minutes * 60))
 
-            # Dừng cái cũ nếu còn
+            echo ">>> Chiếu: $name"
+            echo "    Seek vào phút $late_minutes (giây $seek_seconds)"
+
             if [ -n "$CURRENT_PID" ] && kill -0 "$CURRENT_PID" 2>/dev/null; then
               kill -9 "$CURRENT_PID" 2>/dev/null || true
               sleep 1
@@ -122,14 +117,16 @@ jobs:
 
             rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
 
-            # FFmpeg restream (hỗ trợ cả mp4 và m3u8)
+            # FFmpeg với seek + user-agent
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -re \
+              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -ss "$seek_seconds" \
               -i "$url" \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v high -level 4.1 \
-              -x264-params "keyint=50:min-keyint=50:scenecut=0" \
-              -pix_fmt yuv420p -r 25 -g 50 \
-              -b:v 4500k -maxrate 5000k -bufsize 8000k \
+              -c:v libx264 -preset veryfast -tune zerolatency -profile:v high \
+              -x264-params "keyint=48:min-keyint=48:scenecut=0" \
+              -pix_fmt yuv420p -r 25 -g 48 \
+              -b:v 4000k -maxrate 4500k -bufsize 6000k \
               -c:a aac -b:a 128k -ar 48000 -ac 2 \
               -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
               -hls_flags delete_segments+omit_endlist+append_list \
@@ -144,8 +141,7 @@ jobs:
 
           echo "=========================================================="
           echo "FILM CHANNEL ONLINE"
-          echo "URL: https://zzdigital01.thelac.dpdns.org/film.m3u8"
-          echo "EPG: https://ads.ankb.qzz.io/epg.xml"
+          echo "Public URL (bore): $PUBLIC_URL/film.m3u8"
           echo "=========================================================="
 
           START_TIME=$(date +%s)
@@ -156,45 +152,45 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # Self-chain
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              echo "Trigger next workflow..."
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
             fi
 
-            # Revive server / tunnel nếu chết
+            # Revive services
             kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null || {
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             }
-            kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null || {
-              nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
-              echo $! > /tmp/tunnel.pid
+            kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null || {
+              nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
+              echo $! > /tmp/bore.pid
             }
 
-            # Lấy lịch
             SCHED=$(fetch_schedule)
             CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
             CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // "Không có lịch"')
+            CUR_START=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
+            CUR_DURATION=$(echo "$SCHED" | jq -r '.current.duration // 120')
 
-            # Nếu không có lịch
             if [ -z "$CUR_URL" ]; then
-              echo "[$(date -u '+%H:%M:%S')] Không có lịch chiếu → chờ..."
+              echo "[$(date -u '+%H:%M:%S')] Không có lịch → chờ 30s"
               sleep 30
               continue
             fi
 
-            # Nếu URL khác với đang chạy → chuyển phim
+            # Nếu URL khác → chuyển phim + seek
             if [ "$CUR_URL" != "$CURRENT_URL" ]; then
-              start_play "$CUR_URL" "$CUR_NAME"
+              start_play "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DURATION"
             fi
 
-            # Kiểm tra FFmpeg còn sống không
+            # Kiểm tra FFmpeg
             if [ -n "$CURRENT_PID" ] && ! kill -0 "$CURRENT_PID" 2>/dev/null; then
-              echo "FFmpeg đã kết thúc (phim hết hoặc lỗi) → lấy lịch mới"
+              echo "FFmpeg kết thúc → kiểm tra lịch mới"
+              # Xem log lỗi nếu có
+              tail -n 5 /tmp/ffmpeg_film.log || true
               CURRENT_URL=""
               CURRENT_PID=""
-              sleep 3
+              sleep 5
               continue
             fi
 
