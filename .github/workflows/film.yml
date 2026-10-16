@@ -29,9 +29,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg jq curl
-          # Cài bore
-          curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz | tar xz -C /tmp
-          sudo mv /tmp/bore /usr/local/bin/
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
+          sudo dpkg -i /tmp/cf.deb
+          rm -f /tmp/cf.deb
           rm -rf "${HLS_DIR}"
           mkdir -p "${HLS_DIR}"
 
@@ -67,15 +67,17 @@ jobs:
           echo $! > /tmp/server.pid
           sleep 1
 
-      - name: Start bore.pub tunnel
+      - name: Start Cloudflare Quick Tunnel
         run: |
-          nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
-          echo $! > /tmp/bore.pid
-          sleep 4
-          # Lấy public URL
-          PUBLIC_URL=$(grep -o 'https://[a-z0-9]*\.bore\.pub' /tmp/bore.log | head -1 || true)
+          nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
+          echo $! > /tmp/cf.pid
+          sleep 5
+          # Lấy URL public
+          PUBLIC_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1 || true)
           echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo "Bore public URL: $PUBLIC_URL"
+          echo "========================================"
+          echo "PUBLIC URL: $PUBLIC_URL/film.m3u8"
+          echo "========================================"
 
       - name: Film Engine
         run: |
@@ -91,18 +93,16 @@ jobs:
           start_play() {
             local url="$1"
             local name="$2"
-            local start_minutes="$3"   # phút bắt đầu theo lịch (ví dụ 9h = 540)
-            local duration="$4"        # thời lượng phim (phút)
+            local start_minutes="$3"
+            local duration="$4"
 
-            # Tính số giây cần seek
-            local now=$(date +%s)
             local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
             local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
             local current_minutes=$((10#$vn_hour * 60 + 10#$vn_min))
             local late_minutes=$((current_minutes - start_minutes))
             if [ "$late_minutes" -lt 0 ]; then late_minutes=0; fi
             if [ "$late_minutes" -gt "$duration" ]; then
-              echo "Đã quá giờ chiếu phim này → bỏ qua"
+              echo "Đã quá giờ chiếu → bỏ qua"
               return
             fi
             local seek_seconds=$((late_minutes * 60))
@@ -117,10 +117,10 @@ jobs:
 
             rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
 
-            # FFmpeg với seek + user-agent
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -re \
-              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36" \
+              -headers "Referer: https://kkphim.com/\r\n" \
               -ss "$seek_seconds" \
               -i "$url" \
               -c:v libx264 -preset veryfast -tune zerolatency -profile:v high \
@@ -141,7 +141,7 @@ jobs:
 
           echo "=========================================================="
           echo "FILM CHANNEL ONLINE"
-          echo "Public URL (bore): $PUBLIC_URL/film.m3u8"
+          echo "Public: $PUBLIC_URL/film.m3u8"
           echo "=========================================================="
 
           START_TIME=$(date +%s)
@@ -156,14 +156,14 @@ jobs:
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
             fi
 
-            # Revive services
+            # Revive
             kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null || {
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
             }
-            kill -0 "$(cat /tmp/bore.pid 2>/dev/null)" 2>/dev/null || {
-              nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
-              echo $! > /tmp/bore.pid
+            kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null || {
+              nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
+              echo $! > /tmp/cf.pid
             }
 
             SCHED=$(fetch_schedule)
@@ -173,21 +173,18 @@ jobs:
             CUR_DURATION=$(echo "$SCHED" | jq -r '.current.duration // 120')
 
             if [ -z "$CUR_URL" ]; then
-              echo "[$(date -u '+%H:%M:%S')] Không có lịch → chờ 30s"
+              echo "[$(date -u '+%H:%M:%S')] Không có lịch → chờ"
               sleep 30
               continue
             fi
 
-            # Nếu URL khác → chuyển phim + seek
             if [ "$CUR_URL" != "$CURRENT_URL" ]; then
               start_play "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DURATION"
             fi
 
-            # Kiểm tra FFmpeg
             if [ -n "$CURRENT_PID" ] && ! kill -0 "$CURRENT_PID" 2>/dev/null; then
-              echo "FFmpeg kết thúc → kiểm tra lịch mới"
-              # Xem log lỗi nếu có
-              tail -n 5 /tmp/ffmpeg_film.log || true
+              echo "FFmpeg kết thúc"
+              tail -n 8 /tmp/ffmpeg_film.log || true
               CURRENT_URL=""
               CURRENT_PID=""
               sleep 5
