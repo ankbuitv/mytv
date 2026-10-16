@@ -1,0 +1,203 @@
+name: HLS Film Channel
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'   # tự chạy lại mỗi 6 tiếng
+
+concurrency:
+  group: film-channel
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  film-restream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      SCHEDULE_API: "https://ads.ankb.qzz.io/api/schedule/current"
+      HLS_DIR: "/dev/shm/hls/film"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HLS_LIST_SIZE: "30"
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
+          sudo dpkg -i /tmp/cf.deb
+          rm -f /tmp/cf.deb
+          rm -rf "${HLS_DIR}"
+          mkdir -p "${HLS_DIR}"
+
+      - name: Configure Cloudflare Tunnel
+        env:
+          TUNNEL_ID: ${{ secrets.CF_TUNNEL_ID }}
+          TUNNEL_JSON: ${{ secrets.CF_TUNNEL_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cloudflared
+          printf '%s' "$TUNNEL_JSON" > ~/.cloudflared/credentials.json
+          chmod 600 ~/.cloudflared/credentials.json
+          python3 -c "
+          import os, pathlib
+          pathlib.Path.home().joinpath('.cloudflared','config.yml').write_text(
+            'tunnel: ' + os.environ['TUNNEL_ID'] + '''
+          credentials-file: /home/runner/.cloudflared/credentials.json
+          ingress:
+            - hostname: zzdigital01.thelac.dpdns.org
+              service: http://127.0.0.1:5000
+            - service: http_status:404
+          ''')
+          "
+
+      - name: Start HLS Web Server
+        run: |
+          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text(r"""
+          const http = require("http");
+          const fs = require("fs");
+          const path = require("path");
+          const ROOT = "/dev/shm/hls/film";
+          const MIME = {".m3u8":"application/vnd.apple.mpegurl",".ts":"video/mp2t"};
+          http.createServer((req, res) => {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "*");
+            if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
+            let pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
+            if (pathname === "/" || pathname === "/film.m3u8") pathname = "/stream.m3u8";
+            const filePath = path.resolve(ROOT, "." + pathname);
+            if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end(); }
+            const ext = path.extname(filePath).toLowerCase();
+            if (!MIME[ext]) { res.writeHead(404); return res.end(); }
+            fs.stat(filePath, (err, stat) => {
+              if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
+              res.setHeader("Content-Type", MIME[ext]);
+              res.setHeader("Cache-Control", "no-store");
+              res.setHeader("Content-Length", stat.size);
+              res.writeHead(200);
+              if (req.method === "HEAD") return res.end();
+              fs.createReadStream(filePath).pipe(res);
+            });
+          }).listen(5000, "127.0.0.1");
+          """)'
+          nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          sleep 1
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+          echo $! > /tmp/tunnel.pid
+          sleep 3
+
+      - name: Film Engine
+        run: |
+          set -euo pipefail
+
+          CURRENT_URL=""
+          CURRENT_PID=""
+
+          fetch_schedule() {
+            curl -fsSL --max-time 8 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null,"next":null}'
+          }
+
+          start_play() {
+            local url="$1"
+            local name="$2"
+
+            echo ">>> Bắt đầu chiếu: $name"
+            echo "    URL: $url"
+
+            # Dừng cái cũ nếu còn
+            if [ -n "$CURRENT_PID" ] && kill -0 "$CURRENT_PID" 2>/dev/null; then
+              kill -9 "$CURRENT_PID" 2>/dev/null || true
+              sleep 1
+            fi
+
+            rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
+
+            # FFmpeg restream (hỗ trợ cả mp4 và m3u8)
+            nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+              -re \
+              -i "$url" \
+              -c:v libx264 -preset veryfast -tune zerolatency -profile:v high -level 4.1 \
+              -x264-params "keyint=50:min-keyint=50:scenecut=0" \
+              -pix_fmt yuv420p -r 25 -g 50 \
+              -b:v 4500k -maxrate 5000k -bufsize 8000k \
+              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
+              -hls_flags delete_segments+omit_endlist+append_list \
+              -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
+              "${HLS_DIR}/stream.m3u8" \
+              > /tmp/ffmpeg_film.log 2>&1 &
+
+            CURRENT_PID=$!
+            CURRENT_URL="$url"
+            echo $CURRENT_PID > /tmp/ffmpeg_film.pid
+          }
+
+          echo "=========================================================="
+          echo "FILM CHANNEL ONLINE"
+          echo "URL: https://zzdigital01.thelac.dpdns.org/film.m3u8"
+          echo "EPG: https://ads.ankb.qzz.io/epg.xml"
+          echo "=========================================================="
+
+          START_TIME=$(date +%s)
+          AUTO_TRIGGER=19800
+          NEXT_TRIGGERED=0
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+
+            # Self-chain
+            if [ "$ELAPSED" -ge "$AUTO_TRIGGER" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
+              echo "Trigger next workflow..."
+              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
+            fi
+
+            # Revive server / tunnel nếu chết
+            kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null || {
+              nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
+              echo $! > /tmp/server.pid
+            }
+            kill -0 "$(cat /tmp/tunnel.pid 2>/dev/null)" 2>/dev/null || {
+              nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /tmp/tunnel.log 2>&1 &
+              echo $! > /tmp/tunnel.pid
+            }
+
+            # Lấy lịch
+            SCHED=$(fetch_schedule)
+            CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
+            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // "Không có lịch"')
+
+            # Nếu không có lịch
+            if [ -z "$CUR_URL" ]; then
+              echo "[$(date -u '+%H:%M:%S')] Không có lịch chiếu → chờ..."
+              sleep 30
+              continue
+            fi
+
+            # Nếu URL khác với đang chạy → chuyển phim
+            if [ "$CUR_URL" != "$CURRENT_URL" ]; then
+              start_play "$CUR_URL" "$CUR_NAME"
+            fi
+
+            # Kiểm tra FFmpeg còn sống không
+            if [ -n "$CURRENT_PID" ] && ! kill -0 "$CURRENT_PID" 2>/dev/null; then
+              echo "FFmpeg đã kết thúc (phim hết hoặc lỗi) → lấy lịch mới"
+              CURRENT_URL=""
+              CURRENT_PID=""
+              sleep 3
+              continue
+            fi
+
+            echo "[$(date -u '+%H:%M:%S')] Đang chiếu: $CUR_NAME | Elapsed: $((ELAPSED/60))m"
+            sleep 15
+          done
