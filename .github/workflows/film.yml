@@ -37,7 +37,7 @@ jobs:
 
       - name: Start HLS Web Server
         run: |
-          python3 -c 'from pathlib import Path; Path("/tmp/hls_server.js").write_text(r"""
+          cat > /tmp/hls_server.js << 'EOFJS'
           const http = require("http");
           const fs = require("fs");
           const path = require("path");
@@ -56,141 +56,172 @@ jobs:
             fs.stat(filePath, (err, stat) => {
               if (err || !stat.isFile()) { res.writeHead(404); return res.end(); }
               res.setHeader("Content-Type", MIME[ext]);
-              res.setHeader("Cache-Control", "no-store");
+              res.setHeader("Cache-Control", "no-store, max-age=0");
               res.writeHead(200);
               if (req.method === "HEAD") return res.end();
               fs.createReadStream(filePath).pipe(res);
             });
           }).listen(5000, "127.0.0.1");
-          """)'
+          EOFJS
           nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
           echo $! > /tmp/server.pid
-          sleep 1
+          sleep 2
 
-      - name: Start Cloudflare Quick Tunnel
+      - name: Start Cloudflare Tunnel
         run: |
           nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
           echo $! > /tmp/cf.pid
-          sleep 5
-          # Lấy URL public
-          PUBLIC_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cf.log | head -1 || true)
+          sleep 8
+          PUBLIC_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || echo "PENDING")
           echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_ENV
+          echo ""
           echo "========================================"
           echo "PUBLIC URL: $PUBLIC_URL/film.m3u8"
           echo "========================================"
 
-      - name: Film Engine
+      - name: Film Stream Engine
         run: |
           set -euo pipefail
 
-          CURRENT_URL=""
-          CURRENT_PID=""
-
           fetch_schedule() {
-            curl -fsSL --max-time 8 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null,"next":null}'
+            curl -fsSL --max-time 10 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
           }
 
-          start_play() {
-            local url="$1"
-            local name="$2"
-            local start_minutes="$3"
-            local duration="$4"
+          calc_seek() {
+            local start_min="$1"
+            local duration="$2"
 
+            # VN time now
             local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
             local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
-            local current_minutes=$((10#$vn_hour * 60 + 10#$vn_min))
-            local late_minutes=$((current_minutes - start_minutes))
-            if [ "$late_minutes" -lt 0 ]; then late_minutes=0; fi
-            if [ "$late_minutes" -gt "$duration" ]; then
-              echo "Đã quá giờ chiếu → bỏ qua"
+            local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
+
+            # Tính muộn bao nhiêu phút
+            local late=$((now_min - start_min))
+            if [ "$late" -lt 0 ]; then
+              late=0
+            fi
+            if [ "$late" -gt "$duration" ]; then
+              # Quá giờ, bỏ qua
+              echo "-1"
               return
             fi
-            local seek_seconds=$((late_minutes * 60))
 
-            echo ">>> Chiếu: $name"
-            echo "    Seek vào phút $late_minutes (giây $seek_seconds)"
+            # Chuyển thành giây
+            echo $((late * 60))
+          }
 
-            if [ -n "$CURRENT_PID" ] && kill -0 "$CURRENT_PID" 2>/dev/null; then
-              kill -9 "$CURRENT_PID" 2>/dev/null || true
+          stream_film() {
+            local url="$1"
+            local name="$2"
+            local start_min="$3"
+            local duration="$4"
+
+            # Trim URL (xóa dấu chấm cuối)
+            url=$(echo "$url" | sed 's/\.$//')
+
+            local seek_sec=$(calc_seek "$start_min" "$duration")
+
+            if [ "$seek_sec" == "-1" ]; then
+              echo "[$(date '+%H:%M:%S')] >>> SKIP: $name (quá giờ)"
+              return
+            fi
+
+            local seek_min=$((seek_sec / 60))
+            echo "[$(date '+%H:%M:%S')] >>> STREAM: $name (seek $seek_min:$((seek_sec % 60)) s)"
+            echo "URL: $url"
+            echo "Seek: $seek_sec giây"
+
+            # Kill old
+            if [ -f /tmp/ffmpeg.pid ]; then
+              kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               sleep 1
             fi
 
             rm -f "${HLS_DIR}"/*.ts "${HLS_DIR}"/stream.m3u8 2>/dev/null || true
+            mkdir -p "${HLS_DIR}"
 
+            # FFmpeg with seek
             nohup ffmpeg -hide_banner -loglevel warning -nostdin \
               -re \
-              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36" \
-              -headers "Referer: https://kkphim.com/\r\n" \
-              -ss "$seek_seconds" \
+              -timeout 30000000 \
+              -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -ss "$seek_sec" \
               -i "$url" \
-              -c:v libx264 -preset veryfast -tune zerolatency -profile:v high \
-              -x264-params "keyint=48:min-keyint=48:scenecut=0" \
+              -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -level 4.0 \
+              -x264-params "keyint=48:scenecut=0" \
               -pix_fmt yuv420p -r 25 -g 48 \
-              -b:v 4000k -maxrate 4500k -bufsize 6000k \
-              -c:a aac -b:a 128k -ar 48000 -ac 2 \
+              -b:v 3000k -maxrate 3500k -bufsize 5000k \
+              -c:a aac -b:a 96k -ar 48000 -ac 2 \
               -f hls -hls_time 4 -hls_list_size "${HLS_LIST_SIZE}" \
-              -hls_flags delete_segments+omit_endlist+append_list \
+              -hls_flags delete_segments+omit_endlist \
               -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
               "${HLS_DIR}/stream.m3u8" \
-              > /tmp/ffmpeg_film.log 2>&1 &
+              > /tmp/ffmpeg.log 2>&1 &
 
-            CURRENT_PID=$!
-            CURRENT_URL="$url"
-            echo $CURRENT_PID > /tmp/ffmpeg_film.pid
+            echo $! > /tmp/ffmpeg.pid
           }
 
-          echo "=========================================================="
-          echo "FILM CHANNEL ONLINE"
-          echo "Public: $PUBLIC_URL/film.m3u8"
-          echo "=========================================================="
+          echo "========== FILM CHANNEL =========="
+          echo "URL: $PUBLIC_URL/film.m3u8"
+          echo "===================================="
 
-          START_TIME=$(date +%s)
-          AUTO_TRIGGER=19800
-          NEXT_TRIGGERED=0
+          LAST_URL=""
+          LOOP_COUNT=0
 
           while true; do
-            CURRENT_TIME=$(date +%s)
-            ELAPSED=$((CURRENT_TIME - START_TIME))
+            LOOP_COUNT=$((LOOP_COUNT + 1))
 
-            if [ "$ELAPSED" -ge "$AUTO_TRIGGER" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
-              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
-            fi
-
-            # Revive
-            kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null || {
+            # Revive services
+            if ! kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null; then
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
-            }
-            kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null || {
+            fi
+
+            if ! kill -0 "$(cat /tmp/cf.pid 2>/dev/null)" 2>/dev/null; then
               nohup cloudflared tunnel --url http://localhost:5000 > /tmp/cf.log 2>&1 &
               echo $! > /tmp/cf.pid
-            }
+            fi
 
+            # Get schedule
             SCHED=$(fetch_schedule)
             CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
-            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // "Không có lịch"')
+            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // ""')
             CUR_START=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
-            CUR_DURATION=$(echo "$SCHED" | jq -r '.current.duration // 120')
+            CUR_DUR=$(echo "$SCHED" | jq -r '.current.duration // 120')
 
             if [ -z "$CUR_URL" ]; then
-              echo "[$(date -u '+%H:%M:%S')] Không có lịch → chờ"
+              echo "[$(date '+%H:%M:%S')] Chờ lịch..."
               sleep 30
               continue
             fi
 
-            if [ "$CUR_URL" != "$CURRENT_URL" ]; then
-              start_play "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DURATION"
+            # URL khác → stream mới
+            if [ "$CUR_URL" != "$LAST_URL" ]; then
+              LAST_URL="$CUR_URL"
+              stream_film "$CUR_URL" "$CUR_NAME" "$CUR_START" "$CUR_DUR"
+              sleep 5
             fi
 
-            if [ -n "$CURRENT_PID" ] && ! kill -0 "$CURRENT_PID" 2>/dev/null; then
-              echo "FFmpeg kết thúc"
-              tail -n 8 /tmp/ffmpeg_film.log || true
-              CURRENT_URL=""
-              CURRENT_PID=""
+            # Check FFmpeg
+            if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
+              echo "[$(date '+%H:%M:%S')] FFmpeg died"
+              tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
+              LAST_URL=""
               sleep 5
               continue
             fi
 
-            echo "[$(date -u '+%H:%M:%S')] Đang chiếu: $CUR_NAME | Elapsed: $((ELAPSED/60))m"
+            # Check segments
+            if [ -f "${HLS_DIR}/stream.m3u8" ]; then
+              SEG=$(grep -c "^seg_" "${HLS_DIR}/stream.m3u8" 2>/dev/null || echo 0)
+              echo "[$(date '+%H:%M:%S')] $CUR_NAME | Seg: $SEG"
+            fi
+
+            if [ "$LOOP_COUNT" -ge 1380 ]; then
+              gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" 2>/dev/null || true
+              LOOP_COUNT=0
+            fi
+
             sleep 15
           done
