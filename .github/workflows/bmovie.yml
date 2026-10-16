@@ -117,7 +117,7 @@ jobs:
               if (ext === ".m3u8") {
                 let body = fs.readFileSync(filePath, "utf8");
                 if (body.indexOf("#EXTINF") !== -1 && body.indexOf("#EXT-X-START") === -1) {
-                  body = body.replace("#EXTM3U", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=-8.0");
+                  body = body.replace("#EXTM3U", "#EXTM3U\\n#EXT-X-START:TIME-OFFSET=-8.0");
                 }
                 const buf = Buffer.from(body);
                 res.setHeader("Content-Type", MIME[ext]);
@@ -174,7 +174,6 @@ jobs:
           CONSECUTIVE_FAILS=0
           CURRENT_AD_HASH=""
 
-          # Hàm lấy cấu hình quảng cáo
           fetch_ad_config() {
             curl -fsSL --max-time 5 "$AD_API" 2>/dev/null || echo '{"enabled":false}'
           }
@@ -183,7 +182,7 @@ jobs:
             local input_url="$1"
             local ad_config="$2"
 
-            echo "Khoi dong FFmpeg..."
+            echo "Starting FFmpeg..."
             mkdir -p "${HLS_DIR}/720p" "${HLS_DIR}/480p"
             rm -f "${HLS_DIR}/720p"/s_*.ts "${HLS_DIR}/480p"/s_*.ts 2>/dev/null || true
 
@@ -195,7 +194,6 @@ jobs:
             local AD_H=$(echo "$ad_config" | jq -r '.height // 90')
             local AD_OPACITY=$(echo "$ad_config" | jq -r '.opacity // 0.6')
 
-            # Tải asset quảng cáo nếu có
             if [ "$AD_ENABLED" = "true" ] && [ -n "$AD_ASSET" ]; then
               curl -fsSL --max-time 10 "$AD_ASSET" -o /tmp/ad_asset.tmp 2>/dev/null || true
               if [ -f /tmp/ad_asset.tmp ]; then
@@ -204,7 +202,6 @@ jobs:
             fi
 
             if [ "$input_url" = "$FALLBACK_URL" ]; then
-              # Fallback đơn giản
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -fflags +discardcorrupt+genpts -thread_queue_size 512 \
                 -i "$FALLBACK_URL" \
@@ -228,11 +225,9 @@ jobs:
                 -hls_segment_filename "${HLS_DIR}/480p/s_%06d.ts" "${HLS_DIR}/480p/stream.m3u8" \
                 > /tmp/ffmpeg.log 2>&1 &
             else
-              # Nguồn chính
               if [ "$AD_ENABLED" = "true" ] && [ -f /tmp/ad_final.png ]; then
-                # Có quảng cáo → ẩn logo/QR, chỉ hiện ad
                 FILTER_COMPLEX="
-                [0:v:2]setsar=1,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p[base];
+                [0:v:2]setsar=1,zscale=t=linear:npl=120,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,eq=brightness=0.06:contrast=1.05[base];
                 [1:v]format=rgba,scale=${AD_W}:${AD_H}[ad];
                 [base][ad]overlay=x=${AD_X}:y=${AD_Y}[outv];
                 [outv]split=2[out720][tmp480];
@@ -241,9 +236,8 @@ jobs:
                 "
                 INPUTS="-i /tmp/ad_final.png"
               else
-                # Không có ad → hiện logo/QR bình thường
                 FILTER_COMPLEX="
-                [0:v:2]setsar=1,zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p[base];
+                [0:v:2]setsar=1,zscale=t=linear:npl=120,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,eq=brightness=0.06:contrast=1.05[base];
                 [1:v]format=rgba,scale=48:48[lg];
                 [2:v]format=rgba,scale=48:48[qr];
                 color=c=black@0.40:s=56x56:d=1[bg];
@@ -295,15 +289,14 @@ jobs:
             ffmpeg -y -hide_banner -loglevel error -i "$ts" -frames:v 9 -vf "scale=160:90,tile=3x3" -q:v 6 "${HLS_DIR}/thumb_grid.jpg" 2>/dev/null || true
           }
 
-          # Start ban đầu
           AD_CONFIG=$(fetch_ad_config)
           start_ffmpeg "$MPD_URL" "$AD_CONFIG"
           sleep 10
           snap_thumb
 
           echo "=========================================================="
-          echo "ONLINE: https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
-          echo "AD API: $AD_API"
+          echo "ONLINE : https://zzdigital01.thelac.dpdns.org/vtv/boxmovie1.m3u8"
+          echo "AD API : $AD_API"
           echo "=========================================================="
 
           TARGET_PLAYLIST="${HLS_DIR}/720p/stream.m3u8"
@@ -319,12 +312,10 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
 
-            # Self-chain
             if [ "$ELAPSED" -ge "$AUTO_TRIGGER_SECONDS" ] && [ "$NEXT_TRIGGERED" -eq 0 ]; then
               gh workflow run "${GITHUB_WORKFLOW}" --ref "${GITHUB_REF_NAME}" && NEXT_TRIGGERED=1 || true
             fi
 
-            # Revive server / tunnel
             kill -0 "$(cat /tmp/server.pid 2>/dev/null)" 2>/dev/null || {
               nohup node /tmp/hls_server.js > /tmp/server.log 2>&1 &
               echo $! > /tmp/server.pid
@@ -334,7 +325,6 @@ jobs:
               echo $! > /tmp/tunnel.pid
             }
 
-            # Check FFmpeg + stale
             FFMPEG_ALIVE=1
             kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || FFMPEG_ALIVE=0
 
@@ -351,13 +341,12 @@ jobs:
               STALE_SECONDS=$((STALE_SECONDS + 10))
             fi
 
-            # Check ad config mỗi 30s
             AD_CHECK_TICK=$((AD_CHECK_TICK + 10))
             if [ "$AD_CHECK_TICK" -ge 30 ]; then
               NEW_AD=$(fetch_ad_config)
               NEW_HASH=$(echo "$NEW_AD" | md5sum | cut -d' ' -f1)
               if [ "$NEW_HASH" != "$CURRENT_AD_HASH" ]; then
-                echo "Ad config changed → restart FFmpeg"
+                echo "Ad config changed → restarting FFmpeg"
                 CURRENT_AD_HASH=$NEW_HASH
                 kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
                 sleep 1
@@ -370,7 +359,6 @@ jobs:
               AD_CHECK_TICK=0
             fi
 
-            # Restart nếu chết / stale
             if [ "$FFMPEG_ALIVE" -eq 0 ] || [ "$STALE_SECONDS" -ge 60 ]; then
               CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
               echo "FFmpeg issue (Fails: $CONSECUTIVE_FAILS)"
