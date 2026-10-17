@@ -17,6 +17,8 @@ jobs:
       SCHEDULE_API: "https://ads.ankb.qzz.io/api/schedule/current"
       HLS_DIR: "/tmp/hls/film"
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Proxy VN (đổi khi chết)
+      PROXY: "http://116.104.251.199:2080"
 
     steps:
       - name: Install Tools, Caddy & Bore
@@ -25,24 +27,19 @@ jobs:
           sudo apt-get install -y -qq ffmpeg jq curl python3-pip caddy
           pip install -q --break-system-packages yt-dlp || pip install -q yt-dlp
           
-          # Tải Bore CLI
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
           sudo mv /tmp/bore /usr/local/bin/
           
-          # Tạo thư mục lưu HLS
           mkdir -p "${HLS_DIR}"
 
       - name: Start Caddy Web Server
         run: |
           caddy stop 2>/dev/null || true
           pkill -f caddy 2>/dev/null || true
-
-          # Tắt Admin Port 2019 tránh lỗi bind port
           cat << 'EOF' > /tmp/Caddyfile
           {
               admin off
           }
-
           :5000 {
               root * /tmp/hls/film
               file_server
@@ -50,7 +47,6 @@ jobs:
               header Cache-Control "no-cache, no-store, must-revalidate"
           }
           EOF
-
           caddy start --config /tmp/Caddyfile
           echo "✅ Caddy Server đã chạy tại cổng 5000"
 
@@ -96,15 +92,15 @@ jobs:
           LAST_URL=""
 
           while true; do
-            # 1. Khôi phục Caddy nếu bị dừng
+            # Revive Caddy
             if ! pgrep -x "caddy" > /dev/null; then
               echo "[REVIVE] Caddy Server dừng, đang bật lại..."
               caddy start --config /tmp/Caddyfile
             fi
 
-            # 2. Khôi phục Bore Tunnel nếu rớt mạng
+            # Revive Bore
             if ! pgrep -x "bore" > /dev/null; then
-              echo "[REVIVE] Bore Tunnel rớt kết nối, đang kết nối lại..."
+              echo "[REVIVE] Bore Tunnel rớt, đang kết nối lại..."
               nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             fi
 
@@ -120,11 +116,11 @@ jobs:
               continue
             fi
 
-            # Khi đổi phim mới
+            # Phim mới
             if [ "$CUR_URL" != "$LAST_URL" ]; then
               echo "[$(date '+%H:%M:%S')] 🚀 Bắt đầu phát: $CUR_NAME"
               LAST_URL="$CUR_URL"
-              
+
               SEEK_SEC=$(calc_seek "$CUR_START" "$CUR_DUR")
               if [ "$SEEK_SEC" = "-1" ]; then
                 echo "[SKIP] Phim $CUR_NAME đã quá thời lượng chiếu!"
@@ -133,15 +129,15 @@ jobs:
                 continue
               fi
 
-              # Dừng FFmpeg cũ
+              # Kill FFmpeg cũ
               if [ -f /tmp/ffmpeg.pid ]; then
                 kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               fi
-
               rm -f ${HLS_DIR}/*
 
-              # Xử lý URL đầu vào
+              # Xử lý URL
               CLEAN_URL=$(echo "$CUR_URL" | sed 's/\.$//')
+
               if [[ "$CLEAN_URL" =~ youtu(\.be|be\.com) ]]; then
                 INPUT_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$CLEAN_URL" 2>/dev/null || echo "")
               else
@@ -155,13 +151,28 @@ jobs:
                 continue
               fi
 
-              echo "[INFO] Link nguồn OK (Seek: ${SEEK_SEC}s)"
+              # === PROBE qua PROXY VN ===
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -x "$PROXY" \
+                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                -H "Referer: https://kkphim.com/" \
+                -H "Origin: https://kkphim.com" \
+                --max-time 12 "$INPUT_URL" || echo "000")
 
-              # Header chuẩn HTTP/1.1 bypass CDN
-              FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://kkphim.com/"$'\r\n'"Origin: https://kkphim.com"$'\r\n'
+              if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "206" ] && [ "$HTTP_CODE" != "302" ]; then
+                echo "[DEAD] URL/Proxy chết (HTTP $HTTP_CODE): $INPUT_URL"
+                LAST_URL=""
+                sleep 30
+                continue
+              fi
 
-              # Đặt -ss $SEEK_SEC phía SAU -i "$INPUT_URL"
+              echo "[INFO] Link nguồn OK qua proxy (HTTP $HTTP_CODE | Seek: ${SEEK_SEC}s)"
+
+              FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://kkphim.com/"$'\r\n'"Origin: https://kkphim.com"$'\r\n'"Accept: */*"$'\r\n'
+
+              # FFmpeg qua proxy
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
+                -http_proxy "$PROXY" \
                 -headers "$FF_HEADERS" \
                 -rw_timeout 30000000 \
                 -re \
@@ -177,27 +188,27 @@ jobs:
                 -hls_flags delete_segments+omit_endlist \
                 -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
                 "${HLS_DIR}/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
-              
+
               echo $! > /tmp/ffmpeg.pid
               sleep 3
             fi
 
-            # Kiểm tra tiến trình
+            # Check FFmpeg còn sống không
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg đã bị thoát! Báo lỗi:"
+              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg đã bị thoát! Log:"
               cat /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
-              sleep 10
+              sleep 15
               continue
             fi
 
             SEG_COUNT=$(ls -1 ${HLS_DIR}/*.ts 2>/dev/null | wc -l)
-            
+
             if [ "$SEG_COUNT" -eq 0 ]; then
-              echo "[WARN] FFmpeg đang chạy nhưng chưa ghi được Segment nào. Log gần nhất:"
+              echo "[WARN] FFmpeg đang chạy nhưng chưa có segment. Log gần nhất:"
               tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
             else
-              echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments active: $SEG_COUNT"
+              echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments: $SEG_COUNT"
             fi
 
             sleep 15
