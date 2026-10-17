@@ -25,11 +25,11 @@ jobs:
           sudo apt-get install -y -qq ffmpeg jq curl python3-pip caddy
           pip install -q --break-system-packages yt-dlp || pip install -q yt-dlp
           
-          # Tải Bore CLI (Tunnel qua bore.pub)
+          # Tải Bore CLI
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
           sudo mv /tmp/bore /usr/local/bin/
           
-          # Tạo thư mục tạm lưu HLS
+          # Tạo thư mục lưu HLS
           mkdir -p "${HLS_DIR}"
 
       - name: Start Caddy Web Server
@@ -37,7 +37,7 @@ jobs:
           caddy stop 2>/dev/null || true
           pkill -f caddy 2>/dev/null || true
 
-          # Tắt Admin Port 2019 để tránh lỗi Address already in use
+          # Tắt Admin Port 2019
           cat << 'EOF' > /tmp/Caddyfile
           {
               admin off
@@ -96,13 +96,13 @@ jobs:
           LAST_URL=""
 
           while true; do
-            # 1. Tự khôi phục Caddy nếu bị dừng
+            # 1. Khôi phục Caddy nếu bị dừng
             if ! pgrep -x "caddy" > /dev/null; then
               echo "[REVIVE] Caddy Server dừng, đang bật lại..."
               caddy start --config /tmp/Caddyfile
             fi
 
-            # 2. Tự khôi phục Bore Tunnel nếu rớt kết nối
+            # 2. Khôi phục Bore Tunnel nếu rớt mạng
             if ! pgrep -x "bore" > /dev/null; then
               echo "[REVIVE] Bore Tunnel rớt kết nối, đang kết nối lại..."
               nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
@@ -120,7 +120,7 @@ jobs:
               continue
             fi
 
-            # Khi phát hiện phim mới
+            # Khi đổi phim mới
             if [ "$CUR_URL" != "$LAST_URL" ]; then
               echo "[$(date '+%H:%M:%S')] 🚀 Bắt đầu phát: $CUR_NAME"
               LAST_URL="$CUR_URL"
@@ -157,14 +157,14 @@ jobs:
 
               echo "[INFO] Link nguồn OK (Seek: ${SEEK_SEC}s)"
 
-              # FFmpeg Tối Ưu Mạng & Tránh Lag:
-              # - Scale 720p để giảm tải GPU/CPU người xem
-              # - Bitrate 900k giúp file .ts nhỏ gọn (~350KB), load siêu mượt qua Bore
+              # Full Headers hỗ trợ bypass 404 Not Found từ server CDN
+              FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://kkphim.com/"$'\r\n'"Origin: https://kkphim.com"$'\r\n'
+
+              # Khởi tạo FFmpeg tối ưu mượt & chuẩn Header
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -re \
-                -timeout 30000000 \
-                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                -referer "https://kkphim.com/" \
+                -headers "$FF_HEADERS" \
+                -rw_timeout 30000000 \
                 -ss "$SEEK_SEC" \
                 -i "$INPUT_URL" \
                 -vf "scale=-2:720" \
@@ -182,7 +182,7 @@ jobs:
               sleep 3
             fi
 
-            # Kiểm tra tiến trình FFmpeg
+            # Kiểm tra tiến trình
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg đã bị thoát! Báo lỗi:"
               cat /tmp/ffmpeg.log 2>/dev/null || true
