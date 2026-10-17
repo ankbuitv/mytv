@@ -34,7 +34,16 @@ jobs:
 
       - name: Start Caddy Web Server
         run: |
+          # Dọn dẹp tiến trình Caddy cũ nếu có
+          caddy stop 2>/dev/null || true
+          pkill -f caddy 2>/dev/null || true
+
+          # Cấu hình Caddy (Tắt Admin Port 2019 để tránh lỗi Address already in use)
           cat << 'EOF' > /tmp/Caddyfile
+          {
+              admin off
+          }
+
           :5000 {
               root * /tmp/hls/film
               file_server
@@ -42,16 +51,17 @@ jobs:
               header Cache-Control "no-cache, no-store, must-revalidate"
           }
           EOF
+
           caddy start --config /tmp/Caddyfile
           echo "✅ Caddy Server đã chạy tại cổng 5000"
 
       - name: Start Bore Tunnel
         run: |
-          # Chạy bore public port 5000 lên bore.pub
+          # Chạy bore local port 5000 kết nối ra bore.pub
           nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
           sleep 5
           
-          # Lấy Port ngẫu nhiên do bore.pub cấp
+          # Lấy Port do bore.pub cấp ngẫu nhiên
           BORE_PORT=$(grep -oP 'listening at bore.pub:\K[0-9]+' /tmp/bore.log | tail -1 || echo "")
           
           if [ -z "$BORE_PORT" ]; then
@@ -81,15 +91,15 @@ jobs:
           LAST_URL=""
 
           while true; do
-            # 1. Tự khôi phục Caddy nếu bị nghẽn
+            # 1. Tự khôi phục Caddy nếu bị dừng
             if ! pgrep -x "caddy" > /dev/null; then
               echo "[REVIVE] Caddy Server dừng, đang bật lại..."
               caddy start --config /tmp/Caddyfile
             fi
 
-            # 2. Tự khôi phục Bore Tunnel nếu mất kết nối
+            # 2. Tự khôi phục Bore Tunnel nếu rớt mạng
             if ! pgrep -x "bore" > /dev/null; then
-              echo "[REVIVE] Bore Tunnel mất kết nối, đang mở lại port..."
+              echo "[REVIVE] Bore Tunnel rớt kết nối, đang kết nối lại..."
               nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             fi
 
@@ -102,12 +112,12 @@ jobs:
               continue
             fi
 
-            # Nếu có URL mới / Đổi phim
+            # Khi phát hiện URL phim mới
             if [ "$CUR_URL" != "$LAST_URL" ]; then
-              echo "[$(date '+%H:%M:%S')] 🚀 Đổi phim: $CUR_NAME"
+              echo "[$(date '+%H:%M:%S')] 🚀 Bắt đầu phát: $CUR_NAME"
               LAST_URL="$CUR_URL"
               
-              # Tắt FFmpeg cũ
+              # Dừng FFmpeg cũ
               if [ -f /tmp/ffmpeg.pid ]; then
                 kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               fi
@@ -115,7 +125,7 @@ jobs:
               # Xóa segments cũ
               rm -f ${HLS_DIR}/*
 
-              # Xử lý nguồn phát
+              # Phân loại nguồn YouTube hay Direct Link
               if [[ "$CUR_URL" =~ youtu(\.be|be\.com) ]]; then
                 INPUT_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$CUR_URL" 2>/dev/null || echo "")
               else
@@ -129,7 +139,7 @@ jobs:
                 continue
               fi
 
-              # Chạy FFmpeg ngầm và ghi PID
+              # Chạy FFmpeg ngầm
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -re \
                 -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
@@ -145,19 +155,19 @@ jobs:
                 "${HLS_DIR}/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
               
               echo $! > /tmp/ffmpeg.pid
-              echo "[$(date '+%H:%M:%S')] 🟢 FFmpeg đã khởi động"
+              echo "[$(date '+%H:%M:%S')] 🟢 FFmpeg đã khởi tạo tiến trình"
             fi
 
             # Kiểm tra xem FFmpeg có bị die không
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg bị dừng! Log lỗi cuối:"
+              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg bị dừng! Log lỗi gần nhất:"
               tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
               sleep 10
               continue
             fi
 
-            # Đếm số segment .ts
+            # Đếm số segment active trên đĩa
             SEG_COUNT=$(ls -1 ${HLS_DIR}/*.ts 2>/dev/null | wc -l)
             echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments active: $SEG_COUNT"
 
