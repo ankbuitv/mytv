@@ -23,13 +23,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg jq curl python3-pip caddy
-          pip install -q --break-system-packages yt-dlp || pip install -q yt-dlp
+          pip install -q --break-system-packages -U yt-dlp
           
-          # Bore
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
           sudo mv /tmp/bore /usr/local/bin/
           
           mkdir -p "${HLS_DIR}"
+          yt-dlp --version
 
       - name: Start Caddy Web Server
         run: |
@@ -88,31 +88,45 @@ jobs:
             echo $((late * 60))
           }
 
-          # Resolve input URL (YouTube / m3u8 / mpd / direct)
           resolve_input() {
             local url="$1"
-            local clean=$(echo "$url" | sed 's/\.$//')
+            # Clean trailing dots + remove noisy &pp= param
+            local clean=$(echo "$url" | sed 's/\.$//' | sed 's/&pp=[^&]*//g' | sed 's/?pp=[^&]*//g')
 
             # YouTube
             if [[ "$clean" =~ youtu(\.be|be\.com) ]]; then
-              yt-dlp -g -f "best[height<=720]/best" "$clean" 2>/dev/null || echo ""
+              local yurl
+              yurl=$(yt-dlp --no-update -g \
+                -f "best[height<=720][ext=mp4]/best[height<=720]/best" \
+                --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
+                "$clean" 2>/dev/null | head -1)
+
+              if [ -z "$yurl" ]; then
+                # Fallback format 18 (360p progressive mp4)
+                yurl=$(yt-dlp --no-update -g -f 18 \
+                  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                  "$clean" 2>/dev/null | head -1)
+              fi
+              echo "$yurl"
               return
             fi
 
-            # Đã là m3u8 / mpd / mp4 / mkv...
+            # Native: m3u8 / mpd / mp4 / mkv / ts
             if [[ "$clean" =~ \.(m3u8|mpd|mp4|mkv|ts)(\?|$) ]]; then
               echo "$clean"
               return
             fi
 
-            # Thử yt-dlp cho các site khác (nếu có)
-            local ytdlp_url=$(yt-dlp -g -f "best[height<=720]/best" "$clean" 2>/dev/null || echo "")
-            if [ -n "$ytdlp_url" ]; then
-              echo "$ytdlp_url"
+            # Other sites via yt-dlp
+            local other=$(yt-dlp --no-update -g -f "best[height<=720]/best" \
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "$clean" 2>/dev/null | head -1)
+            if [ -n "$other" ]; then
+              echo "$other"
               return
             fi
 
-            # Fallback: dùng nguyên URL
+            # Fallback
             echo "$clean"
           }
 
@@ -121,13 +135,13 @@ jobs:
           while true; do
             # Revive Caddy
             if ! pgrep -x "caddy" > /dev/null; then
-              echo "[REVIVE] Caddy dừng, bật lại..."
+              echo "[REVIVE] Caddy dừng → bật lại"
               caddy start --config /tmp/Caddyfile
             fi
 
             # Revive Bore
             if ! pgrep -x "bore" > /dev/null; then
-              echo "[REVIVE] Bore rớt, kết nối lại..."
+              echo "[REVIVE] Bore rớt → kết nối lại"
               nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             fi
 
@@ -143,7 +157,7 @@ jobs:
               continue
             fi
 
-            # Phim mới
+            # New film
             if [ "$CUR_URL" != "$LAST_URL" ]; then
               echo "[$(date '+%H:%M:%S')] 🚀 Bắt đầu phát: $CUR_NAME"
               LAST_URL="$CUR_URL"
@@ -156,42 +170,44 @@ jobs:
                 continue
               fi
 
-              # Kill FFmpeg cũ
+              # Kill old FFmpeg
               if [ -f /tmp/ffmpeg.pid ]; then
                 kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               fi
               rm -f ${HLS_DIR}/*
 
-              # Resolve URL
+              # Resolve
               INPUT_URL=$(resolve_input "$CUR_URL")
 
               if [ -z "$INPUT_URL" ]; then
                 echo "❌ Không resolve được link: $CUR_URL"
                 LAST_URL=""
-                sleep 15
+                sleep 20
                 continue
               fi
 
-              # Probe nhanh
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                -H "Referer: https://kkphim.com/" \
-                -H "Origin: https://kkphim.com" \
-                --max-time 10 "$INPUT_URL" || echo "000")
+              echo "[INFO] Resolved: ${INPUT_URL:0:120}..."
 
-              if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "206" ] && [ "$HTTP_CODE" != "302" ]; then
-                echo "[DEAD] Link chết (HTTP $HTTP_CODE): $INPUT_URL"
-                LAST_URL=""
-                sleep 25
-                continue
+              # Quick probe (skip for googlevideo – often 403 without proper headers)
+              if [[ ! "$INPUT_URL" =~ googlevideo\.com ]]; then
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                  -H "Referer: https://www.youtube.com/" \
+                  --max-time 10 "$INPUT_URL" || echo "000")
+
+                if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "206" ] && [ "$HTTP_CODE" != "302" ]; then
+                  echo "[DEAD] Link chết (HTTP $HTTP_CODE)"
+                  LAST_URL=""
+                  sleep 25
+                  continue
+                fi
+                echo "[INFO] Probe OK (HTTP $HTTP_CODE | Seek: ${SEEK_SEC}s)"
+              else
+                echo "[INFO] YouTube direct link – skip probe | Seek: ${SEEK_SEC}s"
               fi
 
-              echo "[INFO] Link OK (HTTP $HTTP_CODE | Seek: ${SEEK_SEC}s)"
-              echo "[INFO] Input: $INPUT_URL"
+              FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://www.youtube.com/"$'\r\n'"Origin: https://www.youtube.com"$'\r\n'"Accept: */*"$'\r\n'
 
-              FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://kkphim.com/"$'\r\n'"Origin: https://kkphim.com"$'\r\n'"Accept: */*"$'\r\n'
-
-              # FFmpeg (hỗ trợ m3u8 / mpd / youtube direct)
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -headers "$FF_HEADERS" \
                 -rw_timeout 30000000 \
@@ -210,13 +226,13 @@ jobs:
                 "${HLS_DIR}/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
 
               echo $! > /tmp/ffmpeg.pid
-              sleep 8
+              sleep 10
             fi
 
-            # Check FFmpeg sống
+            # Alive check
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
               echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg chết. Log:"
-              tail -n 20 /tmp/ffmpeg.log 2>/dev/null || true
+              tail -n 25 /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
               sleep 15
               continue
@@ -226,7 +242,7 @@ jobs:
 
             if [ "$SEG_COUNT" -eq 0 ]; then
               echo "[WARN] Chưa có segment. Log gần nhất:"
-              tail -n 10 /tmp/ffmpeg.log 2>/dev/null || true
+              tail -n 12 /tmp/ffmpeg.log 2>/dev/null || true
             else
               echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments: $SEG_COUNT"
             fi
