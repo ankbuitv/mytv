@@ -37,7 +37,7 @@ jobs:
           caddy stop 2>/dev/null || true
           pkill -f caddy 2>/dev/null || true
 
-          # Tắt Admin Port 2019
+          # Tắt Admin Port 2019 tránh lỗi bind port
           cat << 'EOF' > /tmp/Caddyfile
           {
               admin off
@@ -157,16 +157,16 @@ jobs:
 
               echo "[INFO] Link nguồn OK (Seek: ${SEEK_SEC}s)"
 
-              # Full Headers hỗ trợ bypass 404 Not Found từ server CDN
+              # Header chuẩn HTTP/1.1 bypass CDN
               FF_HEADERS="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"$'\r\n'"Referer: https://kkphim.com/"$'\r\n'"Origin: https://kkphim.com"$'\r\n'
 
-              # Khởi tạo FFmpeg tối ưu mượt & chuẩn Header
+              # Đặt -ss $SEEK_SEC phía SAU -i "$INPUT_URL"
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
-                -re \
                 -headers "$FF_HEADERS" \
                 -rw_timeout 30000000 \
-                -ss "$SEEK_SEC" \
+                -re \
                 -i "$INPUT_URL" \
+                -ss "$SEEK_SEC" \
                 -vf "scale=-2:720" \
                 -c:v libx264 -preset superfast -profile:v main -level 3.1 \
                 -x264-params "keyint=30:scenecut=0" \
