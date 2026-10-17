@@ -25,20 +25,19 @@ jobs:
           sudo apt-get install -y -qq ffmpeg jq curl python3-pip caddy
           pip install -q --break-system-packages yt-dlp || pip install -q yt-dlp
           
-          # Tải Bore CLI
+          # Tải Bore CLI (Tunnel qua bore.pub)
           curl -fsSL https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
           sudo mv /tmp/bore /usr/local/bin/
           
-          # Tạo thư mục lưu HLS
+          # Tạo thư mục tạm lưu HLS
           mkdir -p "${HLS_DIR}"
 
       - name: Start Caddy Web Server
         run: |
-          # Dọn dẹp tiến trình Caddy cũ nếu có
           caddy stop 2>/dev/null || true
           pkill -f caddy 2>/dev/null || true
 
-          # Cấu hình Caddy (Tắt Admin Port 2019 để tránh lỗi Address already in use)
+          # Tắt Admin Port 2019 để tránh lỗi Address already in use
           cat << 'EOF' > /tmp/Caddyfile
           {
               admin off
@@ -57,11 +56,9 @@ jobs:
 
       - name: Start Bore Tunnel
         run: |
-          # Chạy bore local port 5000 kết nối ra bore.pub
           nohup bore local 5000 --to bore.pub > /tmp/bore.log 2>&1 &
           sleep 5
           
-          # Lấy Port do bore.pub cấp ngẫu nhiên
           BORE_PORT=$(grep -oP 'listening at bore.pub:\K[0-9]+' /tmp/bore.log | tail -1 || echo "")
           
           if [ -z "$BORE_PORT" ]; then
@@ -80,12 +77,20 @@ jobs:
 
       - name: Main Stream Engine
         run: |
-          fetch_url() {
-            curl -fsSL --max-time 10 "$SCHEDULE_API" | jq -r '.current.url // empty'
+          fetch_schedule() {
+            curl -fsSL --max-time 10 "$SCHEDULE_API" 2>/dev/null || echo '{"current":null}'
           }
 
-          fetch_name() {
-            curl -fsSL --max-time 10 "$SCHEDULE_API" | jq -r '.current.name // "Phim"'
+          calc_seek() {
+            local start_min="$1"
+            local duration="$2"
+            local vn_hour=$(TZ=Asia/Ho_Chi_Minh date +%H)
+            local vn_min=$(TZ=Asia/Ho_Chi_Minh date +%M)
+            local now_min=$((10#$vn_hour * 60 + 10#$vn_min))
+            local late=$((now_min - start_min))
+            if [ "$late" -lt 0 ]; then late=0; fi
+            if [ "$late" -gt "$duration" ]; then echo "-1"; return; fi
+            echo $((late * 60))
           }
 
           LAST_URL=""
@@ -97,14 +102,17 @@ jobs:
               caddy start --config /tmp/Caddyfile
             fi
 
-            # 2. Tự khôi phục Bore Tunnel nếu rớt mạng
+            # 2. Tự khôi phục Bore Tunnel nếu rớt kết nối
             if ! pgrep -x "bore" > /dev/null; then
               echo "[REVIVE] Bore Tunnel rớt kết nối, đang kết nối lại..."
               nohup bore local 5000 --to bore.pub --port "${BORE_PORT}" > /tmp/bore.log 2>&1 &
             fi
 
-            CUR_URL=$(fetch_url)
-            CUR_NAME=$(fetch_name)
+            SCHED=$(fetch_schedule)
+            CUR_URL=$(echo "$SCHED" | jq -r '.current.url // empty')
+            CUR_NAME=$(echo "$SCHED" | jq -r '.current.name // "Phim"')
+            CUR_START=$(echo "$SCHED" | jq -r '.current.startMinutes // 0')
+            CUR_DUR=$(echo "$SCHED" | jq -r '.current.duration // 120')
 
             if [ -z "$CUR_URL" ]; then
               echo "[$(date '+%H:%M:%S')] ⏳ Chưa có lịch phát, đợi 30s..."
@@ -112,64 +120,85 @@ jobs:
               continue
             fi
 
-            # Khi phát hiện URL phim mới
+            # Khi phát hiện phim mới
             if [ "$CUR_URL" != "$LAST_URL" ]; then
               echo "[$(date '+%H:%M:%S')] 🚀 Bắt đầu phát: $CUR_NAME"
               LAST_URL="$CUR_URL"
               
+              SEEK_SEC=$(calc_seek "$CUR_START" "$CUR_DUR")
+              if [ "$SEEK_SEC" = "-1" ]; then
+                echo "[SKIP] Phim $CUR_NAME đã quá thời lượng chiếu!"
+                LAST_URL=""
+                sleep 15
+                continue
+              fi
+
               # Dừng FFmpeg cũ
               if [ -f /tmp/ffmpeg.pid ]; then
                 kill -9 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null || true
               fi
 
-              # Xóa segments cũ
               rm -f ${HLS_DIR}/*
 
-              # Phân loại nguồn YouTube hay Direct Link
-              if [[ "$CUR_URL" =~ youtu(\.be|be\.com) ]]; then
-                INPUT_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$CUR_URL" 2>/dev/null || echo "")
+              # Xử lý URL đầu vào
+              CLEAN_URL=$(echo "$CUR_URL" | sed 's/\.$//')
+              if [[ "$CLEAN_URL" =~ youtu(\.be|be\.com) ]]; then
+                INPUT_URL=$(yt-dlp -g -f "best[ext=mp4]/best" "$CLEAN_URL" 2>/dev/null || echo "")
               else
-                INPUT_URL="$CUR_URL"
+                INPUT_URL="$CLEAN_URL"
               fi
 
               if [ -z "$INPUT_URL" ]; then
-                echo "❌ Không lấy được link stream từ: $CUR_URL"
+                echo "❌ Không lấy được link stream từ API!"
                 LAST_URL=""
                 sleep 10
                 continue
               fi
 
-              # Chạy FFmpeg ngầm
+              echo "[INFO] Link nguồn OK (Seek: ${SEEK_SEC}s)"
+
+              # FFmpeg Tối Ưu Mạng & Tránh Lag:
+              # - Scale 720p để giảm tải GPU/CPU người xem
+              # - Bitrate 900k giúp file .ts nhỏ gọn (~350KB), load siêu mượt qua Bore
               nohup ffmpeg -hide_banner -loglevel warning -nostdin \
                 -re \
-                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+                -timeout 30000000 \
+                -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
                 -referer "https://kkphim.com/" \
+                -ss "$SEEK_SEC" \
                 -i "$INPUT_URL" \
-                -c:v libx264 -preset ultrafast -tune zerolatency \
-                -pix_fmt yuv420p -g 48 \
-                -b:v 2500k -maxrate 3000k -bufsize 4000k \
-                -c:a aac -b:a 128k -ar 44100 \
-                -f hls -hls_time 4 -hls_list_size 10 \
+                -vf "scale=-2:720" \
+                -c:v libx264 -preset superfast -profile:v main -level 3.1 \
+                -x264-params "keyint=30:scenecut=0" \
+                -pix_fmt yuv420p -r 25 -g 30 \
+                -b:v 900k -maxrate 1100k -bufsize 2000k \
+                -c:a aac -b:a 64k -ar 44100 \
+                -f hls -hls_time 3 -hls_list_size 8 \
                 -hls_flags delete_segments+omit_endlist \
                 -hls_segment_filename "${HLS_DIR}/seg_%05d.ts" \
                 "${HLS_DIR}/stream.m3u8" > /tmp/ffmpeg.log 2>&1 &
               
               echo $! > /tmp/ffmpeg.pid
-              echo "[$(date '+%H:%M:%S')] 🟢 FFmpeg đã khởi tạo tiến trình"
+              sleep 3
             fi
 
-            # Kiểm tra xem FFmpeg có bị die không
+            # Kiểm tra tiến trình FFmpeg
             if ! kill -0 "$(cat /tmp/ffmpeg.pid 2>/dev/null)" 2>/dev/null; then
-              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg bị dừng! Log lỗi gần nhất:"
-              tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
+              echo "[$(date '+%H:%M:%S')] ⚠️ FFmpeg đã bị thoát! Báo lỗi:"
+              cat /tmp/ffmpeg.log 2>/dev/null || true
               LAST_URL=""
               sleep 10
               continue
             fi
 
-            # Đếm số segment active trên đĩa
             SEG_COUNT=$(ls -1 ${HLS_DIR}/*.ts 2>/dev/null | wc -l)
-            echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments active: $SEG_COUNT"
+            
+            if [ "$SEG_COUNT" -eq 0 ]; then
+              echo "[WARN] FFmpeg đang chạy nhưng chưa ghi được Segment nào. Log gần nhất:"
+              tail -n 5 /tmp/ffmpeg.log 2>/dev/null || true
+            else
+              echo "[$(date '+%H:%M:%S')] 📡 Đang phát: $CUR_NAME | Segments active: $SEG_COUNT"
+            fi
 
             sleep 15
           done
