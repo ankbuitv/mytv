@@ -40,9 +40,9 @@ jobs:
 
           const CONFIG = {
             channelId: process.env.AUTO_CHANNEL_ID,
-            aiUrl: 'https://ollama.com', // Link chính chủ Ollama Cloud
+            aiUrl: 'https://ollama.com',
             aiKey: process.env.OLLAMA_API_KEY,
-            aiModel: process.env.AI_MODEL || 'gemma4:31b', // Lấy từ Secret, mặc định gemma4:31b
+            aiModel: process.env.AI_MODEL || 'gemma4:31b',
             interval: 30 * 60 * 1000,
             systemPrompt: 'Bạn là thg_adu bot, AI tinh nghịch, thích cà khịa, dùng slang Gen Z. Xưng tôi, gọi ông. Trả lời ngắn gọn, vô tri.'
           };
@@ -57,10 +57,7 @@ jobs:
                 ],
                 stream: false
               }, {
-                headers: { 
-                  'Authorization': \`Bearer \${CONFIG.aiKey}\`, 
-                  'Content-Type': 'application/json' 
-                }
+                headers: { 'Authorization': \`Bearer \${CONFIG.aiKey}\`, 'Content-Type': 'application/json' }
               });
               return response.data.message.content;
             } catch (err) {
@@ -87,12 +84,42 @@ jobs:
           });
 
           client.on('messageCreate', async (message) => {
-            if (message.author.bot) return;
-            if (message.mentions.has(client.user)) {
-              const prompt = message.content.replace(\`<@\${client.user.id}>\`, '').trim();
-              const reply = await askAI(prompt || 'Chào ông!');
-              if (reply) await message.reply(reply);
+            try {
+              if (message.author.bot) return;
+
+              const content = message.content.toLowerCase();
+              const botId = client.user.id;
+
+              // 1. Ưu tiên: Nếu được tag
+              if (message.mentions.has(client.user)) {
+                const prompt = message.content.replace(\`<@\${botId}>\`, '').trim();
+                const reply = await askAI(prompt || 'Chào ông!');
+                if (reply) await message.channel.send(\`<@\${message.author.id}> \${reply}\`);
+                return;
+              }
+
+              // 2. Bắt từ khóa
+              const keywords = ['ai', 'bot', 'adu', 'vcl', 'clgt', 'help', 'cứu', 'tư vấn'];
+              const hasKeyword = keywords.some(word => content.includes(word));
+              const shouldRandomReply = Math.random() < 0.10; 
+
+              if (hasKeyword || shouldRandomReply) {
+                await message.channel.sendTyping();
+                const prompt = \`Ông đang trong một cuộc chat. Có người vừa nói: "\${message.content}". Hãy phản hồi hài hước hoặc cà khịa đúng chất Gen Z.\`;
+                const reply = await askAI(prompt);
+                if (reply) await message.channel.send(\`<@\${message.author.id}> \${reply}\`);
+              }
+            } catch (err) {
+              console.error('Critical Error in messageCreate:', err);
             }
+          });
+
+          // Bẫy lỗi toàn cục để bot không bao giờ sập
+          process.on('unhandledRejection', error => {
+            console.error('Unhandled promise rejection:', error);
+          });
+          process.on('uncaughtException', error => {
+            console.error('Uncaught exception:', error);
           });
 
           client.login(process.env.TOKEN);
@@ -104,7 +131,7 @@ jobs:
           GUILD_ID: ${{ secrets.GUILD_ID }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
-          AI_MODEL: ${{ secrets.AI_MODEL }} # Thêm cái này để tự chọn model
+          AI_MODEL: ${{ secrets.AI_MODEL }}
         run: |
           npm install
           node index.js
