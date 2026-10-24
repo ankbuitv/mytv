@@ -2,33 +2,62 @@ name: ThgAdu AllInOne Bot
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Tự chạy mỗi 6 tiếng
-  workflow_dispatch: # Cho phép bấm Run manually
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thgadu-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 358
+
     steps:
-      - name: Setup Environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Create package.json
         run: |
-          # 1. Tạo file package.json
-          cat <<EOF > package.json
+          cat > package.json <<'EOF'
           {
-            "name": "thg-bot",
-            "version": "1.0.0",
+            "name": "thgadu-bot",
+            "version": "1.2.0",
+            "private": true,
             "main": "index.js",
+            "scripts": {
+              "start": "node index.js"
+            },
             "dependencies": {
               "discord.js": "^14.16.3",
-              "axios": "^1.6.0",
-              "dotenv": "^16.4.5"
+              "axios": "^1.6.0"
             }
           }
           EOF
 
-          # 2. Tạo file index.js
-          cat <<EOF > index.js
-          const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+      - name: Create index.js
+        run: |
+          cat > index.js <<'EOF'
+          const { Client, GatewayIntentBits } = require('discord.js');
           const axios = require('axios');
+
+          const CONFIG = {
+            channelId: process.env.AUTO_CHANNEL_ID,
+            aiUrl: process.env.OLLAMA_API_URL || 'https://ollama.com',
+            aiKey: process.env.OLLAMA_API_KEY,
+            aiModel: process.env.AI_MODEL || 'gemma4:31b',
+            interval: 30 * 60 * 1000,
+            randomReplyChance: 0.10,
+            systemPrompt: process.env.SYSTEM_PROMPT ||
+              'Bạn là ThgAdu, một AI Discord hài hước, tinh nghịch, dùng slang Gen Z. ' +
+              'Xưng tôi, gọi người dùng là ông. Trả lời tự nhiên, ngắn gọn, không bịa thông tin.'
+          };
 
           const client = new Client({
             intents: [
@@ -38,100 +67,217 @@ jobs:
             ]
           });
 
-          const CONFIG = {
-            channelId: process.env.AUTO_CHANNEL_ID,
-            aiUrl: 'https://ollama.com',
-            aiKey: process.env.OLLAMA_API_KEY,
-            aiModel: process.env.AI_MODEL || 'gemma4:31b',
-            interval: 30 * 60 * 1000,
-            systemPrompt: 'Bạn là thg_adu bot, AI tinh nghịch, thích cà khịa, dùng slang Gen Z. Xưng tôi, gọi ông. Trả lời ngắn gọn, vô tri.'
-          };
+          let activeRequests = 0;
+          const MAX_CONCURRENT = 3;
 
           async function askAI(prompt) {
+            if (!CONFIG.aiKey) throw new Error('Thiếu OLLAMA_API_KEY');
+
+            if (activeRequests >= MAX_CONCURRENT) {
+              throw new Error('AI đang bận');
+            }
+
+            activeRequests++;
+
             try {
-              const response = await axios.post(\`\${CONFIG.aiUrl}/api/chat\`, {
-                model: CONFIG.aiModel,
-                messages: [
-                  { role: 'system', content: CONFIG.systemPrompt },
-                  { role: 'user', content: prompt }
-                ],
-                stream: false
-              }, {
-                headers: { 'Authorization': \`Bearer \${CONFIG.aiKey}\`, 'Content-Type': 'application/json' }
-              });
-              return response.data.message.content;
-            } catch (err) {
-              console.error('AI Error:', err.message);
-              return null;
+              const response = await axios.post(
+                CONFIG.aiUrl.replace(/\/$/, '') + '/api/chat',
+                {
+                  model: CONFIG.aiModel,
+                  messages: [
+                    { role: 'system', content: CONFIG.systemPrompt },
+                    { role: 'user', content: prompt }
+                  ],
+                  stream: false
+                },
+                {
+                  headers: {
+                    Authorization: `Bearer ${CONFIG.aiKey}`,
+                    'Content-Type': 'application/json'
+                  },
+                  timeout: 120000
+                }
+              );
+
+              return response.data?.message?.content ||
+                'AI không trả về nội dung.';
+            } finally {
+              activeRequests--;
             }
           }
 
-          client.once('ready', async () => {
-            console.log(\`✅ Bot online: \${client.user.tag} | Model: \${CONFIG.aiModel}\`);
+          function splitMessage(text) {
+            return String(text || '').match(/[\s\S]{1,1900}/g) || [];
+          }
+
+          async function sendAIReply(message, prompt) {
+            try {
+              await message.channel.sendTyping();
+              const answer = await askAI(prompt);
+
+              for (const part of splitMessage(answer)) {
+                await message.reply({
+                  content: part,
+                  allowedMentions: {
+                    repliedUser: false,
+                    parse: []
+                  }
+                });
+              }
+            } catch (error) {
+              const details =
+                error.response?.data?.error || error.message;
+
+              console.error('AI Error:', details);
+
+              let notice = '❌ AI gặp lỗi.';
+
+              if (error.response?.status === 401) {
+                notice = '❌ API key không hợp lệ.';
+              } else if (error.response?.status === 429) {
+                notice = '⏳ AI đang bị giới hạn lượt gọi.';
+              } else if (/credits|payment|billing/i.test(details)) {
+                notice = '💸 Ollama Cloud hết credits.';
+              } else if (/AI đang bận/i.test(details)) {
+                notice = '⏳ AI đang bận, thử lại sau.';
+              }
+
+              await message.reply({
+                content: notice,
+                allowedMentions: { repliedUser: false, parse: [] }
+              }).catch(console.error);
+            }
+          }
+
+          client.once('ready', () => {
+            console.log(
+              `✅ ThgAdu online: ${client.user.tag} | AI: ${CONFIG.aiModel}`
+            );
+
+            if (!CONFIG.channelId) return;
+
             setInterval(async () => {
               try {
                 const channel = await client.channels.fetch(CONFIG.channelId);
-                if (!channel) return;
+                if (!channel?.isTextBased()) return;
+
                 const messages = await channel.messages.fetch({ limit: 5 });
-                const context = messages.map(m => \`\${m.author.username}: \${m.content}\`).join('\\n');
-                const prompt = context 
-                  ? \`Đây là chat gần đây:\\n\${context}\\n\\nHãy phản hồi hài hước hoặc khơi mào chuyện mới.\`
-                  : 'Hãy tự nghĩ ra một câu nói vô tri để bắt chuyện.';
-                const reply = await askAI(prompt);
-                if (reply) await channel.send(reply);
-              } catch (err) { console.error('Auto-chat Error:', err); }
+
+                const context = [...messages.values()]
+                  .filter(m => !m.author.bot)
+                  .reverse()
+                  .map(m => `${m.author.username}: ${m.content}`)
+                  .join('\n');
+
+                const prompt = context
+                  ? `Chat gần đây:\n${context}\n\nHãy phản hồi hài hước hoặc khơi mào chuyện mới.`
+                  : 'Hãy tự nghĩ một câu nói vui để bắt chuyện.';
+
+                const answer = await askAI(prompt);
+
+                for (const part of splitMessage(answer)) {
+                  await channel.send({
+                    content: part,
+                    allowedMentions: { parse: [] }
+                  });
+                }
+              } catch (error) {
+                console.error(
+                  'Auto-chat Error:',
+                  error.response?.data?.error || error.message
+                );
+              }
             }, CONFIG.interval);
           });
 
-          client.on('messageCreate', async (message) => {
+          client.on('messageCreate', async message => {
             try {
-              if (message.author.bot) return;
+              if (message.author.bot || !message.guild) return;
 
-              const content = message.content.toLowerCase();
-              const botId = client.user.id;
+              const text = message.content.trim();
+              const lower = text.toLowerCase();
 
-              // 1. Ưu tiên: Nếu được tag
-              if (message.mentions.has(client.user)) {
-                const prompt = message.content.replace(\`<@\${botId}>\`, '').trim();
-                const reply = await askAI(prompt || 'Chào ông!');
-                if (reply) await message.channel.send(\`<@\${message.author.id}> \${reply}\`);
+              // Lệnh d.{câu hỏi}
+              if (lower.startsWith('d.')) {
+                const prompt = text.slice(2).trim();
+
+                if (!prompt) {
+                  await message.reply('💀 Gõ `d.{câu hỏi}` đi ông.');
+                  return;
+                }
+
+                await sendAIReply(message, prompt);
                 return;
               }
 
-              // 2. Bắt từ khóa
-              const keywords = ['ai', 'bot', 'adu', 'vcl', 'clgt', 'help', 'cứu', 'tư vấn'];
-              const hasKeyword = keywords.some(word => content.includes(word));
-              const shouldRandomReply = Math.random() < 0.10; 
+              // Tag bot
+              if (message.mentions.has(client.user)) {
+                const prompt = text
+                  .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '')
+                  .trim();
 
-              if (hasKeyword || shouldRandomReply) {
-                await message.channel.sendTyping();
-                const prompt = \`Ông đang trong một cuộc chat. Có người vừa nói: "\${message.content}". Hãy phản hồi hài hước hoặc cà khịa đúng chất Gen Z.\`;
-                const reply = await askAI(prompt);
-                if (reply) await message.channel.send(\`<@\${message.author.id}> \${reply}\`);
+                await sendAIReply(message, prompt || 'Chào ông!');
+                return;
               }
-            } catch (err) {
-              console.error('Critical Error in messageCreate:', err);
+
+              // Từ khóa và random
+              const keywords = [
+                'ai', 'bot', 'adu', 'vcl',
+                'clgt', 'help', 'cứu', 'tư vấn'
+              ];
+
+              const hasKeyword = keywords.some(k => lower.includes(k));
+              const randomReply = Math.random() < CONFIG.randomReplyChance;
+
+              if (hasKeyword || randomReply) {
+                await sendAIReply(
+                  message,
+                  `Có người vừa nói: "${text}". ` +
+                  'Hãy phản hồi tự nhiên, hài hước, hơi cà khịa theo phong cách Gen Z.'
+                );
+              }
+            } catch (error) {
+              console.error('Message Error:', error.message);
             }
           });
 
-          // Bẫy lỗi toàn cục để bot không bao giờ sập
-          process.on('unhandledRejection', error => {
-            console.error('Unhandled promise rejection:', error);
-          });
-          process.on('uncaughtException', error => {
-            console.error('Uncaught exception:', error);
+          client.on('error', console.error);
+
+          client.on('shardDisconnect', (_, id) => {
+            console.warn(`Discord shard ${id} disconnected`);
           });
 
-          client.login(process.env.TOKEN);
+          client.on('shardResume', id => {
+            console.log(`Discord shard ${id} resumed`);
+          });
+
+          process.on('unhandledRejection', console.error);
+
+          process.on('uncaughtException', error => {
+            console.error('Fatal Error:', error);
+            process.exit(1);
+          });
+
+          if (!process.env.TOKEN) {
+            console.error('Missing TOKEN');
+            process.exit(1);
+          }
+
+          client.login(process.env.TOKEN).catch(error => {
+            console.error('Login Error:', error);
+            process.exit(1);
+          });
           EOF
 
-      - name: Install and Run
+      - name: Install dependencies
+        run: npm install
+
+      - name: Start Discord Bot
         env:
           TOKEN: ${{ secrets.TOKEN }}
-          GUILD_ID: ${{ secrets.GUILD_ID }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_API_URL: ${{ secrets.OLLAMA_API_URL }}
           AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
-        run: |
-          npm install
-          node index.js
+          SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
+        run: npm start
