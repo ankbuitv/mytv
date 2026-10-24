@@ -1,0 +1,107 @@
+name: ThgAdu AllInOne Bot
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Tự chạy mỗi 6 tiếng
+  workflow_dispatch: # Cho phép bấm Run manually
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Environment
+        run: |
+          # 1. Tạo file package.json ngay lập tức
+          cat <<EOF > package.json
+          {
+            "name": "thg-bot",
+            "version": "1.0.0",
+            "main": "index.js",
+            "dependencies": {
+              "discord.js": "^14.16.3",
+              "axios": "^1.6.0",
+              "dotenv": "^16.4.5"
+            }
+          }
+          EOF
+
+          # 2. Tạo file index.js chứa toàn bộ logic bot
+          cat <<EOF > index.js
+          const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+          const axios = require('axios');
+
+          const client = new Client({
+            intents: [
+              GatewayIntentBits.Guilds,
+              GatewayIntentBits.GuildMessages,
+              GatewayIntentBits.MessageContent
+            ]
+          });
+
+          const CONFIG = {
+            channelId: process.env.AUTO_CHANNEL_ID,
+            aiUrl: process.env.OLLAMA_CLOUD_URL,
+            aiKey: process.env.OLLAMA_API_KEY,
+            aiModel: 'gemma2',
+            interval: 30 * 60 * 1000,
+            systemPrompt: 'Bạn là thg_adu bot, AI tinh nghịch, thích cà khịa, dùng slang Gen Z. Xưng tôi, gọi ông. Trả lời ngắn gọn, vô tri.'
+          };
+
+          async function askAI(prompt) {
+            try {
+              const response = await axios.post(\`\${CONFIG.aiUrl}/api/chat\`, {
+                model: CONFIG.aiModel,
+                messages: [
+                  { role: 'system', content: CONFIG.systemPrompt },
+                  { role: 'user', content: prompt }
+                ],
+                stream: false
+              }, {
+                headers: { 'Authorization': \`Bearer \${CONFIG.aiKey}\`, 'Content-Type': 'application/json' }
+              });
+              return response.data.message.content;
+            } catch (err) {
+              console.error('AI Error:', err.message);
+              return null;
+            }
+          }
+
+          client.once('ready', async () => {
+            console.log(\`✅ Bot online: \${client.user.tag}\`);
+            setInterval(async () => {
+              try {
+                const channel = await client.channels.fetch(CONFIG.channelId);
+                if (!channel) return;
+                const messages = await channel.messages.fetch({ limit: 5 });
+                const context = messages.map(m => \`\${m.author.username}: \${m.content}\`).join('\\n');
+                const prompt = context 
+                  ? \`Đây là chat gần đây:\\n\${context}\\n\\nHãy phản hồi hài hước hoặc khơi mào chuyện mới.\`
+                  : 'Hãy tự nghĩ ra một câu nói vô tri để bắt chuyện.';
+                const reply = await askAI(prompt);
+                if (reply) await channel.send(reply);
+              } catch (err) { console.error('Auto-chat Error:', err); }
+            }, CONFIG.interval);
+          });
+
+          client.on('messageCreate', async (message) => {
+            if (message.author.bot) return;
+            if (message.mentions.has(client.user)) {
+              const prompt = message.content.replace(\`<@\${client.user.id}>\`, '').trim();
+              const reply = await askAI(prompt || 'Chào ông!');
+              if (reply) await message.reply(reply);
+            }
+          });
+
+          client.login(process.env.TOKEN);
+          EOF
+
+      - name: Install and Run
+        env:
+          TOKEN: ${{ secrets.TOKEN }}
+          GUILD_ID: ${{ secrets.GUILD_ID }}
+          OLLAMA_CLOUD_URL: ${{ secrets.OLLAMA_CLOUD_URL }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
+        run: |
+          npm install
+          node index.js
