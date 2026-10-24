@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Setup Environment
         run: |
-          # 1. Tạo file package.json ngay lập tức
+          # 1. Tạo file package.json
           cat <<EOF > package.json
           {
             "name": "thg-bot",
@@ -25,7 +25,7 @@ jobs:
           }
           EOF
 
-          # 2. Tạo file index.js chứa toàn bộ logic bot
+          # 2. Tạo file index.js
           cat <<EOF > index.js
           const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
           const axios = require('axios');
@@ -40,9 +40,9 @@ jobs:
 
           const CONFIG = {
             channelId: process.env.AUTO_CHANNEL_ID,
-            aiUrl: process.env.OLLAMA_CLOUD_URL,
+            aiUrl: 'https://ollama.com', // Link chính chủ Ollama Cloud
             aiKey: process.env.OLLAMA_API_KEY,
-            aiModel: 'gemma2',
+            aiModel: process.env.AI_MODEL || 'gemma4:31b', // Lấy từ Secret, mặc định gemma4:31b
             interval: 30 * 60 * 1000,
             systemPrompt: 'Bạn là thg_adu bot, AI tinh nghịch, thích cà khịa, dùng slang Gen Z. Xưng tôi, gọi ông. Trả lời ngắn gọn, vô tri.'
           };
@@ -57,7 +57,10 @@ jobs:
                 ],
                 stream: false
               }, {
-                headers: { 'Authorization': \`Bearer \${CONFIG.aiKey}\`, 'Content-Type': 'application/json' }
+                headers: { 
+                  'Authorization': \`Bearer \${CONFIG.aiKey}\`, 
+                  'Content-Type': 'application/json' 
+                }
               });
               return response.data.message.content;
             } catch (err) {
@@ -67,7 +70,7 @@ jobs:
           }
 
           client.once('ready', async () => {
-            console.log(\`✅ Bot online: \${client.user.tag}\`);
+            console.log(\`✅ Bot online: \${client.user.tag} | Model: \${CONFIG.aiModel}\`);
             setInterval(async () => {
               try {
                 const channel = await client.channels.fetch(CONFIG.channelId);
@@ -99,9 +102,9 @@ jobs:
         env:
           TOKEN: ${{ secrets.TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
-          OLLAMA_CLOUD_URL: ${{ secrets.OLLAMA_CLOUD_URL }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
+          AI_MODEL: ${{ secrets.AI_MODEL }} # Thêm cái này để tự chọn model
         run: |
           npm install
           node index.js
