@@ -1,4 +1,4 @@
-name: ThgAdu AllInOne Bot v3
+name: ThgAdu AllInOne Bot v4
 
 on:
   workflow_dispatch:
@@ -26,34 +26,52 @@ jobs:
       - name: Create package.json
         shell: bash
         run: |
-          cat > package.json <<'EOF'
+          cat > package.json <<'PKGEOF'
           {
             "name": "thgadu-allinone",
-            "version": "3.0.0",
+            "version": "4.0.0",
             "private": true,
             "main": "index.js",
             "scripts": {
               "start": "node index.js"
             },
             "dependencies": {
+              "@discordjs/opus": "^0.10.0",
+              "@discordjs/voice": "^0.19.0",
               "axios": "^1.8.4",
-              "discord.js": "^14.19.3"
+              "discord.js": "^14.19.3",
+              "ffmpeg-static": "^5.2.0",
+              "libsodium-wrappers": "^0.7.15",
+              "play-dl": "^1.9.7"
             }
           }
-          EOF
+          PKGEOF
 
       - name: Create index.js
         shell: bash
         run: |
           cat > index.js <<'EOF'
+          // ThgAdu AllInOne Bot v4 — AI + Music (YouTube) + Favorites + Playlists
           const {
             Client,
             GatewayIntentBits,
             ActivityType
           } = require('discord.js');
-
+          const {
+            joinVoiceChannel,
+            createAudioPlayer,
+            createAudioResource,
+            AudioPlayerStatus,
+            VoiceConnectionStatus,
+            entersState
+          } = require('@discordjs/voice');
           const axios = require('axios');
+          const play = require('play-dl');
+          const ffmpegPath = require('ffmpeg-static');
 
+          process.env.FFMPEG_PATH = ffmpegPath;
+
+          // ---------- CONFIG ----------
           const CFG = {
             token: process.env.TOKEN,
             ollamaKey: process.env.OLLAMA_API_KEY,
@@ -83,7 +101,8 @@ jobs:
             intents: [
               GatewayIntentBits.Guilds,
               GatewayIntentBits.GuildMessages,
-              GatewayIntentBits.MessageContent
+              GatewayIntentBits.MessageContent,
+              GatewayIntentBits.GuildVoiceStates
             ]
           });
 
@@ -91,6 +110,7 @@ jobs:
           let activeAI = 0;
           const MAX_AI = 3;
 
+          // ---------- TEXT HELPERS ----------
           function formatMarkdown(text) {
             const lines = String(text || '').split('\n');
             const result = [];
@@ -180,6 +200,17 @@ jobs:
             }
           }
 
+          function fmtTime(sec) {
+            if (!sec || !isFinite(sec)) return 'live/?';
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = Math.floor(sec % 60);
+            return h > 0
+              ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+              : `${m}:${String(s).padStart(2, '0')}`;
+          }
+
+          // ---------- DATABASE ----------
           async function database(method, path, data) {
             if (!CFG.supabaseUrl || !CFG.supabaseKey) {
               throw new Error('Supabase chưa cấu hình.');
@@ -228,6 +259,7 @@ jobs:
             return database('DELETE', memoryPath(message));
           }
 
+          // ---------- WEB ----------
           async function webSearch(query) {
             if (!CFG.firecrawlKey) {
               throw new Error('Thiếu FIRECRAWL_API_KEY');
@@ -269,6 +301,7 @@ jobs:
             return response.data?.data?.markdown || '';
           }
 
+          // ---------- AI ----------
           async function askAI(message, prompt, context = '') {
             if (!CFG.ollamaKey) {
               throw new Error('Thiếu OLLAMA_API_KEY');
@@ -281,9 +314,7 @@ jobs:
             activeAI++;
 
             try {
-              const key =
-                `${message.guild.id}:${message.author.id}`;
-
+              const key = `${message.guild.id}:${message.author.id}`;
               const past = history.get(key) || [];
 
               let memories = [];
@@ -367,6 +398,629 @@ jobs:
             }
           }
 
+          // ---------- MUSIC ----------
+          const music = new Map();
+
+          function getMusic(guild) {
+            if (!music.has(guild.id)) {
+              const player = createAudioPlayer();
+
+              const state = {
+                connection: null,
+                player,
+                resource: null,
+                queue: [],
+                current: null,
+                volume: 50,
+                textChannelId: null
+              };
+
+              player.on(AudioPlayerStatus.Idle, () => {
+                state.current = null;
+                state.resource = null;
+                playNext(guild).catch(error =>
+                  console.error('Auto-next:', error.message)
+                );
+              });
+
+              player.on('error', error => {
+                console.error('Player:', error.message);
+                state.current = null;
+                state.resource = null;
+                playNext(guild).catch(() => {});
+              });
+
+              music.set(guild.id, state);
+            }
+
+            return music.get(guild.id);
+          }
+
+          function sameVoice(message) {
+            const state = getMusic(message.guild);
+            const voice = message.member?.voice?.channel;
+
+            if (!voice && !state.connection) {
+              return { error: 'Ông vào voice channel trước đã 💀' };
+            }
+
+            if (
+              voice &&
+              state.connection &&
+              state.connection.joinConfig.channelId !== voice.id
+            ) {
+              return { error: 'Bot đang ở voice khác, đợi nó rảnh.' };
+            }
+
+            return { voice, state };
+          }
+
+          async function connect(message, voice) {
+            const state = getMusic(message.guild);
+
+            if (
+              state.connection &&
+              state.connection.joinConfig.channelId === voice.id
+            ) {
+              return state;
+            }
+
+            if (state.connection) {
+              try {
+                state.connection.destroy();
+              } catch {}
+
+              state.connection = null;
+            }
+
+            const connection = joinVoiceChannel({
+              channelId: voice.id,
+              guildId: message.guild.id,
+              adapterCreator: message.guild.voiceAdapterCreator,
+              selfDeaf: true
+            });
+
+            await entersState(
+              connection,
+              VoiceConnectionStatus.Ready,
+              20000
+            );
+
+            connection.subscribe(state.player);
+            state.connection = connection;
+
+            connection.on(VoiceConnectionStatus.Disconnected, async () => {
+              try {
+                await entersState(
+                  connection,
+                  VoiceConnectionStatus.Signalling,
+                  5000
+                );
+              } catch {
+                resetMusic(message.guild);
+              }
+            });
+
+            return state;
+          }
+
+          function resetMusic(guild) {
+            const state = music.get(guild.id);
+            if (!state) return;
+
+            try {
+              state.player.stop(true);
+              state.connection?.destroy();
+            } catch {}
+
+            state.connection = null;
+            state.resource = null;
+            state.current = null;
+            state.queue = [];
+          }
+
+          async function resolveSong(query) {
+            if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(query)) {
+              const info = await play.video_info(query);
+              const d = info.video_details;
+
+              if (d.durationInSec > 3600) {
+                throw new Error('Bài dài quá 1 tiếng, bỏ qua.');
+              }
+
+              return {
+                title: d.title,
+                url: d.url,
+                duration: d.durationInSec,
+                token: info.token || null
+              };
+            }
+
+            const results = await play.search(query, { limit: 1 });
+
+            if (!results.length) {
+              throw new Error(`Ko tìm thấy: ${query}`);
+            }
+
+            const v = results[0];
+            const info = await play.video_info(v.url);
+            const d = info.video_details;
+
+            if (d.durationInSec > 3600) {
+              throw new Error('Bài dài quá 1 tiếng, bỏ qua.');
+            }
+
+            return {
+              title: d.title,
+              url: d.url,
+              duration: d.durationInSec,
+              token: info.token || null
+            };
+          }
+
+          async function playNow(guild, song) {
+            const state = getMusic(guild);
+
+            const source = await play.stream(song.url, {
+              discordPlayerCompatibility: true
+            });
+
+            const resource = createAudioResource(source.stream, {
+              inputType: source.type,
+              inlineVolume: true
+            });
+
+            resource.volume?.setVolume(state.volume / 100);
+
+            state.resource = resource;
+            state.current = song;
+            state.player.play(resource);
+          }
+
+          async function playNext(guild) {
+            const state = music.get(guild.id);
+            if (!state) return;
+
+            const song = state.queue.shift();
+
+            if (!song) return;
+
+            try {
+              await playNow(guild, song);
+            } catch (error) {
+              console.error('PlayNext:', error.message);
+              await playNext(guild).catch(() => {});
+            }
+          }
+
+          async function startPlayback(message, song) {
+            const check = sameVoice(message);
+
+            if (check.error) {
+              await send(message, check.error);
+              return;
+            }
+
+            const state = check.state;
+
+            if (check.voice) {
+              await connect(message, check.voice);
+            }
+
+            if (state.current) {
+              state.queue.push(song);
+              await send(
+                message,
+                `📥 Đã thêm vào hàng đợi: **${song.title}** (${fmtTime(song.duration)})`
+              );
+              return;
+            }
+
+            try {
+              await playNow(message.guild, song);
+              await send(
+                message,
+                `▶️ Đang phát: **${song.title}** (${fmtTime(song.duration)})`
+              );
+            } catch (error) {
+              await send(message, `❌ Phát lỗi: ${error.message}`);
+            }
+          }
+
+          // ---------- MUSIC COMMANDS ----------
+          async function cmdJoin(message) {
+            const voice = message.member?.voice?.channel;
+
+            if (!voice) {
+              await send(message, 'Ông vào voice channel trước đã 💀');
+              return;
+            }
+
+            await connect(message, voice);
+            await send(message, `🔊 Vào **${voice.name}** rồi đây.`);
+          }
+
+          async function cmdPlay(message, query) {
+            if (!query) {
+              await send(message, 'Cú pháp: `d.play <tên bài hoặc link YouTube>`');
+              return;
+            }
+
+            const check = sameVoice(message);
+            if (check.error) {
+              await send(message, check.error);
+              return;
+            }
+
+            await message.channel.sendTyping();
+
+            let song;
+
+            try {
+              song = await resolveSong(query);
+            } catch (error) {
+              await send(message, `❌ ${error.message}`);
+              return;
+            }
+
+            await startPlayback(message, song);
+          }
+
+          async function cmdPause(message) {
+            const state = getMusic(message.guild);
+
+            if (state.player.state.status !== AudioPlayerStatus.Playing) {
+              await send(message, 'Đang có gì đâu mà pause 💀');
+              return;
+            }
+
+            state.player.pause();
+            await send(message, '⏸️ Tạm dừng.');
+          }
+
+          async function cmdResume(message) {
+            const state = getMusic(message.guild);
+
+            if (state.player.state.status !== AudioPlayerStatus.Paused) {
+              await send(message, 'Không có gì bị pause cả.');
+              return;
+            }
+
+            state.player.unpause();
+            await send(message, '▶️ Chạy lại.');
+          }
+
+          async function cmdSkip(message) {
+            const state = getMusic(message.guild);
+
+            if (!state.current) {
+              await send(message, 'Đang không phát bài nào.');
+              return;
+            }
+
+            const next = state.queue[0];
+            state.player.stop(true);
+            await send(
+              message,
+              next ? `⏭️ Skip! Tiếp: **${next.title}**` : '⏭️ Skip! Hết queue.'
+            );
+          }
+
+          async function cmdStop(message) {
+            const state = getMusic(message.guild);
+
+            if (!state.current && !state.queue.length) {
+              await send(message, 'Queue trống từ trước rồi.');
+              return;
+            }
+
+            state.queue = [];
+            state.player.stop(true);
+            await send(message, '🛑 Đã dừng và xóa sạch queue.');
+          }
+
+          async function cmdLeave(message) {
+            const state = getMusic(message.guild);
+
+            if (!state.connection) {
+              await send(message, 'Tôi có đang ở voice đâu.');
+              return;
+            }
+
+            resetMusic(message.guild);
+            await send(message, '👋 Bay màu khỏi voice.');
+          }
+
+          async function cmdVolume(message, arg) {
+            const state = getMusic(message.guild);
+            const value = parseInt(arg, 10);
+
+            if (isNaN(value) || value < 0 || value > 200) {
+              await send(
+                message,
+                `Volume hiện tại: **${state.volume}%**.\nCú pháp: \`d.volume <0–200>\``
+              );
+              return;
+            }
+
+            state.volume = value;
+            state.resource?.volume?.setVolume(value / 100);
+            await send(message, `🔈 Volume: **${value}%**`);
+          }
+
+          async function cmdNow(message) {
+            const state = getMusic(message.guild);
+
+            if (!state.current) {
+              await send(message, 'Đang im lặng như tiêu bản 🦀');
+              return;
+            }
+
+            await send(
+              message,
+              `🎵 **${state.current.title}**\n` +
+              `Thời lượng: ${fmtTime(state.current.duration)} · ` +
+              `Volume: ${state.volume}% · ` +
+              `Queue: ${state.queue.length} bài\n${state.current.url}`
+            );
+          }
+
+          async function cmdQueue(message) {
+            const state = getMusic(message.guild);
+
+            if (!state.current && !state.queue.length) {
+              await send(message, 'Queue trống trơn. D=`d.play` đi.');
+              return;
+            }
+
+            const lines = [];
+
+            if (state.current) {
+              lines.push(`▶️ **${state.current.title}**`);
+            }
+
+            state.queue.slice(0, 10).forEach((song, i) => {
+              lines.push(`${i + 1}. ${song.title} (${fmtTime(song.duration)})`);
+            });
+
+            if (state.queue.length > 10) {
+              lines.push(`...và ${state.queue.length - 10} bài nữa.`);
+            }
+
+            await send(message, '**📃 Hàng đợi:**\n' + lines.join('\n'));
+          }
+
+          // ---------- FAVORITES ----------
+          async function cmdFv(message, arg) {
+            const state = getMusic(message.guild);
+
+            if (!arg) {
+              if (!state.current) {
+                await send(
+                  message,
+                  'Đang ko phát gì. Dùng: `d.fv <tên bài>` hoặc `d.fv list`'
+                );
+                return;
+              }
+
+              await database('POST', 'bot_favorites', {
+                user_id: message.author.id,
+                guild_id: message.guild.id,
+                title: state.current.title,
+                url: state.current.url
+              });
+
+              await send(message, `⭐ Đã lưu: **${state.current.title}**`);
+              return;
+            }
+
+            if (arg.toLowerCase() === 'list') {
+              const rows = await database(
+                'GET',
+                `bot_favorites?user_id=eq.${message.author.id}` +
+                `&guild_id=eq.${message.guild.id}` +
+                `&select=title,url&order=created_at.desc&limit=15`
+              );
+
+              await send(
+                message,
+                rows.length
+                  ? '**⭐ Favorites:**\n' +
+                    rows.map((r, i) => `${i + 1}. ${r.title}`).join('\n')
+                  : 'Chưa có bài nào trong favorites.'
+              );
+              return;
+            }
+
+            await message.channel.sendTyping();
+
+            let song;
+
+            try {
+              song = await resolveSong(arg);
+            } catch (error) {
+              await send(message, `❌ ${error.message}`);
+              return;
+            }
+
+            await database('POST', 'bot_favorites', {
+              user_id: message.author.id,
+              guild_id: message.guild.id,
+              title: song.title,
+              url: song.url
+            });
+
+            await send(message, `⭐ Đã lưu vào favorites: **${song.title}**`);
+          }
+
+          // ---------- PLAYLISTS ----------
+          function plName(arg) {
+            const m = arg.match(/^(new|add|play|show|list)\s+([\s\S]+)$/);
+            return m ? { op: m[1], rest: m[2].trim() } : null;
+          }
+
+          async function cmdPl(message, arg) {
+            if (!arg || arg === 'list') {
+              const rows = await database(
+                'GET',
+                `bot_playlists?user_id=eq.${message.author.id}` +
+                `&guild_id=eq.${message.guild.id}` +
+                `&select=name&limit=200`
+              );
+
+              const names = [...new Set(rows.map(r => r.name))];
+
+              await send(
+                message,
+                names.length
+                  ? '**📂 Playlists:**\n' + names.map(n => `- ${n}`).join('\n')
+                  : 'Chưa có playlist. Tạo bằng: `d.pl add <tên> <bài>`'
+              );
+              return;
+            }
+
+            const parsed = plName(arg);
+
+            if (!parsed) {
+              await send(
+                message,
+                'Cú pháp:\n' +
+                '`d.pl list`\n' +
+                '`d.pl show <tên>`\n' +
+                '`d.pl add <tên> <tên bài/link>`\n' +
+                '`d.pl play <tên>`'
+              );
+              return;
+            }
+
+            const { op, rest } = parsed;
+
+            if (op === 'show') {
+              const rows = await database(
+                'GET',
+                `bot_playlists?user_id=eq.${message.author.id}` +
+                `&guild_id=eq.${message.guild.id}` +
+                `&name=eq.${encodeURIComponent(rest)}` +
+                `&select=title,url&order=created_at.asc&limit=50`
+              );
+
+              await send(
+                message,
+                rows.length
+                  ? `**📂 Playlist "${rest}":**\n` +
+                    rows.map((r, i) => `${i + 1}. ${r.title}`).join('\n')
+                  : `Playlist "${rest}" trống hoặc chưa tồn tại.`
+              );
+              return;
+            }
+
+            if (op === 'add') {
+              const sp = rest.indexOf(' ');
+
+              if (sp < 0) {
+                await send(message, 'Cú pháp: `d.pl add <tên playlist> <tên bài/link>`');
+                return;
+              }
+
+              const name = rest.slice(0, sp).trim();
+              const query = rest.slice(sp + 1).trim();
+
+              await message.channel.sendTyping();
+
+              let song;
+
+              try {
+                song = await resolveSong(query);
+              } catch (error) {
+                await send(message, `❌ ${error.message}`);
+                return;
+              }
+
+              await database('POST', 'bot_playlists', {
+                user_id: message.author.id,
+                guild_id: message.guild.id,
+                name,
+                title: song.title,
+                url: song.url
+              });
+
+              await send(
+                message,
+                `📂 Đã thêm **${song.title}** vào playlist **${name}**`
+              );
+              return;
+            }
+
+            if (op === 'play') {
+              const rows = await database(
+                'GET',
+                `bot_playlists?user_id=eq.${message.author.id}` +
+                `&guild_id=eq.${message.guild.id}` +
+                `&name=eq.${encodeURIComponent(rest)}` +
+                `&select=title,url&order=created_at.asc&limit=50`
+              );
+
+              if (!rows.length) {
+                await send(message, `Playlist "${rest}" trống hoặc chưa tồn tại.`);
+                return;
+              }
+
+              const check = sameVoice(message);
+              if (check.error) {
+                await send(message, check.error);
+                return;
+              }
+
+              await connect(message, check.voice);
+
+              const state = getMusic(message.guild);
+              state.queue.push(...rows);
+
+              if (!state.current) {
+                const first = state.queue.shift();
+
+                try {
+                  await playNow(message.guild, first);
+                } catch (error) {
+                  await send(message, `❌ Phát lỗi: ${error.message}`);
+                  return;
+                }
+              }
+
+              await send(
+                message,
+                `📂 Phát playlist **${rest}** — ${rows.length} bài vào queue.`
+              );
+            }
+          }
+
+          // ---------- MUSIC ROUTER ----------
+          async function handleMusic(message, cmd, arg) {
+            try {
+              switch (cmd) {
+                case 'join': return await cmdJoin(message);
+                case 'play': case 'p': return await cmdPlay(message, arg);
+                case 'pause': return await cmdPause(message);
+                case 'resume': return await cmdResume(message);
+                case 'skip': case 's': return await cmdSkip(message);
+                case 'stop': return await cmdStop(message);
+                case 'leave': case 'out': return await cmdLeave(message);
+                case 'volume': case 'v': return await cmdVolume(message, arg);
+                case 'now': case 'np': return await cmdNow(message);
+                case 'queue': case 'q': return await cmdQueue(message);
+                case 'fv': return await cmdFv(message, arg);
+                case 'pl': return await cmdPl(message, arg);
+                default: return false;
+              }
+            } catch (error) {
+              const details = error.response?.data?.message || error.message;
+              console.error('Music Error:', details);
+              await send(message, `❌ Music lỗi: ${String(details).slice(0, 200)}`);
+              return true;
+            }
+          }
+
+          // ---------- READY ----------
           client.once('ready', () => {
             console.log(`✅ Online: ${client.user.tag}`);
 
@@ -419,8 +1073,7 @@ jobs:
                     }
                   );
 
-                  const text =
-                    response.data?.message?.content;
+                  const text = response.data?.message?.content;
 
                   if (text) {
                     for (const part of splitText(text)) {
@@ -439,6 +1092,7 @@ jobs:
             }, 30 * 60 * 1000);
           });
 
+          // ---------- MESSAGES ----------
           client.on('messageCreate', async message => {
             if (message.author.bot || !message.guild) return;
 
@@ -446,6 +1100,7 @@ jobs:
             const lower = text.toLowerCase();
 
             try {
+              // Memory commands
               if (lower.startsWith('d.remember ')) {
                 const content = text.slice(11).trim();
 
@@ -466,9 +1121,7 @@ jobs:
                   message,
                   memories.length
                     ? '**🧠 Trí nhớ:**\n' +
-                      memories.map(
-                        (m, i) => `${i + 1}. ${m.content}`
-                      ).join('\n')
+                      memories.map((m, i) => `${i + 1}. ${m.content}`).join('\n')
                     : 'Chưa có trí nhớ nào.'
                 );
                 return;
@@ -476,15 +1129,12 @@ jobs:
 
               if (lower === 'd.forget') {
                 await forget(message);
-
-                history.delete(
-                  `${message.guild.id}:${message.author.id}`
-                );
-
+                history.delete(`${message.guild.id}:${message.author.id}`);
                 await send(message, '🗑️ Đã xóa trí nhớ.');
                 return;
               }
 
+              // Web commands
               if (lower.startsWith('d.search ')) {
                 const query = text.slice(9).trim();
 
@@ -504,10 +1154,7 @@ jobs:
                 const url = text.slice(7).trim();
 
                 if (!/^https?:\/\//i.test(url)) {
-                  await send(
-                    message,
-                    'URL phải bắt đầu bằng https:// hoặc http://'
-                  );
+                  await send(message, 'URL phải bắt đầu bằng https:// hoặc http://');
                   return;
                 }
 
@@ -523,37 +1170,60 @@ jobs:
                 return;
               }
 
+              // Prefix router
               if (lower.startsWith('d.')) {
-                const prompt = text.slice(2).trim();
+                const withoutPrefix = text.slice(2).trim();
+                const sp = withoutPrefix.indexOf(' ');
+                const cmd = (sp < 0 ? withoutPrefix : withoutPrefix.slice(0, sp))
+                  .toLowerCase();
+                const arg = sp < 0 ? '' : withoutPrefix.slice(sp + 1).trim();
 
-                if (!prompt) {
+                const handled = await handleMusic(message, cmd, arg);
+
+                if (handled) return;
+
+                if (cmd === '' || cmd === 'help') {
                   await send(
                     message,
-                    'Gõ `d.{câu hỏi}` đi ông 💀'
+                    '**🤖 Lệnh:**\n' +
+                    '`d.<câu hỏi>` — hỏi AI\n' +
+                    '`d.remember <nội dung>` / `d.memory` / `d.forget`\n' +
+                    '`d.search <câu>` — tìm web\n' +
+                    '`d.read <url>` — đọc web\n\n' +
+                    '**🎵 Nhạc:**\n' +
+                    '`d.join` — vào voice\n' +
+                    '`d.play <tên bài/link>` — phát\n' +
+                    '`d.pause` / `d.resume` / `d.skip` / `d.stop` / `d.leave`\n' +
+                    '`d.volume <0-200>`\n' +
+                    '`d.now` / `d.queue`\n' +
+                    '`d.fv` — lưu bài đang phát | `d.fv <tên>` | `d.fv list`\n' +
+                    '`d.pl list` / `d.pl show <tên>` / `d.pl add <tên> <bài>` / `d.pl play <tên>`'
                   );
                   return;
                 }
 
-                await handleAI(message, prompt);
+                if (!arg && withoutPrefix) {
+                  await handleAI(message, withoutPrefix);
+                  return;
+                }
+
+                await send(message, 'Lệnh không rõ, gõ `d.help` xem danh sách 💀');
                 return;
               }
 
+              // Mention
               if (message.mentions.has(client.user)) {
-                const prompt = text.replace(
-                  new RegExp(`<@!?${client.user.id}>`, 'g'),
-                  ''
-                ).trim();
+                const prompt = text
+                  .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '')
+                  .trim();
 
-                await handleAI(
-                  message,
-                  prompt || 'Chào ông!'
-                );
+                await handleAI(message, prompt || 'Chào ông!');
                 return;
               }
 
+              // Keyword / random
               const keywords = [
-                'bot', 'adu', 'vcl',
-                'clgt', 'help', 'cứu', 'tư vấn'
+                'bot', 'adu', 'vcl', 'clgt', 'help', 'cứu', 'tư vấn'
               ];
 
               if (
@@ -562,8 +1232,7 @@ jobs:
               ) {
                 await handleAI(
                   message,
-                  `Có người vừa nói: "${text}". ` +
-                  'Hãy đáp lại tự nhiên, ngắn gọn, hài hước.'
+                  `Có người vừa nói: "${text}". Hãy đáp lại tự nhiên, ngắn gọn, hài hước.`
                 );
               }
             } catch (error) {
@@ -577,7 +1246,6 @@ jobs:
           });
 
           client.on('error', console.error);
-
           process.on('unhandledRejection', console.error);
 
           if (!CFG.token) {
@@ -589,6 +1257,7 @@ jobs:
             console.error('Discord Login:', error.message);
             process.exit(1);
           });
+
           EOF
 
       - name: Install dependencies
