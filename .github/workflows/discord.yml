@@ -1,9 +1,9 @@
-name: ThgAdu AllInOne Bot v5 Lavalink
+name: ThgAdu v5.1 Lavalink Debug
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: read
@@ -13,35 +13,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run-bot:
+  bot:
     runs-on: ubuntu-latest
     timeout-minutes: 358
+
+    env:
+      TOKEN: ${{ secrets.TOKEN }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_API_URL: ${{ secrets.OLLAMA_API_URL }}
+      AI_MODEL: ${{ secrets.AI_MODEL }}
+      AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
+      SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
       - name: Download Lavalink
         shell: bash
         run: |
-          curl -fL --retry 3 \
+          set -e
+
+          mkdir -p lavalink
+          cd lavalink
+
+          curl -fL \
+            --retry 3 \
             https://github.com/lavalink-devs/Lavalink/releases/latest/download/Lavalink.jar \
             -o Lavalink.jar
 
+          echo "===== LAVALINK FILE ====="
           ls -lh Lavalink.jar
+
+          echo "===== JAVA VERSION ====="
+          java -version
 
       - name: Configure Lavalink
         shell: bash
         run: |
-          cat > application.yml <<'LAVAEOF'
+          cat > lavalink/application.yml <<'EOF'
           server:
             port: 2333
             address: 127.0.0.1
@@ -53,10 +74,24 @@ jobs:
                 youtube: false
                 soundcloud: true
                 bandcamp: true
+                twitch: false
+                vimeo: false
+                nico: false
                 http: true
                 local: false
+
               filters:
                 volume: true
+                equalizer: true
+
+              bufferDurationMs: 400
+              frameBufferDurationMs: 5000
+              opusEncodingQuality: 10
+              resamplingQuality: LOW
+              trackStuckThresholdMs: 10000
+              useSeekGhosting: true
+              youtubePlaylistLoadLimit: 6
+              playerUpdateInterval: 5
 
             plugins:
               - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
@@ -67,77 +102,134 @@ jobs:
               enabled: true
               allowSearch: true
               allowDirectVideoIds: true
+              allowDirectPlaylistIds: true
               clients:
                 - MUSIC
-                - WEB
                 - ANDROID_VR
+                - WEB
                 - TV
 
           logging:
             level:
               root: INFO
-              lavalink: INFO
-          LAVAEOF
+              lavalink: DEBUG
+              dev.lavalink.youtube: DEBUG
+              com.sedmelluq.discord.lavaplayer: DEBUG
+
+            file:
+              path: ./logs/lavalink.log
+
+          metrics:
+            prometheus:
+              enabled: false
+          EOF
+
+          echo "✅ Lavalink configuration generated"
 
       - name: Start Lavalink
         shell: bash
         run: |
-          nohup java -jar Lavalink.jar > lavalink.log 2>&1 &
-          echo $! > lavalink.pid
+          set -e
+
+          cd lavalink
+
+          nohup java -jar Lavalink.jar \
+            > ../lavalink-console.log 2>&1 &
+
+          echo $! > ../lavalink.pid
+
+          cd ..
 
           echo "Waiting for Lavalink..."
 
-          for i in $(seq 1 40); do
-            if curl -fsS \
+          READY=0
+
+          for i in $(seq 1 90); do
+            STATUS=$(curl -s \
+              -o /dev/null \
+              -w "%{http_code}" \
               -H "Authorization: thgadu-local-lavalink" \
-              http://127.0.0.1:2333/version; then
-              echo ""
-              echo "✅ Lavalink ready"
-              exit 0
+              http://127.0.0.1:2333/v4/info || true)
+
+            if [ "$STATUS" = "200" ]; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$(cat lavalink.pid)" 2>/dev/null; then
+              echo "❌ Lavalink process exited"
+              break
             fi
 
             sleep 2
           done
 
-          echo "❌ Lavalink failed"
-          tail -100 lavalink.log
-          exit 1
+          if [ "$READY" != "1" ]; then
+            echo "❌ Lavalink failed to start"
+            tail -n 200 lavalink-console.log || true
+            exit 1
+          fi
 
-      - name: Test Lavalink YouTube
+          echo "✅ Lavalink ready"
+
+          echo "===== LAVALINK INFO ====="
+
+          curl -fsS \
+            -H "Authorization: thgadu-local-lavalink" \
+            http://127.0.0.1:2333/v4/info \
+            | python3 -m json.tool \
+            | head -n 100
+
+      - name: Test YouTube Search
         shell: bash
         run: |
+          echo "===== YOUTUBE SEARCH TEST ====="
+
           curl -sS -G \
             -H "Authorization: thgadu-local-lavalink" \
-            --data-urlencode \
-            "identifier=ytsearch:Never Gonna Give You Up" \
+            --data-urlencode "identifier=ytsearch:Never Gonna Give You Up" \
             http://127.0.0.1:2333/v4/loadtracks \
-            -o result.json
+            -o youtube-test.json
 
           python3 - <<'PY'
           import json
 
-          with open("result.json") as f:
-              data = json.load(f)
+          try:
+              with open("youtube-test.json", encoding="utf-8") as f:
+                  data = json.load(f)
 
-          print("YouTube load type:", data.get("loadType"))
+              print("Load type:", data.get("loadType"))
 
-          if data.get("loadType") == "search":
-              tracks = data.get("data", [])
-              print("Tracks:", len(tracks))
-              if tracks:
-                  print("First:", tracks[0]["info"]["title"])
+              if data.get("loadType") == "error":
+                  print("ERROR:")
+                  print(json.dumps(data.get("data"), indent=2))
 
-          elif data.get("loadType") == "error":
-              print("Error:", data.get("data"))
+              elif data.get("loadType") == "search":
+                  tracks = data.get("data", [])
+                  print("Tracks found:", len(tracks))
+
+                  if tracks:
+                      info = tracks[0].get("info", {})
+                      print("First track:", info.get("title"))
+                      print("Source:", info.get("sourceName"))
+                      print("URI:", info.get("uri"))
+
+              else:
+                  print(json.dumps(data, indent=2)[:4000])
+
+          except Exception as e:
+              print("Test parsing failed:", repr(e))
           PY
+
+          echo "⚠️ Search thành công chưa đảm bảo phát audio thành công."
 
       - name: Create package.json
         shell: bash
         run: |
-          cat > package.json <<'PKGEOF'
+          cat > package.json <<'EOF'
           {
-            "name": "thgadu-v5",
-            "version": "5.0.0",
+            "name": "thgadu-v5-debug",
+            "version": "5.1.0",
             "private": true,
             "main": "index.js",
             "scripts": {
@@ -149,39 +241,98 @@ jobs:
               "shoukaku": "^4.1.1"
             }
           }
-          PKGEOF
+          EOF
 
-      - name: Create index.js
+          npm install --no-audit --no-fund
+
+      - name: Generate ThgAdu Bot
         shell: bash
         run: |
-          cat > index.js <<'JSEOF'
+          cat > index.js <<'EOF'
+          'use strict';
+
+          const axios = require('axios');
+          const util = require('node:util');
+
           const {
             Client,
             GatewayIntentBits,
-            ActivityType
+            ActivityType,
+            Events
           } = require('discord.js');
 
-          const { Shoukaku, Connectors } = require('shoukaku');
-          const axios = require('axios');
+          const {
+            Shoukaku,
+            Connectors
+          } = require('shoukaku');
 
-          const CFG = {
+          // =========================================================
+          // CONFIG
+          // =========================================================
+
+          const CONFIG = {
             token: process.env.TOKEN,
             ollamaKey: process.env.OLLAMA_API_KEY,
-            ollamaUrl: process.env.OLLAMA_API_URL || 'https://ollama.com',
-            model: process.env.AI_MODEL || 'gemma4:31b',
-            firecrawlKey: process.env.FIRECRAWL_API_KEY,
-            supabaseUrl: process.env.SUPABASE_URL,
-            supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+            ollamaURL:
+              process.env.OLLAMA_API_URL ||
+              'https://ollama.com/api/chat',
+            aiModel:
+              process.env.AI_MODEL ||
+              'gemma4:31b',
             autoChannel: process.env.AUTO_CHANNEL_ID,
-            systemPrompt: process.env.SYSTEM_PROMPT ||
-              'Bạn là ThgAdu, AI Discord vui tính, thông minh, hơi cà khịa. ' +
-              'Xưng tôi, gọi người dùng là ông. Không bịa thông tin.'
+            systemPrompt:
+              process.env.SYSTEM_PROMPT ||
+              'Bạn là ThgAdu, một bot Discord thân thiện, vui tính. Trả lời tự nhiên bằng tiếng Việt, ngắn gọn khi phù hợp.',
+            firecrawlKey: process.env.FIRECRAWL_API_KEY,
+            supabaseURL: process.env.SUPABASE_URL,
+            supabaseKey:
+              process.env.SUPABASE_SERVICE_ROLE_KEY
           };
 
-          const AUTO_INTERVAL = 2 * 60 * 60 * 1000;
+          const PREFIX = 'd.';
           const RANDOM_CHANCE = 0.20;
-          const MAX_AI = 3;
+          const AUTO_INTERVAL = 2 * 60 * 60 * 1000;
           const MAX_QUEUE = 100;
+
+          const LAVALINK_NAME = 'local';
+
+          // =========================================================
+          // LOGGING
+          // =========================================================
+
+          function inspect(value) {
+            return util.inspect(value, {
+              depth: 12,
+              colors: false,
+              maxArrayLength: 30,
+              maxStringLength: 12000,
+              breakLength: 100
+            });
+          }
+
+          function logError(label, error) {
+            console.error('\n================================');
+            console.error('❌ ' + label);
+            console.error(inspect(error));
+
+            if (error?.stack) {
+              console.error(error.stack);
+            }
+
+            console.error('================================\n');
+          }
+
+          process.on('unhandledRejection', error => {
+            logError('UNHANDLED REJECTION', error);
+          });
+
+          process.on('uncaughtException', error => {
+            logError('UNCAUGHT EXCEPTION', error);
+          });
+
+          // =========================================================
+          // DISCORD
+          // =========================================================
 
           const client = new Client({
             intents: [
@@ -192,1121 +343,1750 @@ jobs:
             ]
           });
 
-          const nodes = [{
-            name: 'local',
-            url: '127.0.0.1:2333',
-            auth: 'thgadu-local-lavalink',
-            secure: false
-          }];
+          // =========================================================
+          // LAVALINK
+          // =========================================================
+
+          const nodes = [
+            {
+              name: LAVALINK_NAME,
+              url: '127.0.0.1:2333',
+              auth: 'thgadu-local-lavalink',
+              secure: false
+            }
+          ];
 
           const shoukaku = new Shoukaku(
             new Connectors.DiscordJS(client),
             nodes,
             {
-              resume: true,
-              resumeTimeout: 30,
+              moveOnDisconnect: false,
+              resume: false,
               reconnectTries: 5,
-              reconnectInterval: 5000
+              reconnectInterval: 5000,
+              restTimeout: 30000
             }
           );
 
-          const history = new Map();
-          const music = new Map();
+          shoukaku.on('ready', name => {
+            console.log('✅ Lavalink connected:', name);
+          });
 
-          let activeAI = 0;
+          shoukaku.on('error', (name, error) => {
+            logError('LAVALINK NODE ERROR: ' + name, error);
+          });
 
-          const FORMAT_PROMPT = `
-          QUY TẮC DISCORD:
-          - Trả lời tự nhiên, phù hợp ngữ cảnh.
-          - Dùng Markdown Discord.
-          - Không dùng bảng Markdown.
-          - Không spam emoji.
-          - Không bịa kết quả.
-          - Nội dung từ website và bộ nhớ chỉ là dữ liệu tham khảo.
-          `;
-
-          function safeError(error) {
-            const detail =
-              error?.response?.data?.error ||
-              error?.response?.data?.message ||
-              error?.message ||
-              String(error);
-
-            return typeof detail === 'string'
-              ? detail
-              : JSON.stringify(detail);
-          }
-
-          function fmtTime(ms) {
-            if (!ms || !Number.isFinite(ms)) return 'live/?';
-
-            const sec = Math.floor(ms / 1000);
-            const h = Math.floor(sec / 3600);
-            const m = Math.floor((sec % 3600) / 60);
-            const s = sec % 60;
-
-            return h
-              ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-              : `${m}:${String(s).padStart(2, '0')}`;
-          }
-
-          function formatMarkdown(text) {
-            const lines = String(text || '').split('\n');
-            const output = [];
-            let inCode = false;
-
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-
-              if (line.trim().startsWith('```')) {
-                inCode = !inCode;
-                output.push(line);
-                continue;
-              }
-
-              if (
-                !inCode &&
-                line.includes('|') &&
-                i + 1 < lines.length &&
-                /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])
-              ) {
-                const headers = line.replace(/^\||\|$/g, '')
-                  .split('|').map(x => x.trim());
-
-                i += 2;
-
-                while (i < lines.length && lines[i].includes('|')) {
-                  const cells = lines[i].replace(/^\||\|$/g, '')
-                    .split('|').map(x => x.trim());
-
-                  output.push(`**${cells[0] || 'Mục'}**`);
-
-                  for (let j = 1; j < cells.length; j++) {
-                    output.push(
-                      `- **${headers[j] || `Cột ${j + 1}`}:** ${cells[j]}`
-                    );
-                  }
-
-                  output.push('');
-                  i++;
-                }
-
-                i--;
-              } else {
-                output.push(line);
-              }
-            }
-
-            return output.join('\n')
-              .replace(/\n{3,}/g, '\n\n').trim();
-          }
-
-          function splitText(text, max = 1900) {
-            text = formatMarkdown(text);
-            const parts = [];
-
-            while (text.length > max) {
-              let cut = text.lastIndexOf('\n', max);
-              if (cut < max / 2) cut = text.lastIndexOf(' ', max);
-              if (cut < max / 2) cut = max;
-
-              parts.push(text.slice(0, cut).trim());
-              text = text.slice(cut).trimStart();
-            }
-
-            if (text) parts.push(text);
-            return parts;
-          }
-
-          async function send(message, text) {
-            for (const part of splitText(text)) {
-              await message.reply({
-                content: part,
-                allowedMentions: {
-                  repliedUser: false,
-                  parse: []
-                }
-              });
-            }
-          }
-
-          async function database(method, path, data) {
-            if (!CFG.supabaseUrl || !CFG.supabaseKey) {
-              throw new Error('Supabase chưa cấu hình.');
-            }
-
-            const response = await axios({
-              method,
-              url: CFG.supabaseUrl.replace(/\/$/, '') +
-                '/rest/v1/' + path,
-              headers: {
-                apikey: CFG.supabaseKey,
-                Authorization: `Bearer ${CFG.supabaseKey}`,
-                'Content-Type': 'application/json',
-                Prefer: 'return=representation'
-              },
-              data,
-              timeout: 15000
-            });
-
-            return response.data;
-          }
-
-          function userFilter(message) {
-            return `user_id=eq.${message.author.id}` +
-              `&guild_id=eq.${message.guild.id}`;
-          }
-
-          async function getMemories(message) {
-            return database(
-              'GET',
-              `bot_memories?${userFilter(message)}` +
-              '&select=content&order=created_at.desc&limit=20'
+          shoukaku.on('close', (name, code, reason) => {
+            console.error(
+              '❌ Lavalink node closed:',
+              inspect({ name, code, reason })
             );
-          }
+          });
 
-          async function webSearch(query) {
-            if (!CFG.firecrawlKey) {
-              throw new Error('Thiếu FIRECRAWL_API_KEY');
-            }
-
-            const response = await axios.post(
-              'https://api.firecrawl.dev/v2/search',
-              { query, limit: 5 },
-              {
-                headers: {
-                  Authorization: `Bearer ${CFG.firecrawlKey}`
-                },
-                timeout: 45000
-              }
+          shoukaku.on('disconnect', (name, players, moved) => {
+            console.error(
+              '⚠️ Lavalink disconnected:',
+              inspect({
+                name,
+                playerCount: players?.length,
+                moved
+              })
             );
+          });
 
-            return response.data?.data || [];
-          }
-
-          async function webRead(url) {
-            if (!CFG.firecrawlKey) {
-              throw new Error('Thiếu FIRECRAWL_API_KEY');
-            }
-
-            const response = await axios.post(
-              'https://api.firecrawl.dev/v2/scrape',
-              { url, formats: ['markdown'] },
-              {
-                headers: {
-                  Authorization: `Bearer ${CFG.firecrawlKey}`
-                },
-                timeout: 45000
-              }
+          shoukaku.on('reconnecting', (name, tries) => {
+            console.log(
+              '🔄 Lavalink reconnecting:',
+              name,
+              tries
             );
+          });
 
-            return response.data?.data?.markdown || '';
-          }
+          // =========================================================
+          // MUSIC STATE
+          // =========================================================
 
-          async function askAI(message, prompt, context = '') {
-            if (!CFG.ollamaKey) {
-              throw new Error('Thiếu OLLAMA_API_KEY');
-            }
+          const musicStates = new Map();
 
-            if (activeAI >= MAX_AI) {
-              throw new Error('AI đang bận, thử lại sau.');
-            }
-
-            activeAI++;
-
-            try {
-              const key = `${message.guild.id}:${message.author.id}`;
-              const past = history.get(key) || [];
-
-              let memories = [];
-
-              try {
-                memories = await getMemories(message);
-              } catch (error) {
-                console.warn('Memory:', safeError(error));
-              }
-
-              const messages = [
-                {
-                  role: 'system',
-                  content: CFG.systemPrompt + '\n' + FORMAT_PROMPT +
-                    '\nTRÍ NHỚ:\n' +
-                    (memories.map(m => m.content).join('\n') || 'Chưa có.')
-                },
-                ...past,
-                {
-                  role: 'user',
-                  content: prompt +
-                    (context ? `\n\nDỮ LIỆU THAM KHẢO:\n${context}` : '')
-                }
-              ];
-
-              const response = await axios.post(
-                CFG.ollamaUrl.replace(/\/$/, '') + '/api/chat',
-                {
-                  model: CFG.model,
-                  messages,
-                  stream: false
-                },
-                {
-                  headers: {
-                    Authorization: `Bearer ${CFG.ollamaKey}`
-                  },
-                  timeout: 120000
-                }
-              );
-
-              const answer = response.data?.message?.content ||
-                'AI không trả về nội dung.';
-
-              history.set(key, [
-                ...past,
-                { role: 'user', content: prompt },
-                { role: 'assistant', content: answer }
-              ].slice(-12));
-
-              return answer;
-            } finally {
-              activeAI--;
-            }
-          }
-
-          async function handleAI(message, prompt, context = '') {
-            try {
-              await message.channel.sendTyping();
-              const answer = await askAI(message, prompt, context);
-              await send(message, answer);
-            } catch (error) {
-              const details = safeError(error);
-              console.error('AI:', details);
-
-              await send(
-                message,
-                /credits|billing|payment/i.test(details)
-                  ? '💸 Ollama Cloud hết credits.'
-                  : `❌ AI lỗi: ${details.slice(0, 200)}`
-              );
-            }
-          }
-
-          // ============================================================
-          // LAVALINK MUSIC
-          // ============================================================
-
-          function getMusic(guildId) {
-            if (!music.has(guildId)) {
-              music.set(guildId, {
+          function getState(guildId) {
+            if (!musicStates.has(guildId)) {
+              musicStates.set(guildId, {
                 player: null,
-                voiceChannelId: null,
-                textChannelId: null,
                 queue: [],
                 current: null,
-                volume: 50,
-                starting: false
+                volume: 100,
+                textChannel: null,
+                starting: false,
+                stopped: false
               });
             }
 
-            return music.get(guildId);
+            return musicStates.get(guildId);
           }
 
-          function sameVoice(message) {
-            const state = getMusic(message.guild.id);
-            const voice = message.member?.voice?.channel;
-
-            if (!voice) {
-              return { error: 'Ông vào voice trước đã 💀' };
-            }
-
-            if (
-              state.voiceChannelId &&
-              state.voiceChannelId !== voice.id
-            ) {
-              return { error: 'Ông phải ở cùng voice với bot.' };
-            }
-
-            return { state, voice };
-          }
-
-          async function connectVoice(message) {
-            const check = sameVoice(message);
-
-            if (check.error) {
-              throw new Error(check.error);
-            }
-
-            const { state, voice } = check;
-
-            if (state.player) return state;
-
+          function getNode() {
             const node = shoukaku.getIdealNode();
 
             if (!node) {
-              throw new Error('Lavalink chưa kết nối.');
+              throw new Error(
+                'Không có Lavalink node khả dụng.'
+              );
             }
 
-            const player = await shoukaku.joinVoiceChannel({
-              guildId: message.guild.id,
-              channelId: voice.id,
-              shardId: message.guild.shardId,
-              deaf: true
-            });
-
-            state.player = player;
-            state.voiceChannelId = voice.id;
-            state.textChannelId = message.channel.id;
-
-            player.on('end', data => {
-              if (data.reason === 'replaced') return;
-
-              state.current = null;
-              playNext(message.guild.id).catch(error => {
-                console.error('Auto-next:', safeError(error));
-              });
-            });
-
-            player.on('exception', error => {
-              console.error('Track exception:', safeError(error));
-            });
-
-            player.on('stuck', error => {
-              console.error('Track stuck:', safeError(error));
-            });
-
-            return state;
+            return node;
           }
 
-          async function resolveSong(query) {
-            const node = shoukaku.getIdealNode();
+          async function sendSafe(channel, text) {
+            if (!channel) return;
 
-            if (!node) {
-              throw new Error('Lavalink chưa kết nối.');
+            try {
+              await channel.send(
+                String(text).slice(0, 1900)
+              );
+            } catch (error) {
+              logError('SEND MESSAGE', error);
+            }
+          }
+
+          function trackTitle(track) {
+            return (
+              track?.info?.title ||
+              track?.title ||
+              'Unknown track'
+            );
+          }
+
+          function trackURI(track) {
+            return (
+              track?.info?.uri ||
+              track?.uri ||
+              ''
+            );
+          }
+
+          function normalizeTrack(track) {
+            return {
+              encoded:
+                track?.encoded ||
+                track?.track ||
+                '',
+              info: track?.info || {},
+              pluginInfo: track?.pluginInfo || {}
+            };
+          }
+
+          // =========================================================
+          // TRACK RESOLVER
+          // =========================================================
+
+          async function resolveTracks(query) {
+            const node = getNode();
+
+            const isURL = /^https?:\/\//i.test(query);
+
+            const identifier = isURL
+              ? query
+              : 'ytsearch:' + query;
+
+            console.log('\n===== RESOLVE TRACK =====');
+            console.log('Identifier:', identifier);
+            console.log('Node:', node.name);
+
+            let result;
+
+            try {
+              result = await node.rest.resolve(identifier);
+            } catch (error) {
+              logError('TRACK RESOLVE FAILED', error);
+              throw error;
             }
 
-            const identifier =
-              /^https?:\/\//i.test(query)
-                ? query
-                : `ytsearch:${query}`;
-
-            const result = await node.rest.resolve(identifier);
+            console.log(
+              'Resolve response:',
+              inspect({
+                loadType: result?.loadType,
+                dataType: Array.isArray(result?.data)
+                  ? 'array'
+                  : typeof result?.data,
+                exception:
+                  result?.data?.exception ||
+                  result?.exception
+              })
+            );
 
             if (!result) {
-              throw new Error('Lavalink không trả dữ liệu.');
+              throw new Error(
+                'Lavalink không trả về kết quả.'
+              );
             }
 
-            if (result.loadType === 'error') {
+            const type = String(
+              result.loadType || ''
+            ).toLowerCase();
+
+            if (type === 'error' || type === 'load_failed') {
+              logError(
+                'LAVALINK LOAD ERROR',
+                result.data || result.exception || result
+              );
+
               throw new Error(
-                result.data?.message || 'Không lấy được nhạc.'
+                'Lavalink không tải được bài nhạc.'
               );
             }
 
             let tracks = [];
 
-            if (result.loadType === 'search') {
-              tracks = result.data || [];
-            } else if (result.loadType === 'track') {
-              tracks = [result.data];
-            } else if (result.loadType === 'playlist') {
-              tracks = result.data?.tracks || [];
+            if (type === 'search' || type === 'search_result') {
+              tracks = Array.isArray(result.data)
+                ? result.data
+                : result.tracks || [];
+
+              tracks = tracks.slice(0, 1);
+            } else if (
+              type === 'playlist' ||
+              type === 'playlist_loaded'
+            ) {
+              tracks =
+                result.data?.tracks ||
+                result.tracks ||
+                [];
+            } else if (
+              type === 'track' ||
+              type === 'track_loaded'
+            ) {
+              tracks = [
+                result.data || result.track
+              ];
+            } else if (Array.isArray(result.data)) {
+              tracks = result.data.slice(0, 1);
             }
 
+            tracks = tracks
+              .filter(Boolean)
+              .map(normalizeTrack)
+              .filter(t => t.encoded);
+
+            console.log('Resolved tracks:', tracks.length);
+
+            if (tracks.length > 0) {
+              console.log(
+                'First track:',
+                inspect({
+                  title: trackTitle(tracks[0]),
+                  uri: trackURI(tracks[0]),
+                  sourceName:
+                    tracks[0].info?.sourceName,
+                  encodedLength:
+                    tracks[0].encoded.length
+                })
+              );
+            }
+
+            return tracks;
+          }
+
+          // =========================================================
+          // VOICE CONNECTION
+          // =========================================================
+
+          async function connectVoice(message) {
+            const voiceChannel =
+              message.member?.voice?.channel;
+
+            if (!voiceChannel) {
+              throw new Error(
+                'Bro vào voice channel trước đã.'
+              );
+            }
+
+            const state = getState(message.guild.id);
+
+            if (state.player) {
+              if (
+                state.player.voiceChannelId !==
+                voiceChannel.id
+              ) {
+                throw new Error(
+                  'Bot đang ở voice channel khác. Dùng d.leave trước.'
+                );
+              }
+
+              return state.player;
+            }
+
+            console.log('\n===== VOICE CONNECT =====');
+            console.log('Guild:', message.guild.id);
+            console.log('Voice channel:', voiceChannel.id);
+
+            const player =
+              await shoukaku.joinVoiceChannel({
+                guildId: message.guild.id,
+                channelId: voiceChannel.id,
+                shardId: message.guild.shardId || 0,
+                deaf: true,
+                mute: false
+              });
+
+            state.player = player;
+            state.stopped = false;
+            state.textChannel = message.channel;
+
+            setupPlayerEvents(
+              message.guild.id,
+              player
+            );
+
+            console.log('✅ Voice connection created');
+
+            return player;
+          }
+
+          // =========================================================
+          // PLAYER EVENTS — DEBUG QUAN TRỌNG
+          // =========================================================
+
+          function setupPlayerEvents(guildId, player) {
+            const state = getState(guildId);
+
+            player.on('start', async data => {
+              console.log('\n✅ TRACK START EVENT');
+              console.log(inspect(data));
+
+              state.starting = false;
+
+              if (state.current) {
+                await sendSafe(
+                  state.textChannel,
+                  '🎶 Đang phát: **' +
+                  trackTitle(state.current) +
+                  '**'
+                );
+              }
+            });
+
+            player.on('end', async data => {
+              console.log('\n===== TRACK END EVENT =====');
+              console.log(inspect(data));
+
+              state.current = null;
+              state.starting = false;
+
+              const reason = String(
+                data?.reason || ''
+              ).toLowerCase();
+
+              if (
+                reason === 'replaced' ||
+                state.stopped
+              ) {
+                return;
+              }
+
+              await playNext(guildId);
+            });
+
+            player.on('exception', async error => {
+              logError(
+                'LAVALINK TRACK EXCEPTION',
+                error
+              );
+
+              state.current = null;
+              state.starting = false;
+
+              await sendSafe(
+                state.textChannel,
+                '❌ Lavalink gặp lỗi khi phát nhạc. ' +
+                'Xem `LAVALINK TRACK EXCEPTION` ' +
+                'trong GitHub Actions.'
+              );
+            });
+
+            player.on('stuck', async data => {
+              logError(
+                'LAVALINK TRACK STUCK',
+                data
+              );
+
+              state.current = null;
+              state.starting = false;
+
+              await sendSafe(
+                state.textChannel,
+                '⚠️ Track bị kẹt. Xem GitHub Actions.'
+              );
+
+              try {
+                await player.stopTrack();
+              } catch (error) {
+                logError('STOP STUCK TRACK', error);
+              }
+            });
+
+            player.on('closed', (data) => {
+              console.error(
+                '❌ PLAYER CLOSED:',
+                inspect(data)
+              );
+
+              state.player = null;
+              state.current = null;
+              state.starting = false;
+            });
+
+            player.on('update', data => {
+              if (process.env.DEBUG_PLAYER_UPDATE === '1') {
+                console.log(
+                  'PLAYER UPDATE:',
+                  inspect(data)
+                );
+              }
+            });
+          }
+
+          // =========================================================
+          // PLAYBACK
+          // =========================================================
+
+          async function playNext(guildId) {
+            const state = getState(guildId);
+
+            if (
+              !state.player ||
+              state.starting ||
+              state.stopped
+            ) {
+              return;
+            }
+
+            const next = state.queue.shift();
+
+            if (!next) {
+              state.current = null;
+
+              console.log('Queue finished:', guildId);
+              return;
+            }
+
+            state.current = next;
+            state.starting = true;
+
+            console.log('\n===== PLAY TRACK =====');
+            console.log('Title:', trackTitle(next));
+            console.log('URI:', trackURI(next));
+            console.log(
+              'Encoded length:',
+              next.encoded?.length
+            );
+
+            try {
+              await state.player.playTrack({
+                track: {
+                  encoded: next.encoded
+                }
+              });
+
+              console.log(
+                '✅ PLAY COMMAND ACCEPTED'
+              );
+
+              console.log(
+                'Waiting for TRACK START event...'
+              );
+            } catch (error) {
+              state.starting = false;
+              state.current = null;
+
+              logError('PLAY TRACK FAILED', error);
+
+              await sendSafe(
+                state.textChannel,
+                '❌ Không thể bắt đầu phát track: ' +
+                error.message
+              );
+
+              await playNext(guildId);
+            }
+          }
+
+          async function enqueue(
+            message,
+            query,
+            options = {}
+          ) {
+            const state = getState(message.guild.id);
+
+            const tracks = await resolveTracks(query);
+
             if (!tracks.length) {
-              throw new Error('Không tìm thấy bài hát.');
+              await message.reply(
+                '❌ Không tìm thấy bài nhạc.'
+              );
+
+              return;
+            }
+
+            await connectVoice(message);
+
+            state.stopped = false;
+            state.textChannel = message.channel;
+
+            const available =
+              MAX_QUEUE - state.queue.length;
+
+            const selected = tracks.slice(
+              0,
+              Math.max(0, available)
+            );
+
+            if (!selected.length) {
+              await message.reply(
+                '❌ Hàng chờ đã đầy.'
+              );
+
+              return;
+            }
+
+            state.queue.push(...selected);
+
+            console.log(
+              'Queue size:',
+              state.queue.length
+            );
+
+            if (!options.silent) {
+              await message.reply(
+                selected.length === 1
+                  ? '➕ Đã thêm: **' +
+                    trackTitle(selected[0]) +
+                    '**'
+                  : '➕ Đã thêm ' +
+                    selected.length +
+                    ' bài vào hàng chờ.'
+              );
+            }
+
+            if (!state.current && !state.starting) {
+              await playNext(message.guild.id);
+            }
+          }
+
+          // =========================================================
+          // SUPABASE
+          // =========================================================
+
+          function supabaseEnabled() {
+            return Boolean(
+              CONFIG.supabaseURL &&
+              CONFIG.supabaseKey
+            );
+          }
+
+          async function supabase(
+            method,
+            table,
+            params = {},
+            data = null,
+            headers = {}
+          ) {
+            if (!supabaseEnabled()) {
+              throw new Error(
+                'Supabase chưa được cấu hình.'
+              );
+            }
+
+            const base = CONFIG.supabaseURL.replace(
+              /\/$/,
+              ''
+            );
+
+            const response = await axios({
+              method,
+              url: base + '/rest/v1/' + table,
+              params,
+              data,
+              headers: {
+                apikey: CONFIG.supabaseKey,
+                Authorization:
+                  'Bearer ' + CONFIG.supabaseKey,
+                'Content-Type': 'application/json',
+                Prefer: 'return=representation',
+                ...headers
+              },
+              timeout: 20000
+            });
+
+            return response.data;
+          }
+
+          async function getMemories(
+            userId,
+            guildId
+          ) {
+            if (!supabaseEnabled()) return [];
+
+            try {
+              return await supabase(
+                'GET',
+                'bot_memories',
+                {
+                  user_id: 'eq.' + userId,
+                  guild_id: 'eq.' + guildId,
+                  select: 'id,content,created_at',
+                  order: 'created_at.desc',
+                  limit: 20
+                }
+              );
+            } catch (error) {
+              logError('GET MEMORIES', error);
+              return [];
+            }
+          }
+
+          // =========================================================
+          // AI
+          // =========================================================
+
+          const histories = new Map();
+
+          function historyKey(message) {
+            return (
+              message.guild?.id +
+              ':' +
+              message.author.id
+            );
+          }
+
+          async function askAI(message, question) {
+            if (!CONFIG.ollamaKey) {
+              return '❌ Chưa cấu hình OLLAMA_API_KEY.';
+            }
+
+            const key = historyKey(message);
+            const history = histories.get(key) || [];
+
+            const memories = await getMemories(
+              message.author.id,
+              message.guild?.id || 'DM'
+            );
+
+            const memoryText = memories
+              .map(m => '- ' + m.content)
+              .join('\n');
+
+            const system = [
+              CONFIG.systemPrompt,
+              memoryText
+                ? '\nThông tin cần nhớ về người dùng:\n' +
+                  memoryText
+                : ''
+            ].join('\n');
+
+            const messages = [
+              {
+                role: 'system',
+                content: system
+              },
+              ...history,
+              {
+                role: 'user',
+                content: question
+              }
+            ];
+
+            try {
+              const response = await axios.post(
+                CONFIG.ollamaURL,
+                {
+                  model: CONFIG.aiModel,
+                  messages,
+                  stream: false
+                },
+                {
+                  headers: {
+                    Authorization:
+                      'Bearer ' + CONFIG.ollamaKey,
+                    'Content-Type': 'application/json'
+                  },
+                  timeout: 120000
+                }
+              );
+
+              const answer =
+                response.data?.message?.content ||
+                response.data?.choices?.[0]?.message?.content ||
+                'Mình chưa có câu trả lời.';
+
+              history.push(
+                {
+                  role: 'user',
+                  content: question
+                },
+                {
+                  role: 'assistant',
+                  content: answer
+                }
+              );
+
+              histories.set(
+                key,
+                history.slice(-12)
+              );
+
+              return answer;
+            } catch (error) {
+              logError(
+                'OLLAMA API ERROR',
+                error.response?.data || error
+              );
+
+              return '❌ AI đang gặp lỗi. Xem GitHub Actions.';
+            }
+          }
+
+          async function replyLong(message, text) {
+            const content = String(text || '');
+
+            if (!content) return;
+
+            const chunks = [];
+
+            for (
+              let i = 0;
+              i < content.length;
+              i += 1900
+            ) {
+              chunks.push(
+                content.slice(i, i + 1900)
+              );
+            }
+
+            for (const chunk of chunks.slice(0, 8)) {
+              await message.reply({
+                content: chunk,
+                allowedMentions: {
+                  repliedUser: false
+                }
+              });
+            }
+          }
+
+          // =========================================================
+          // FIRECRAWL
+          // =========================================================
+
+          async function firecrawl(endpoint, payload) {
+            if (!CONFIG.firecrawlKey) {
+              throw new Error(
+                'Chưa cấu hình FIRECRAWL_API_KEY.'
+              );
+            }
+
+            const response = await axios.post(
+              'https://api.firecrawl.dev/v2/' +
+              endpoint,
+              payload,
+              {
+                headers: {
+                  Authorization:
+                    'Bearer ' + CONFIG.firecrawlKey
+                },
+                timeout: 60000
+              }
+            );
+
+            return response.data;
+          }
+
+          // =========================================================
+          // FAVORITES
+          // =========================================================
+
+          async function favoritesCommand(
+            message,
+            args
+          ) {
+            const guildId = message.guild.id;
+            const userId = message.author.id;
+
+            if (
+              !args ||
+              args.toLowerCase() === 'list'
+            ) {
+              const rows = await supabase(
+                'GET',
+                'bot_favorites',
+                {
+                  user_id: 'eq.' + userId,
+                  guild_id: 'eq.' + guildId,
+                  select: 'title,url',
+                  order: 'created_at.desc',
+                  limit: 30
+                }
+              );
+
+              if (!rows.length) {
+                return message.reply(
+                  '⭐ Danh sách yêu thích đang trống.'
+                );
+              }
+
+              return replyLong(
+                message,
+                '⭐ **Favorites**\n' +
+                rows.map((r, i) =>
+                  `${i + 1}. ${r.title}`
+                ).join('\n')
+              );
+            }
+
+            const tracks = await resolveTracks(args);
+
+            if (!tracks.length) {
+              return message.reply(
+                '❌ Không tìm thấy bài.'
+              );
             }
 
             const track = tracks[0];
 
-            if (track.info.length > 3600000) {
-              throw new Error('Bài dài quá 1 tiếng.');
-            }
-
-            return {
-              title: track.info.title,
-              url: track.info.uri,
-              duration: track.info.length,
-              encoded: track.encoded
-            };
-          }
-
-          async function playNext(guildId) {
-            const state = getMusic(guildId);
-
-            if (state.starting || !state.player) return;
-
-            state.starting = true;
-
-            try {
-              while (state.queue.length) {
-                const song = state.queue.shift();
-
-                try {
-                  let encoded = song.encoded;
-
-                  if (!encoded) {
-                    const resolved = await resolveSong(song.url);
-                    encoded = resolved.encoded;
-                  }
-
-                  state.current = song;
-
-                  await state.player.playTrack({
-                    track: {
-                      encoded
-                    }
-                  });
-
-                  await state.player.setGlobalVolume(state.volume);
-                  return;
-                } catch (error) {
-                  console.error('PlayNext:', safeError(error));
-                  state.current = null;
-                }
+            await supabase(
+              'POST',
+              'bot_favorites',
+              {},
+              {
+                user_id: userId,
+                guild_id: guildId,
+                title: trackTitle(track),
+                url: trackURI(track)
               }
-            } finally {
-              state.starting = false;
-            }
-          }
+            );
 
-          async function cmdPlay(message, query) {
-            if (!query) {
-              await send(
-                message,
-                'Cú pháp: `d.play <tên bài/link YouTube>`'
-              );
-              return;
-            }
-
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
-
-            await message.channel.sendTyping();
-
-            const song = await resolveSong(query);
-            const state = await connectVoice(message);
-
-            if (state.queue.length >= MAX_QUEUE) {
-              await send(message, 'Queue đầy rồi.');
-              return;
-            }
-
-            state.queue.push(song);
-
-            if (!state.current) {
-              await playNext(message.guild.id);
-            }
-
-            await send(
-              message,
-              `🎵 Đã thêm: **${song.title}** (${fmtTime(song.duration)})`
+            return message.reply(
+              '⭐ Đã lưu: **' +
+              trackTitle(track) +
+              '**'
             );
           }
 
-          async function cmdJoin(message) {
-            const state = await connectVoice(message);
-            await send(
-              message,
-              `🔊 Đã vào voice <#${state.voiceChannelId}>.`
-            );
-          }
+          // =========================================================
+          // PLAYLISTS
+          // =========================================================
 
-          async function cmdPause(message, paused) {
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
+          async function playlistCommand(
+            message,
+            args
+          ) {
+            const guildId = message.guild.id;
+            const userId = message.author.id;
 
-            if (!check.state.player) {
-              await send(message, 'Chưa có nhạc.');
-              return;
-            }
+            const input = args.trim();
 
-            await check.state.player.setPaused(paused);
-            await send(message, paused ? '⏸️ Tạm dừng.' : '▶️ Tiếp tục.');
-          }
-
-          async function cmdSkip(message) {
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
-
-            if (!check.state.current) {
-              await send(message, 'Không có bài nào.');
-              return;
-            }
-
-            await check.state.player.stopTrack();
-            await send(message, '⏭️ Đã skip.');
-          }
-
-          async function cmdStop(message) {
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
-
-            check.state.queue = [];
-            check.state.current = null;
-            await check.state.player?.stopTrack();
-            await send(message, '🛑 Đã dừng và xóa queue.');
-          }
-
-          async function cmdLeave(message) {
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
-
-            await shoukaku.leaveVoiceChannel(message.guild.id);
-
-            music.delete(message.guild.id);
-            await send(message, '👋 Rời voice rồi.');
-          }
-
-          async function cmdVolume(message, arg) {
-            const check = sameVoice(message);
-            if (check.error) {
-              await send(message, check.error);
-              return;
-            }
-
-            const state = check.state;
-
-            if (!arg) {
-              await send(message, `🔊 Volume: ${state.volume}%`);
-              return;
-            }
-
-            const value = Number(arg);
-
-            if (!Number.isInteger(value) || value < 0 || value > 200) {
-              await send(message, 'Dùng `d.volume <0-200>`.');
-              return;
-            }
-
-            state.volume = value;
-            if (state.player) {
-              await state.player.setGlobalVolume(value);
-            }
-
-            await send(message, `🔊 Volume: ${value}%`);
-          }
-
-          async function cmdNow(message) {
-            const state = getMusic(message.guild.id);
-
-            await send(
-              message,
-              state.current
-                ? `🎵 **${state.current.title}**\n` +
-                  `Thời lượng: ${fmtTime(state.current.duration)}\n` +
-                  `Queue: ${state.queue.length}\n${state.current.url}`
-                : 'Chưa phát nhạc.'
-            );
-          }
-
-          async function cmdQueue(message) {
-            const state = getMusic(message.guild.id);
-
-            const lines = [];
-
-            if (state.current) {
-              lines.push(`▶️ **${state.current.title}**`);
-            }
-
-            state.queue.slice(0, 10).forEach((song, i) => {
-              lines.push(`${i + 1}. ${song.title}`);
-            });
-
-            await send(
-              message,
-              lines.length
-                ? '**📃 Queue:**\n' + lines.join('\n')
-                : 'Queue đang trống.'
-            );
-          }
-
-          async function cmdFv(message, arg) {
-            const state = getMusic(message.guild.id);
-
-            if (arg.toLowerCase() === 'list') {
-              const rows = await database(
+            if (
+              !input ||
+              input.toLowerCase() === 'list'
+            ) {
+              const rows = await supabase(
                 'GET',
-                `bot_favorites?${userFilter(message)}` +
-                '&select=title,url&order=created_at.desc&limit=15'
+                'bot_playlists',
+                {
+                  user_id: 'eq.' + userId,
+                  guild_id: 'eq.' + guildId,
+                  select: 'name',
+                  limit: 1000
+                }
               );
 
-              await send(
-                message,
-                rows.length
-                  ? '**⭐ Favorites:**\n' +
-                    rows.map((r, i) => `${i + 1}. ${r.title}`).join('\n')
-                  : 'Chưa có bài yêu thích.'
-              );
-              return;
-            }
+              const names = [
+                ...new Set(
+                  rows.map(r => r.name)
+                )
+              ];
 
-            const song = arg
-              ? await resolveSong(arg)
-              : state.current;
-
-            if (!song) {
-              await send(message, 'Không có bài nào để lưu.');
-              return;
-            }
-
-            await database('POST', 'bot_favorites', {
-              user_id: message.author.id,
-              guild_id: message.guild.id,
-              title: song.title,
-              url: song.url
-            });
-
-            await send(message, `⭐ Đã lưu: **${song.title}**`);
-          }
-
-          async function cmdPl(message, arg) {
-            const lower = arg.toLowerCase();
-
-            if (!arg || lower === 'list') {
-              const rows = await database(
-                'GET',
-                `bot_playlists?${userFilter(message)}&select=name&limit=200`
-              );
-
-              const names = [...new Set(rows.map(r => r.name))];
-
-              await send(
-                message,
+              return message.reply(
                 names.length
-                  ? '**📂 Playlists:**\n' +
-                    names.map(n => `- ${n}`).join('\n')
-                  : 'Chưa có playlist.'
+                  ? '📂 **Playlists**\n' +
+                    names.map(n => '• ' + n).join('\n')
+                      .slice(0, 1800)
+                  : '📂 Chưa có playlist nào.'
               );
-              return;
             }
 
-            const space = arg.indexOf(' ');
+            const space = input.indexOf(' ');
 
-            const op = (
-              space < 0 ? arg : arg.slice(0, space)
+            const action = (
+              space === -1
+                ? input
+                : input.slice(0, space)
             ).toLowerCase();
 
-            const rest = space < 0 ? '' : arg.slice(space + 1).trim();
+            const rest = (
+              space === -1
+                ? ''
+                : input.slice(space + 1)
+            ).trim();
 
-            if (op === 'show') {
-              const rows = await database(
-                'GET',
-                `bot_playlists?${userFilter(message)}` +
-                `&name=eq.${encodeURIComponent(rest)}` +
-                '&select=title,url&order=created_at.asc&limit=50'
-              );
+            if (action === 'add') {
+              const separator = rest.indexOf('|');
 
-              await send(
-                message,
-                rows.length
-                  ? `**📂 ${rest}:**\n` +
-                    rows.map((r, i) => `${i + 1}. ${r.title}`).join('\n')
-                  : 'Playlist trống hoặc chưa tồn tại.'
-              );
-              return;
-            }
-
-            if (op === 'add') {
-              const sep = rest.indexOf('|');
-
-              if (sep < 0) {
-                await send(
-                  message,
-                  'Dùng `d.pl add <tên playlist> | <bài hát>`'
+              if (separator === -1) {
+                return message.reply(
+                  'Dùng: `d.pl add Tên playlist | Tên bài hát`'
                 );
-                return;
               }
 
-              const name = rest.slice(0, sep).trim();
-              const query = rest.slice(sep + 1).trim();
+              const name = rest
+                .slice(0, separator)
+                .trim();
+
+              const query = rest
+                .slice(separator + 1)
+                .trim();
 
               if (!name || !query) {
-                await send(message, 'Thiếu tên playlist hoặc bài hát.');
-                return;
+                return message.reply(
+                  '❌ Thiếu tên playlist hoặc bài hát.'
+                );
               }
 
-              const song = await resolveSong(query);
+              const tracks =
+                await resolveTracks(query);
 
-              await database('POST', 'bot_playlists', {
-                user_id: message.author.id,
-                guild_id: message.guild.id,
-                name,
-                title: song.title,
-                url: song.url
-              });
+              if (!tracks.length) {
+                return message.reply(
+                  '❌ Không tìm thấy bài.'
+                );
+              }
 
-              await send(
-                message,
-                `📂 Đã thêm **${song.title}** vào **${name}**.`
+              const track = tracks[0];
+
+              await supabase(
+                'POST',
+                'bot_playlists',
+                {},
+                {
+                  user_id: userId,
+                  guild_id: guildId,
+                  name,
+                  title: trackTitle(track),
+                  url: trackURI(track)
+                }
               );
-              return;
+
+              return message.reply(
+                '✅ Đã thêm **' +
+                trackTitle(track) +
+                '** vào playlist **' +
+                name +
+                '**.'
+              );
             }
 
-            if (op === 'play') {
-              const rows = await database(
+            if (
+              action === 'show' ||
+              action === 'play'
+            ) {
+              if (!rest) {
+                return message.reply(
+                  '❌ Thiếu tên playlist.'
+                );
+              }
+
+              const rows = await supabase(
                 'GET',
-                `bot_playlists?${userFilter(message)}` +
-                `&name=eq.${encodeURIComponent(rest)}` +
-                '&select=title,url&order=created_at.asc&limit=50'
+                'bot_playlists',
+                {
+                  user_id: 'eq.' + userId,
+                  guild_id: 'eq.' + guildId,
+                  name: 'eq.' + rest,
+                  select: 'title,url',
+                  order: 'created_at.asc',
+                  limit: 100
+                }
               );
 
               if (!rows.length) {
-                await send(message, 'Playlist trống.');
-                return;
+                return message.reply(
+                  '❌ Playlist trống hoặc không tồn tại.'
+                );
               }
 
-              const state = await connectVoice(message);
-              const available = MAX_QUEUE - state.queue.length;
+              if (action === 'show') {
+                return replyLong(
+                  message,
+                  '📂 **' + rest + '**\n' +
+                  rows.map(
+                    (r, i) =>
+                      `${i + 1}. ${r.title}`
+                  ).join('\n')
+                );
+              }
 
-              const selected = rows.slice(0, available);
+              await connectVoice(message);
 
-              state.queue.push(...selected);
+              const state = getState(
+                message.guild.id
+              );
 
-              if (!state.current) {
+              state.stopped = false;
+              state.textChannel = message.channel;
+
+              let added = 0;
+
+              for (const row of rows) {
+                if (
+                  state.queue.length >=
+                  MAX_QUEUE
+                ) {
+                  break;
+                }
+
+                try {
+                  const tracks =
+                    await resolveTracks(
+                      row.url || row.title
+                    );
+
+                  if (tracks.length) {
+                    state.queue.push(tracks[0]);
+                    added++;
+                  }
+                } catch (error) {
+                  logError(
+                    'PLAYLIST TRACK LOAD',
+                    error
+                  );
+                }
+              }
+
+              await message.reply(
+                '📂 Đã thêm ' +
+                added +
+                ' bài từ **' +
+                rest +
+                '**.'
+              );
+
+              if (
+                !state.current &&
+                !state.starting
+              ) {
                 await playNext(message.guild.id);
               }
 
-              await send(
-                message,
-                `📂 Đã thêm ${selected.length} bài từ **${rest}**.`
-              );
               return;
             }
 
-            await send(
-              message,
+            return message.reply(
+              '📂 Lệnh playlist:\n' +
               '`d.pl list`\n' +
               '`d.pl show <tên>`\n' +
-              '`d.pl add <tên> | <bài>`\n' +
+              '`d.pl add <tên> | <bài hát>`\n' +
               '`d.pl play <tên>`'
             );
           }
 
+          // =========================================================
+          // MUSIC COMMANDS
+          // =========================================================
+
           const MUSIC_COMMANDS = new Set([
-            'join', 'play', 'p', 'pause', 'resume',
-            'skip', 's', 'stop', 'leave', 'out',
-            'volume', 'v', 'now', 'np', 'queue', 'q',
-            'fv', 'pl'
+            'join',
+            'play',
+            'p',
+            'pause',
+            'resume',
+            'skip',
+            's',
+            'stop',
+            'leave',
+            'out',
+            'volume',
+            'v',
+            'now',
+            'np',
+            'queue',
+            'q',
+            'fv',
+            'pl'
           ]);
 
-          async function handleMusic(message, cmd, arg) {
-            if (!MUSIC_COMMANDS.has(cmd)) return false;
+          async function musicCommand(
+            message,
+            command,
+            args
+          ) {
+            const state = getState(
+              message.guild.id
+            );
 
             try {
-              switch (cmd) {
-                case 'join': await cmdJoin(message); break;
-                case 'play':
-                case 'p': await cmdPlay(message, arg); break;
-                case 'pause': await cmdPause(message, true); break;
-                case 'resume': await cmdPause(message, false); break;
-                case 'skip':
-                case 's': await cmdSkip(message); break;
-                case 'stop': await cmdStop(message); break;
-                case 'leave':
-                case 'out': await cmdLeave(message); break;
-                case 'volume':
-                case 'v': await cmdVolume(message, arg); break;
-                case 'now':
-                case 'np': await cmdNow(message); break;
-                case 'queue':
-                case 'q': await cmdQueue(message); break;
-                case 'fv': await cmdFv(message, arg); break;
-                case 'pl': await cmdPl(message, arg); break;
-              }
-            } catch (error) {
-              const details = safeError(error);
-              console.error('Music:', details);
-              await send(message, `❌ Music lỗi: ${details.slice(0, 300)}`);
-            }
+              switch (command) {
+                case 'join': {
+                  await connectVoice(message);
 
-            return true;
-          }
-
-          // ============================================================
-          // AUTO CHAT
-          // ============================================================
-
-          async function autoChat() {
-            if (!CFG.autoChannel) return;
-
-            try {
-              const channel = await client.channels.fetch(CFG.autoChannel);
-
-              if (channel?.isTextBased() &&
-                  typeof channel.send === 'function') {
-                await channel.send({
-                  content: 'Có ai ở đây không? 👀',
-                  allowedMentions: { parse: [] }
-                });
-              }
-            } catch (error) {
-              console.error('Auto-chat:', safeError(error));
-            }
-          }
-
-          client.once('ready', () => {
-            console.log(`✅ ThgAdu online: ${client.user.tag}`);
-
-            client.user.setPresence({
-              status: 'idle',
-              activities: [{
-                name: 'drama trong server 🍿',
-                type: ActivityType.Watching
-              }]
-            });
-
-            if (CFG.autoChannel) {
-              setInterval(autoChat, AUTO_INTERVAL);
-            }
-          });
-
-          // ============================================================
-          // MESSAGE ROUTER
-          // ============================================================
-
-          const keywords = [
-            'bot', 'adu', 'vcl', 'clgt', 'help', 'cứu', 'tư vấn'
-          ];
-
-          function hasKeyword(text) {
-            return keywords.some(word => {
-              const escaped = word.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                '\\$&'
-              );
-
-              return new RegExp(
-                `(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`,
-                'iu'
-              ).test(text);
-            });
-          }
-
-          client.on('messageCreate', async message => {
-            if (message.author.bot || !message.guild) return;
-
-            const text = message.content.trim();
-            const lower = text.toLowerCase();
-
-            if (!text) return;
-
-            try {
-              if (lower.startsWith('d.remember ')) {
-                const content = text.slice(11).trim();
-
-                if (!content || content.length > 500) {
-                  await send(message, 'Memory cần 1–500 ký tự.');
-                  return;
-                }
-
-                await database('POST', 'bot_memories', {
-                  user_id: message.author.id,
-                  guild_id: message.guild.id,
-                  content
-                });
-
-                await send(message, '🧠 Đã ghi nhớ!');
-                return;
-              }
-
-              if (lower === 'd.memory') {
-                const memories = await getMemories(message);
-
-                await send(
-                  message,
-                  memories.length
-                    ? '**🧠 Trí nhớ:**\n' +
-                      memories.map((m, i) =>
-                        `${i + 1}. ${m.content}`
-                      ).join('\n')
-                    : 'Chưa có trí nhớ nào.'
-                );
-                return;
-              }
-
-              if (lower === 'd.forget') {
-                await database(
-                  'DELETE',
-                  `bot_memories?${userFilter(message)}`
-                );
-
-                history.delete(
-                  `${message.guild.id}:${message.author.id}`
-                );
-
-                await send(message, '🗑️ Đã xóa trí nhớ.');
-                return;
-              }
-
-              if (lower.startsWith('d.search ')) {
-                const query = text.slice(9).trim();
-                const results = await webSearch(query);
-
-                await handleAI(
-                  message,
-                  `Trả lời câu hỏi: ${query}. Dẫn URL nguồn.`,
-                  JSON.stringify(results).slice(0, 12000)
-                );
-                return;
-              }
-
-              if (lower.startsWith('d.read ')) {
-                const url = text.slice(7).trim();
-
-                if (!/^https?:\/\//i.test(url)) {
-                  await send(message, 'URL phải bắt đầu bằng http(s)://');
-                  return;
-                }
-
-                const content = await webRead(url);
-
-                await handleAI(
-                  message,
-                  `Tóm tắt trang web: ${url}`,
-                  content.slice(0, 12000)
-                );
-                return;
-              }
-
-              if (lower.startsWith('d.')) {
-                const body = text.slice(2).trim();
-                const sp = body.indexOf(' ');
-
-                const cmd = (
-                  sp < 0 ? body : body.slice(0, sp)
-                ).toLowerCase();
-
-                const arg = sp < 0 ? '' : body.slice(sp + 1).trim();
-
-                if (await handleMusic(message, cmd, arg)) return;
-
-                if (cmd === '' || cmd === 'help') {
-                  await send(
-                    message,
-                    '**🤖 THGADU**\n\n' +
-                    '**AI:** `d.<câu hỏi>`, `d.search`, `d.read`, ' +
-                    '`d.remember`, `d.memory`, `d.forget`\n\n' +
-                    '**🎵 NHẠC:** `d.join`, `d.play`, `d.pause`, ' +
-                    '`d.resume`, `d.skip`, `d.stop`, `d.leave`, ' +
-                    '`d.volume`, `d.now`, `d.queue`\n\n' +
-                    '**⭐ FAVORITES:** `d.fv`, `d.fv <tên>`, `d.fv list`\n' +
-                    '**📂 PLAYLIST:** `d.pl list`, `d.pl show <tên>`, ' +
-                    '`d.pl add <tên> | <bài>`, `d.pl play <tên>`\n\n' +
-                    'Auto-chat: 2 tiếng · Random reply: 20%'
+                  await message.reply(
+                    '🔊 Đã vào voice channel.'
                   );
+
                   return;
                 }
 
-                await handleAI(message, body);
-                return;
-              }
+                case 'play':
+                case 'p': {
+                  if (!args) {
+                    await message.reply(
+                      'Dùng: `d.play <tên bài hoặc URL>`'
+                    );
 
-              if (message.mentions.has(client.user)) {
-                const prompt = text.replace(
-                  new RegExp(`<@!?${client.user.id}>`, 'g'),
-                  ''
-                ).trim();
-
-                await handleAI(message, prompt || 'Chào ông!');
-                return;
-              }
-
-              if (message.reference?.messageId) {
-                try {
-                  const referenced = await message.fetchReference();
-
-                  if (referenced.author.id === client.user.id) {
-                    await handleAI(message, text);
                     return;
                   }
-                } catch (error) {
-                  console.warn('Reply:', safeError(error));
+
+                  await enqueue(message, args);
+                  return;
+                }
+
+                case 'pause': {
+                  if (!state.player) {
+                    return message.reply(
+                      '❌ Bot chưa vào voice.'
+                    );
+                  }
+
+                  await state.player.setPaused(true);
+
+                  return message.reply(
+                    '⏸️ Đã tạm dừng.'
+                  );
+                }
+
+                case 'resume': {
+                  if (!state.player) {
+                    return message.reply(
+                      '❌ Bot chưa vào voice.'
+                    );
+                  }
+
+                  await state.player.setPaused(false);
+
+                  return message.reply(
+                    '▶️ Tiếp tục phát.'
+                  );
+                }
+
+                case 'skip':
+                case 's': {
+                  if (!state.player) {
+                    return message.reply(
+                      '❌ Chưa có nhạc.'
+                    );
+                  }
+
+                  await state.player.stopTrack();
+
+                  return message.reply(
+                    '⏭️ Đã bỏ qua bài.'
+                  );
+                }
+
+                case 'stop': {
+                  state.stopped = true;
+                  state.queue = [];
+                  state.current = null;
+                  state.starting = false;
+
+                  if (state.player) {
+                    await state.player.stopTrack();
+                  }
+
+                  return message.reply(
+                    '⏹️ Đã dừng và xóa hàng chờ.'
+                  );
+                }
+
+                case 'leave':
+                case 'out': {
+                  state.stopped = true;
+                  state.queue = [];
+                  state.current = null;
+                  state.starting = false;
+
+                  if (state.player) {
+                    await shoukaku.leaveVoiceChannel(
+                      message.guild.id
+                    );
+                  }
+
+                  state.player = null;
+
+                  return message.reply(
+                    '👋 Đã rời voice channel.'
+                  );
+                }
+
+                case 'volume':
+                case 'v': {
+                  const volume = Number(args);
+
+                  if (
+                    !args ||
+                    !Number.isFinite(volume) ||
+                    volume < 0 ||
+                    volume > 200
+                  ) {
+                    return message.reply(
+                      'Dùng: `d.volume 0-200`'
+                    );
+                  }
+
+                  state.volume = volume;
+
+                  if (state.player) {
+                    await state.player.setGlobalVolume(
+                      volume
+                    );
+                  }
+
+                  return message.reply(
+                    '🔊 Âm lượng: ' +
+                    volume +
+                    '%'
+                  );
+                }
+
+                case 'now':
+                case 'np': {
+                  return message.reply(
+                    state.current
+                      ? '🎵 Hiện tại: **' +
+                        trackTitle(state.current) +
+                        '**'
+                      : '🎵 Không có bài nào đang phát.'
+                  );
+                }
+
+                case 'queue':
+                case 'q': {
+                  const lines = state.queue
+                    .slice(0, 20)
+                    .map(
+                      (t, i) =>
+                        `${i + 1}. ${trackTitle(t)}`
+                    );
+
+                  return message.reply(
+                    '🎶 **Hàng chờ**\n' +
+                    (
+                      state.current
+                        ? 'Đang phát: **' +
+                          trackTitle(state.current) +
+                          '**\n'
+                        : ''
+                    ) +
+                    (
+                      lines.length
+                        ? lines.join('\n')
+                        : 'Không có bài chờ.'
+                    )
+                  );
+                }
+
+                case 'fv': {
+                  return favoritesCommand(
+                    message,
+                    args
+                  );
+                }
+
+                case 'pl': {
+                  return playlistCommand(
+                    message,
+                    args
+                  );
                 }
               }
+            } catch (error) {
+              logError(
+                'MUSIC COMMAND: ' + command,
+                error
+              );
 
-              if (hasKeyword(text) || Math.random() < RANDOM_CHANCE) {
-                await handleAI(
-                  message,
-                  `Có người vừa nói: "${text}". ` +
-                  'Hãy đáp lại tự nhiên, ngắn gọn, hài hước.'
-                );
+              await message.reply(
+                '❌ Music lỗi: ' +
+                String(error.message || error)
+                  .slice(0, 1200)
+              );
+            }
+          }
+
+          // =========================================================
+          // AI COMMANDS
+          // =========================================================
+
+          async function aiCommand(
+            message,
+            command,
+            args
+          ) {
+            try {
+              switch (command) {
+                case 'search': {
+                  if (!args) {
+                    return message.reply(
+                      'Dùng: `d.search <từ khóa>`'
+                    );
+                  }
+
+                  const data = await firecrawl(
+                    'search',
+                    {
+                      query: args,
+                      limit: 5
+                    }
+                  );
+
+                  const results = (
+                    data.data || []
+                  ).map(
+                    (r, i) =>
+                      `${i + 1}. **${r.title || 'Result'}**\n` +
+                      `${r.url || ''}\n` +
+                      `${String(r.description || '').slice(0, 250)}`
+                  );
+
+                  return replyLong(
+                    message,
+                    results.join('\n\n') ||
+                    'Không tìm thấy kết quả.'
+                  );
+                }
+
+                case 'read': {
+                  if (!/^https?:\/\//i.test(args)) {
+                    return message.reply(
+                      'Dùng: `d.read <URL>`'
+                    );
+                  }
+
+                  const data = await firecrawl(
+                    'scrape',
+                    {
+                      url: args,
+                      formats: ['markdown']
+                    }
+                  );
+
+                  const markdown =
+                    data.data?.markdown ||
+                    data.markdown ||
+                    '';
+
+                  if (!markdown) {
+                    return message.reply(
+                      '❌ Không đọc được trang.'
+                    );
+                  }
+
+                  const summary = await askAI(
+                    message,
+                    'Tóm tắt nội dung trang web sau:\n\n' +
+                    markdown.slice(0, 14000)
+                  );
+
+                  return replyLong(
+                    message,
+                    summary
+                  );
+                }
+
+                case 'remember': {
+                  if (!args) {
+                    return message.reply(
+                      'Dùng: `d.remember <thông tin>`'
+                    );
+                  }
+
+                  await supabase(
+                    'POST',
+                    'bot_memories',
+                    {},
+                    {
+                      user_id: message.author.id,
+                      guild_id: message.guild.id,
+                      content: args
+                    }
+                  );
+
+                  return message.reply(
+                    '🧠 Đã ghi nhớ!'
+                  );
+                }
+
+                case 'memory': {
+                  const rows = await getMemories(
+                    message.author.id,
+                    message.guild.id
+                  );
+
+                  return replyLong(
+                    message,
+                    rows.length
+                      ? '🧠 **Bộ nhớ**\n' +
+                        rows.map(
+                          (r, i) =>
+                            `${i + 1}. ${r.content}`
+                        ).join('\n')
+                      : '🧠 Chưa lưu gì.'
+                  );
+                }
+
+                case 'forget': {
+                  await supabase(
+                    'DELETE',
+                    'bot_memories',
+                    {
+                      user_id:
+                        'eq.' + message.author.id,
+                      guild_id:
+                        'eq.' + message.guild.id
+                    }
+                  );
+
+                  return message.reply(
+                    '🗑️ Đã xóa bộ nhớ của bro trong server này.'
+                  );
+                }
+
+                default: {
+                  const question = [
+                    command,
+                    args
+                  ].filter(Boolean).join(' ');
+
+                  const answer = await askAI(
+                    message,
+                    question
+                  );
+
+                  return replyLong(
+                    message,
+                    answer
+                  );
+                }
               }
             } catch (error) {
-              console.error('Command:', safeError(error));
-              await send(
-                message,
-                '❌ Lệnh lỗi, xem GitHub Actions Logs.'
-              ).catch(() => {});
+              logError(
+                'AI COMMAND: ' + command,
+                error
+              );
+
+              return message.reply(
+                '❌ Lỗi: ' +
+                String(error.message || error)
+                  .slice(0, 1000)
+              );
             }
-          });
+          }
 
-          // ============================================================
-          // EVENTS
-          // ============================================================
+          // =========================================================
+          // MESSAGE ROUTER
+          // =========================================================
 
-          shoukaku.on('ready', name => {
-            console.log(`✅ Lavalink connected: ${name}`);
-          });
+          const AI_COMMANDS = new Set([
+            'search',
+            'read',
+            'remember',
+            'memory',
+            'forget'
+          ]);
 
-          shoukaku.on('error', (name, error) => {
+          const TRIGGER_WORDS = [
+            'thgadu',
+            'thg adu',
+            'đú à',
+            'du a'
+          ];
+
+          client.on(
+            Events.MessageCreate,
+            async message => {
+              if (
+                message.author.bot ||
+                !message.guild
+              ) {
+                return;
+              }
+
+              try {
+                const content =
+                  message.content.trim();
+
+                if (content.startsWith(PREFIX)) {
+                  const body = content
+                    .slice(PREFIX.length)
+                    .trim();
+
+                  if (!body) {
+                    return message.reply(
+                      '👀 Bro gọi ThgAdu à?'
+                    );
+                  }
+
+                  const space =
+                    body.indexOf(' ');
+
+                  const command = (
+                    space === -1
+                      ? body
+                      : body.slice(0, space)
+                  ).toLowerCase();
+
+                  const args = (
+                    space === -1
+                      ? ''
+                      : body.slice(space + 1)
+                  ).trim();
+
+                  if (
+                    MUSIC_COMMANDS.has(command)
+                  ) {
+                    await musicCommand(
+                      message,
+                      command,
+                      args
+                    );
+
+                    return;
+                  }
+
+                  await aiCommand(
+                    message,
+                    command,
+                    args
+                  );
+
+                  return;
+                }
+
+                const mentioned =
+                  client.user &&
+                  message.mentions.has(
+                    client.user.id
+                  );
+
+                let repliedToBot = false;
+
+                if (message.reference?.messageId) {
+                  try {
+                    const referenced =
+                      await message.channel.messages.fetch(
+                        message.reference.messageId
+                      );
+
+                    repliedToBot =
+                      referenced.author.id ===
+                      client.user.id;
+                  } catch {
+                    // Referenced message unavailable.
+                  }
+                }
+
+                const lower =
+                  content.toLowerCase();
+
+                const keyword =
+                  TRIGGER_WORDS.some(
+                    word => lower.includes(word)
+                  );
+
+                const random =
+                  Math.random() <
+                  RANDOM_CHANCE;
+
+                if (
+                  !mentioned &&
+                  !repliedToBot &&
+                  !keyword &&
+                  !random
+                ) {
+                  return;
+                }
+
+                const question = content
+                  .replace(
+                    /<@!?\d+>/g,
+                    ''
+                  )
+                  .trim();
+
+                if (!question) return;
+
+                const answer = await askAI(
+                  message,
+                  question
+                );
+
+                await replyLong(
+                  message,
+                  answer
+                );
+              } catch (error) {
+                logError(
+                  'MESSAGE HANDLER',
+                  error
+                );
+              }
+            }
+          );
+
+          // =========================================================
+          // AUTO CHAT
+          // =========================================================
+
+          async function autoChat() {
+            if (!CONFIG.autoChannel) return;
+
+            try {
+              const channel =
+                await client.channels.fetch(
+                  CONFIG.autoChannel
+                );
+
+              if (!channel?.isTextBased()) {
+                return;
+              }
+
+              await channel.send(
+                'Có ai ở đây không? 👀'
+              );
+
+              console.log(
+                '✅ Auto-chat sent'
+              );
+            } catch (error) {
+              logError('AUTO CHAT', error);
+            }
+          }
+
+          // =========================================================
+          // START
+          // =========================================================
+
+          client.once(
+            Events.ClientReady,
+            readyClient => {
+              console.log(
+                '✅ ThgAdu online:',
+                readyClient.user.tag
+              );
+
+              readyClient.user.setPresence({
+                status: 'idle',
+                activities: [
+                  {
+                    name:
+                      'drama trong server 🍿',
+                    type: ActivityType.Watching
+                  }
+                ]
+              });
+
+              console.log(
+                '✅ Random reply: 20%'
+              );
+
+              console.log(
+                '✅ Auto-chat interval: 2 hours'
+              );
+
+              console.log(
+                '✅ Debug logging enabled'
+              );
+
+              setInterval(
+                autoChat,
+                AUTO_INTERVAL
+              );
+            }
+          );
+
+          if (!CONFIG.token) {
             console.error(
-              `❌ Lavalink ${name}:`,
-              safeError(error)
+              '❌ Missing TOKEN secret'
             );
-          });
 
-          client.on('error', error => {
-            console.error('Discord:', safeError(error));
-          });
-
-          process.on('unhandledRejection', error => {
-            console.error('Unhandled:', safeError(error));
-          });
-
-          if (!CFG.token) {
-            console.error('Thiếu TOKEN');
             process.exit(1);
           }
 
-          client.login(CFG.token).catch(error => {
-            console.error('Login:', safeError(error));
-            process.exit(1);
-          });
-          JSEOF
+          client.login(CONFIG.token);
+          EOF
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+          node --check index.js
 
-      - name: Check JavaScript
-        run: node --check index.js
+          echo "✅ Bot source generated successfully"
 
-      - name: Run ThgAdu
-        env:
-          TOKEN: ${{ secrets.TOKEN }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OLLAMA_API_URL: ${{ secrets.OLLAMA_API_URL }}
-          AI_MODEL: ${{ secrets.AI_MODEL }}
-          AUTO_CHANNEL_ID: ${{ secrets.AUTO_CHANNEL_ID }}
-          SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
-          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: npm start
-
-      - name: Show Lavalink logs on failure
-        if: failure()
+      - name: Run Bot With Live Lavalink Logs
+        shell: bash
         run: |
-          echo "=== Lavalink logs ==="
-          tail -120 lavalink.log || true
+          set -o pipefail
+
+          echo "===================================="
+          echo "🚀 STARTING THGADU V5.1 DEBUG"
+          echo "===================================="
+
+          echo "Node version:"
+          node --version
+
+          echo "Java version:"
+          java -version
+
+          echo ""
+          echo "===== INITIAL LAVALINK LOG ====="
+          tail -n 40 lavalink-console.log || true
+
+          echo ""
+          echo "===== START LIVE LAVALINK LOGGING ====="
+
+          (
+            tail -n 0 -F lavalink-console.log \
+              | while IFS= read -r line; do
+                  case "$line" in
+                    *ERROR*|*WARN*|*Exception*|*exception*|*Failed*|*failed*|*403*|*429*|*bot*|*Bot*|*youtube*|*YouTube*|*Youtube*|*mismatch*|*DAVE*)
+                      printf '[LAVALINK] %s\n' "$line"
+                      ;;
+                  esac
+                done
+          ) &
+
+          LOG_PID=$!
+
+          cleanup() {
+            echo ""
+            echo "===================================="
+            echo "===== FINAL LAVALINK DEBUG LOG ====="
+            echo "===================================="
+
+            tail -n 200 lavalink-console.log || true
+
+            kill "$LOG_PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          echo ""
+          echo "===== BOT START ====="
+
+          npm start
+
+      - name: Upload Debug Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thgadu-lavalink-debug
+          path: |
+            lavalink-console.log
+            lavalink/logs/
+            youtube-test.json
+          retention-days: 3
+          if-no-files-found: ignore
