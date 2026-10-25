@@ -1,4 +1,4 @@
-name: ThgAdu v5.1 Lavalink Debug
+name: ThgAdu v5.2 - Lavalink YouTube Music
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  bot:
+  thgadu:
     runs-on: ubuntu-latest
     timeout-minutes: 358
 
@@ -27,6 +27,8 @@ jobs:
       FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      LAVALINK_PASSWORD: thgadu-local-lavalink
 
     steps:
       - name: Setup Node.js
@@ -46,30 +48,28 @@ jobs:
           set -e
 
           mkdir -p lavalink
-          cd lavalink
 
-          curl -fL \
-            --retry 3 \
+          curl -fL --retry 3 \
             https://github.com/lavalink-devs/Lavalink/releases/latest/download/Lavalink.jar \
-            -o Lavalink.jar
+            -o lavalink/Lavalink.jar
 
-          echo "===== LAVALINK FILE ====="
-          ls -lh Lavalink.jar
+          echo "✅ Lavalink downloaded"
 
-          echo "===== JAVA VERSION ====="
           java -version
+          node --version
 
       - name: Configure Lavalink
         shell: bash
         run: |
           cat > lavalink/application.yml <<'EOF'
           server:
-            port: 2333
             address: 127.0.0.1
+            port: 2333
 
           lavalink:
             server:
               password: "thgadu-local-lavalink"
+
               sources:
                 youtube: false
                 soundcloud: true
@@ -90,41 +90,38 @@ jobs:
               resamplingQuality: LOW
               trackStuckThresholdMs: 10000
               useSeekGhosting: true
-              youtubePlaylistLoadLimit: 6
               playerUpdateInterval: 5
 
             plugins:
-              - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+              - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
                 snapshot: false
 
           plugins:
             youtube:
               enabled: true
+
               allowSearch: true
               allowDirectVideoIds: true
               allowDirectPlaylistIds: true
+
               clients:
                 - MUSIC
                 - ANDROID_VR
                 - WEB
-                - TV
 
           logging:
             level:
               root: INFO
-              lavalink: DEBUG
+              lavalink: INFO
               dev.lavalink.youtube: DEBUG
-              com.sedmelluq.discord.lavaplayer: DEBUG
-
-            file:
-              path: ./logs/lavalink.log
+              com.sedmelluq.discord.lavaplayer: INFO
 
           metrics:
             prometheus:
               enabled: false
           EOF
 
-          echo "✅ Lavalink configuration generated"
+          echo "✅ YouTube plugin configured: 1.18.2"
 
       - name: Start Lavalink
         shell: bash
@@ -134,17 +131,15 @@ jobs:
           cd lavalink
 
           nohup java -jar Lavalink.jar \
-            > ../lavalink-console.log 2>&1 &
+            > ../lavalink.log 2>&1 &
 
           echo $! > ../lavalink.pid
 
           cd ..
 
-          echo "Waiting for Lavalink..."
-
           READY=0
 
-          for i in $(seq 1 90); do
+          for i in $(seq 1 120); do
             STATUS=$(curl -s \
               -o /dev/null \
               -w "%{http_code}" \
@@ -157,7 +152,7 @@ jobs:
             fi
 
             if ! kill -0 "$(cat lavalink.pid)" 2>/dev/null; then
-              echo "❌ Lavalink process exited"
+              echo "❌ Lavalink exited"
               break
             fi
 
@@ -165,71 +160,92 @@ jobs:
           done
 
           if [ "$READY" != "1" ]; then
-            echo "❌ Lavalink failed to start"
-            tail -n 200 lavalink-console.log || true
+            echo "❌ Lavalink startup failed"
+            tail -n 150 lavalink.log
             exit 1
           fi
 
           echo "✅ Lavalink ready"
 
-          echo "===== LAVALINK INFO ====="
-
           curl -fsS \
             -H "Authorization: thgadu-local-lavalink" \
             http://127.0.0.1:2333/v4/info \
-            | python3 -m json.tool \
-            | head -n 100
+            | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          print("Lavalink version:",d.get("version",{}))
+          print("Plugins:",d.get("plugins",[]))
+          print("Sources:",d.get("sourceManagers",[]))
+          '
 
-      - name: Test YouTube Search
+      - name: Test YouTube Music
         shell: bash
         run: |
-          echo "===== YOUTUBE SEARCH TEST ====="
+          echo "===== YOUTUBE MUSIC SEARCH ====="
 
           curl -sS -G \
             -H "Authorization: thgadu-local-lavalink" \
-            --data-urlencode "identifier=ytsearch:Never Gonna Give You Up" \
+            --data-urlencode "identifier=ytmsearch:Imagine Dragons Radioactive" \
             http://127.0.0.1:2333/v4/loadtracks \
-            -o youtube-test.json
+            -o ytm-test.json
 
           python3 - <<'PY'
           import json
 
           try:
-              with open("youtube-test.json", encoding="utf-8") as f:
-                  data = json.load(f)
+              with open("ytm-test.json") as f:
+                  d=json.load(f)
 
-              print("Load type:", data.get("loadType"))
+              print("Load type:",d.get("loadType"))
 
-              if data.get("loadType") == "error":
-                  print("ERROR:")
-                  print(json.dumps(data.get("data"), indent=2))
+              tracks=d.get("data",[])
 
-              elif data.get("loadType") == "search":
-                  tracks = data.get("data", [])
-                  print("Tracks found:", len(tracks))
+              if isinstance(tracks,list):
+                  print("Results:",len(tracks))
+                  for t in tracks[:3]:
+                      info=t.get("info",{})
+                      print("-",info.get("title"),"|",info.get("sourceName"))
 
-                  if tracks:
-                      info = tracks[0].get("info", {})
-                      print("First track:", info.get("title"))
-                      print("Source:", info.get("sourceName"))
-                      print("URI:", info.get("uri"))
-
-              else:
-                  print(json.dumps(data, indent=2)[:4000])
+              elif d.get("loadType")=="error":
+                  print("Error:",json.dumps(tracks,ensure_ascii=False)[:2000])
 
           except Exception as e:
-              print("Test parsing failed:", repr(e))
+              print("Test failed:",repr(e))
           PY
 
-          echo "⚠️ Search thành công chưa đảm bảo phát audio thành công."
+          echo "===== YOUTUBE SEARCH ====="
 
-      - name: Create package.json
+          curl -sS -G \
+            -H "Authorization: thgadu-local-lavalink" \
+            --data-urlencode "identifier=ytsearch:Imagine Dragons Radioactive" \
+            http://127.0.0.1:2333/v4/loadtracks \
+            -o yt-test.json
+
+          python3 - <<'PY'
+          import json
+
+          with open("yt-test.json") as f:
+              d=json.load(f)
+
+          print("Load type:",d.get("loadType"))
+
+          tracks=d.get("data",[])
+
+          if isinstance(tracks,list):
+              print("Results:",len(tracks))
+          else:
+              print(str(tracks)[:1000])
+          PY
+
+          echo "⚠️ Search success does not guarantee playback."
+
+      - name: Generate package.json
         shell: bash
         run: |
           cat > package.json <<'EOF'
           {
-            "name": "thgadu-v5-debug",
-            "version": "5.1.0",
+            "name": "thgadu",
+            "version": "5.2.0",
             "private": true,
             "main": "index.js",
             "scripts": {
@@ -245,7 +261,7 @@ jobs:
 
           npm install --no-audit --no-fund
 
-      - name: Generate ThgAdu Bot
+      - name: Generate ThgAdu
         shell: bash
         run: |
           cat > index.js <<'EOF'
@@ -257,8 +273,8 @@ jobs:
           const {
             Client,
             GatewayIntentBits,
-            ActivityType,
-            Events
+            Events,
+            ActivityType
           } = require('discord.js');
 
           const {
@@ -266,60 +282,64 @@ jobs:
             Connectors
           } = require('shoukaku');
 
-          // =========================================================
+          // =====================================================
           // CONFIG
-          // =========================================================
+          // =====================================================
+
+          const PREFIX = 'd.';
+
+          const RANDOM_CHANCE = 0.20;
+          const AUTO_INTERVAL = 2 * 60 * 60 * 1000;
+
+          const MAX_QUEUE = 100;
 
           const CONFIG = {
             token: process.env.TOKEN,
-            ollamaKey: process.env.OLLAMA_API_KEY,
-            ollamaURL:
+
+            aiKey: process.env.OLLAMA_API_KEY,
+
+            aiURL:
               process.env.OLLAMA_API_URL ||
               'https://ollama.com/api/chat',
+
             aiModel:
               process.env.AI_MODEL ||
               'gemma4:31b',
-            autoChannel: process.env.AUTO_CHANNEL_ID,
+
             systemPrompt:
               process.env.SYSTEM_PROMPT ||
-              'Bạn là ThgAdu, một bot Discord thân thiện, vui tính. Trả lời tự nhiên bằng tiếng Việt, ngắn gọn khi phù hợp.',
-            firecrawlKey: process.env.FIRECRAWL_API_KEY,
-            supabaseURL: process.env.SUPABASE_URL,
+              'Bạn là ThgAdu, một bot Discord vui tính, thân thiện. Trả lời tự nhiên bằng tiếng Việt.',
+
+            firecrawlKey:
+              process.env.FIRECRAWL_API_KEY,
+
+            supabaseURL:
+              process.env.SUPABASE_URL,
+
             supabaseKey:
-              process.env.SUPABASE_SERVICE_ROLE_KEY
+              process.env.SUPABASE_SERVICE_ROLE_KEY,
+
+            autoChannel:
+              process.env.AUTO_CHANNEL_ID
           };
 
-          const PREFIX = 'd.';
-          const RANDOM_CHANCE = 0.20;
-          const AUTO_INTERVAL = 2 * 60 * 60 * 1000;
-          const MAX_QUEUE = 100;
-
-          const LAVALINK_NAME = 'local';
-
-          // =========================================================
+          // =====================================================
           // LOGGING
-          // =========================================================
+          // =====================================================
 
           function inspect(value) {
             return util.inspect(value, {
-              depth: 12,
+              depth: 8,
               colors: false,
-              maxArrayLength: 30,
-              maxStringLength: 12000,
-              breakLength: 100
+              maxStringLength: 10000
             });
           }
 
           function logError(label, error) {
-            console.error('\n================================');
-            console.error('❌ ' + label);
-            console.error(inspect(error));
-
-            if (error?.stack) {
-              console.error(error.stack);
-            }
-
-            console.error('================================\n');
+            console.error(
+              '\n❌ ' + label + '\n' +
+              inspect(error)
+            );
           }
 
           process.on('unhandledRejection', error => {
@@ -330,9 +350,9 @@ jobs:
             logError('UNCAUGHT EXCEPTION', error);
           });
 
-          // =========================================================
+          // =====================================================
           // DISCORD
-          // =========================================================
+          // =====================================================
 
           const client = new Client({
             intents: [
@@ -343,22 +363,20 @@ jobs:
             ]
           });
 
-          // =========================================================
+          // =====================================================
           // LAVALINK
-          // =========================================================
-
-          const nodes = [
-            {
-              name: LAVALINK_NAME,
-              url: '127.0.0.1:2333',
-              auth: 'thgadu-local-lavalink',
-              secure: false
-            }
-          ];
+          // =====================================================
 
           const shoukaku = new Shoukaku(
             new Connectors.DiscordJS(client),
-            nodes,
+            [
+              {
+                name: 'local',
+                url: '127.0.0.1:2333',
+                auth: 'thgadu-local-lavalink',
+                secure: false
+              }
+            ],
             {
               moveOnDisconnect: false,
               resume: false,
@@ -369,42 +387,36 @@ jobs:
           );
 
           shoukaku.on('ready', name => {
-            console.log('✅ Lavalink connected:', name);
+            console.log(
+              '✅ Lavalink connected:',
+              name
+            );
           });
 
           shoukaku.on('error', (name, error) => {
-            logError('LAVALINK NODE ERROR: ' + name, error);
+            logError(
+              'LAVALINK NODE ' + name,
+              error
+            );
           });
 
           shoukaku.on('close', (name, code, reason) => {
             console.error(
-              '❌ Lavalink node closed:',
-              inspect({ name, code, reason })
+              'Lavalink closed:',
+              inspect({name,code,reason})
             );
           });
 
-          shoukaku.on('disconnect', (name, players, moved) => {
+          shoukaku.on('disconnect', name => {
             console.error(
-              '⚠️ Lavalink disconnected:',
-              inspect({
-                name,
-                playerCount: players?.length,
-                moved
-              })
+              'Lavalink disconnected:',
+              name
             );
           });
 
-          shoukaku.on('reconnecting', (name, tries) => {
-            console.log(
-              '🔄 Lavalink reconnecting:',
-              name,
-              tries
-            );
-          });
-
-          // =========================================================
+          // =====================================================
           // MUSIC STATE
-          // =========================================================
+          // =====================================================
 
           const musicStates = new Map();
 
@@ -414,49 +426,27 @@ jobs:
                 player: null,
                 queue: [],
                 current: null,
+                starting: false,
+                stopped: false,
                 volume: 100,
                 textChannel: null,
-                starting: false,
-                stopped: false
+                failedTracks: 0,
+                playTimer: null
               });
             }
 
             return musicStates.get(guildId);
           }
 
-          function getNode() {
-            const node = shoukaku.getIdealNode();
-
-            if (!node) {
-              throw new Error(
-                'Không có Lavalink node khả dụng.'
-              );
-            }
-
-            return node;
-          }
-
-          async function sendSafe(channel, text) {
-            if (!channel) return;
-
-            try {
-              await channel.send(
-                String(text).slice(0, 1900)
-              );
-            } catch (error) {
-              logError('SEND MESSAGE', error);
-            }
-          }
-
-          function trackTitle(track) {
+          function title(track) {
             return (
               track?.info?.title ||
               track?.title ||
-              'Unknown track'
+              'Unknown'
             );
           }
 
-          function trackURI(track) {
+          function uri(track) {
             return (
               track?.info?.uri ||
               track?.uri ||
@@ -475,74 +465,130 @@ jobs:
             };
           }
 
-          // =========================================================
-          // TRACK RESOLVER
-          // =========================================================
+          function getNode() {
+            const node = shoukaku.getIdealNode();
 
-          async function resolveTracks(query) {
-            const node = getNode();
-
-            const isURL = /^https?:\/\//i.test(query);
-
-            const identifier = isURL
-              ? query
-              : 'ytsearch:' + query;
-
-            console.log('\n===== RESOLVE TRACK =====');
-            console.log('Identifier:', identifier);
-            console.log('Node:', node.name);
-
-            let result;
-
-            try {
-              result = await node.rest.resolve(identifier);
-            } catch (error) {
-              logError('TRACK RESOLVE FAILED', error);
-              throw error;
-            }
-
-            console.log(
-              'Resolve response:',
-              inspect({
-                loadType: result?.loadType,
-                dataType: Array.isArray(result?.data)
-                  ? 'array'
-                  : typeof result?.data,
-                exception:
-                  result?.data?.exception ||
-                  result?.exception
-              })
-            );
-
-            if (!result) {
+            if (!node) {
               throw new Error(
-                'Lavalink không trả về kết quả.'
+                'Lavalink chưa sẵn sàng.'
               );
             }
+
+            return node;
+          }
+
+          async function sendSafe(channel, content) {
+            if (!channel) return;
+
+            try {
+              await channel.send(
+                String(content).slice(0, 1900)
+              );
+            } catch (error) {
+              logError('SEND MESSAGE', error);
+            }
+          }
+
+          // =====================================================
+          // YOUTUBE + YOUTUBE MUSIC RESOLVER
+          // =====================================================
+
+          function cleanYouTubeURL(input) {
+            try {
+              const url = new URL(input);
+
+              const host = url.hostname.toLowerCase();
+
+              if (
+                host === 'youtu.be' ||
+                host === 'www.youtu.be'
+              ) {
+                const id = url.pathname
+                  .split('/')
+                  .filter(Boolean)[0];
+
+                if (id) {
+                  return (
+                    'https://www.youtube.com/watch?v=' +
+                    encodeURIComponent(id)
+                  );
+                }
+              }
+
+              const youtubeHosts = [
+                'youtube.com',
+                'www.youtube.com',
+                'm.youtube.com',
+                'music.youtube.com'
+              ];
+
+              if (youtubeHosts.includes(host)) {
+                if (url.pathname === '/watch') {
+                  const id =
+                    url.searchParams.get('v');
+
+                  if (id) {
+                    return (
+                      'https://www.youtube.com/watch?v=' +
+                      encodeURIComponent(id)
+                    );
+                  }
+                }
+
+                if (url.pathname.startsWith('/shorts/')) {
+                  const id = url.pathname
+                    .split('/')[2];
+
+                  if (id) {
+                    return (
+                      'https://www.youtube.com/watch?v=' +
+                      encodeURIComponent(id)
+                    );
+                  }
+                }
+              }
+
+              return input;
+            } catch {
+              return input;
+            }
+          }
+
+          function parseResult(result) {
+            if (!result) return [];
 
             const type = String(
               result.loadType || ''
             ).toLowerCase();
 
-            if (type === 'error' || type === 'load_failed') {
+            if (
+              type === 'error' ||
+              type === 'load_failed'
+            ) {
               logError(
                 'LAVALINK LOAD ERROR',
-                result.data || result.exception || result
+                result.data || result
               );
 
-              throw new Error(
-                'Lavalink không tải được bài nhạc.'
-              );
+              return [];
             }
 
             let tracks = [];
 
-            if (type === 'search' || type === 'search_result') {
+            if (
+              type === 'search' ||
+              type === 'search_result'
+            ) {
               tracks = Array.isArray(result.data)
-                ? result.data
-                : result.tracks || [];
-
-              tracks = tracks.slice(0, 1);
+                ? result.data.slice(0, 1)
+                : (result.tracks || []).slice(0, 1);
+            } else if (
+              type === 'track' ||
+              type === 'track_loaded'
+            ) {
+              tracks = [
+                result.data || result.track
+              ];
             } else if (
               type === 'playlist' ||
               type === 'playlist_loaded'
@@ -551,79 +597,132 @@ jobs:
                 result.data?.tracks ||
                 result.tracks ||
                 [];
-            } else if (
-              type === 'track' ||
-              type === 'track_loaded'
-            ) {
-              tracks = [
-                result.data || result.track
-              ];
             } else if (Array.isArray(result.data)) {
               tracks = result.data.slice(0, 1);
             }
 
-            tracks = tracks
+            return tracks
               .filter(Boolean)
               .map(normalizeTrack)
               .filter(t => t.encoded);
-
-            console.log('Resolved tracks:', tracks.length);
-
-            if (tracks.length > 0) {
-              console.log(
-                'First track:',
-                inspect({
-                  title: trackTitle(tracks[0]),
-                  uri: trackURI(tracks[0]),
-                  sourceName:
-                    tracks[0].info?.sourceName,
-                  encodedLength:
-                    tracks[0].encoded.length
-                })
-              );
-            }
-
-            return tracks;
           }
 
-          // =========================================================
-          // VOICE CONNECTION
-          // =========================================================
+          async function resolveIdentifier(identifier) {
+            const node = getNode();
 
-          async function connectVoice(message) {
-            const voiceChannel =
-              message.member?.voice?.channel;
+            console.log(
+              '🔎 Resolving:',
+              identifier
+            );
 
-            if (!voiceChannel) {
-              throw new Error(
-                'Bro vào voice channel trước đã.'
+            const result = await node.rest.resolve(
+              identifier
+            );
+
+            console.log(
+              'Load type:',
+              result?.loadType
+            );
+
+            return parseResult(result);
+          }
+
+          async function resolveTracks(
+            query,
+            mode = 'auto'
+          ) {
+            query = String(query || '').trim();
+
+            if (!query) return [];
+
+            const isURL = /^https?:\/\//i.test(query);
+
+            if (isURL) {
+              return resolveIdentifier(
+                cleanYouTubeURL(query)
               );
             }
 
-            const state = getState(message.guild.id);
+            const sources =
+              mode === 'youtube'
+                ? ['ytsearch:']
+                : mode === 'music'
+                  ? ['ytmsearch:']
+                  : ['ytmsearch:', 'ytsearch:'];
+
+            for (const prefix of sources) {
+              try {
+                const tracks =
+                  await resolveIdentifier(
+                    prefix + query
+                  );
+
+                if (tracks.length) {
+                  console.log(
+                    '✅ Search source:',
+                    prefix
+                  );
+
+                  console.log(
+                    '✅ Found:',
+                    title(tracks[0])
+                  );
+
+                  return tracks;
+                }
+              } catch (error) {
+                logError(
+                  'SEARCH FAILED ' + prefix,
+                  error
+                );
+              }
+            }
+
+            return [];
+          }
+
+          // =====================================================
+          // VOICE
+          // =====================================================
+
+          async function connectVoice(message) {
+            const channel =
+              message.member?.voice?.channel;
+
+            if (!channel) {
+              throw new Error(
+                'Bro vào voice channel trước.'
+              );
+            }
+
+            const state = getState(
+              message.guild.id
+            );
 
             if (state.player) {
               if (
                 state.player.voiceChannelId !==
-                voiceChannel.id
+                channel.id
               ) {
                 throw new Error(
-                  'Bot đang ở voice channel khác. Dùng d.leave trước.'
+                  'Bot đang ở voice khác. Dùng d.leave trước.'
                 );
               }
 
               return state.player;
             }
 
-            console.log('\n===== VOICE CONNECT =====');
-            console.log('Guild:', message.guild.id);
-            console.log('Voice channel:', voiceChannel.id);
+            console.log(
+              '🔊 Connecting voice:',
+              channel.id
+            );
 
             const player =
               await shoukaku.joinVoiceChannel({
                 guildId: message.guild.id,
-                channelId: voiceChannel.id,
-                shardId: message.guild.shardId || 0,
+                channelId: channel.id,
+                shardId:
+                  message.guild.shardId || 0,
                 deaf: true,
                 mute: false
               });
@@ -637,117 +736,147 @@ jobs:
               player
             );
 
-            console.log('✅ Voice connection created');
+            console.log(
+              '✅ Discord voice connected'
+            );
 
             return player;
           }
 
-          // =========================================================
-          // PLAYER EVENTS — DEBUG QUAN TRỌNG
-          // =========================================================
+          // =====================================================
+          // PLAYER EVENTS
+          // =====================================================
+
+          function clearPlayTimer(state) {
+            if (state.playTimer) {
+              clearTimeout(state.playTimer);
+              state.playTimer = null;
+            }
+          }
 
           function setupPlayerEvents(guildId, player) {
             const state = getState(guildId);
 
-            player.on('start', async data => {
-              console.log('\n✅ TRACK START EVENT');
-              console.log(inspect(data));
+            player.on('start', data => {
+              console.log(
+                '▶️ TrackStartEvent:',
+                data?.track?.info?.title
+              );
 
               state.starting = false;
 
-              if (state.current) {
-                await sendSafe(
-                  state.textChannel,
-                  '🎶 Đang phát: **' +
-                  trackTitle(state.current) +
-                  '**'
-                );
-              }
+              // TrackStartEvent chỉ xác nhận Lavalink
+              // bắt đầu xử lý track, chưa chứng minh
+              // audio đã được gửi thành công.
             });
 
             player.on('end', async data => {
-              console.log('\n===== TRACK END EVENT =====');
-              console.log(inspect(data));
-
-              state.current = null;
-              state.starting = false;
-
               const reason = String(
                 data?.reason || ''
               ).toLowerCase();
 
-              if (
-                reason === 'replaced' ||
-                state.stopped
-              ) {
+              console.log(
+                '⏹️ TrackEndEvent:',
+                reason
+              );
+
+              clearPlayTimer(state);
+
+              state.current = null;
+              state.starting = false;
+
+              if (reason === 'replaced') {
                 return;
+              }
+
+              if (state.stopped) {
+                return;
+              }
+
+              if (reason === 'loadfailed') {
+                state.failedTracks++;
+
+                if (state.failedTracks >= 3) {
+                  state.stopped = true;
+                  state.queue = [];
+
+                  await sendSafe(
+                    state.textChannel,
+                    '❌ 3 bài liên tiếp không phát được. ' +
+                    'Đã dừng hàng chờ để tránh spam lỗi.'
+                  );
+
+                  return;
+                }
+              } else {
+                state.failedTracks = 0;
               }
 
               await playNext(guildId);
             });
 
-            player.on('exception', async error => {
+            player.on('exception', async data => {
+              const exception =
+                data?.exception || data;
+
               logError(
-                'LAVALINK TRACK EXCEPTION',
-                error
+                'TRACK EXCEPTION',
+                exception
               );
 
-              state.current = null;
-              state.starting = false;
+              const cause =
+                exception?.cause ||
+                exception?.message ||
+                'Unknown';
 
               await sendSafe(
                 state.textChannel,
-                '❌ Lavalink gặp lỗi khi phát nhạc. ' +
-                'Xem `LAVALINK TRACK EXCEPTION` ' +
-                'trong GitHub Actions.'
+                '❌ Không phát được bài: **' +
+                title(state.current) +
+                '**\nNguyên nhân: `' +
+                String(cause).slice(0, 700) +
+                '`'
               );
+
+              // Không gọi playNext ở đây:
+              // Lavalink thường gửi TrackEndEvent
+              // sau TrackExceptionEvent.
             });
 
             player.on('stuck', async data => {
               logError(
-                'LAVALINK TRACK STUCK',
+                'TRACK STUCK',
                 data
-              );
-
-              state.current = null;
-              state.starting = false;
-
-              await sendSafe(
-                state.textChannel,
-                '⚠️ Track bị kẹt. Xem GitHub Actions.'
               );
 
               try {
                 await player.stopTrack();
               } catch (error) {
-                logError('STOP STUCK TRACK', error);
+                logError(
+                  'STOP STUCK TRACK',
+                  error
+                );
               }
             });
 
-            player.on('closed', (data) => {
-              console.error(
-                '❌ PLAYER CLOSED:',
-                inspect(data)
+            player.on('closed', data => {
+              logError(
+                'VOICE CONNECTION CLOSED',
+                data
               );
+
+              clearPlayTimer(state);
 
               state.player = null;
               state.current = null;
               state.starting = false;
-            });
-
-            player.on('update', data => {
-              if (process.env.DEBUG_PLAYER_UPDATE === '1') {
-                console.log(
-                  'PLAYER UPDATE:',
-                  inspect(data)
-                );
-              }
+              state.stopped = true;
             });
           }
 
-          // =========================================================
+          // =====================================================
           // PLAYBACK
-          // =========================================================
+          // =====================================================
 
           async function playNext(guildId) {
             const state = getState(guildId);
@@ -755,55 +884,121 @@ jobs:
             if (
               !state.player ||
               state.starting ||
+              state.current ||
               state.stopped
             ) {
               return;
             }
 
-            const next = state.queue.shift();
+            const track = state.queue.shift();
 
-            if (!next) {
-              state.current = null;
+            if (!track) {
+              console.log(
+                '🎵 Queue finished:',
+                guildId
+              );
 
-              console.log('Queue finished:', guildId);
               return;
             }
 
-            state.current = next;
+            state.current = track;
             state.starting = true;
 
-            console.log('\n===== PLAY TRACK =====');
-            console.log('Title:', trackTitle(next));
-            console.log('URI:', trackURI(next));
             console.log(
-              'Encoded length:',
-              next.encoded?.length
+              '🎵 PLAY:',
+              title(track)
+            );
+
+            console.log(
+              'Source:',
+              track.info?.sourceName
+            );
+
+            console.log(
+              'URL:',
+              uri(track)
             );
 
             try {
               await state.player.playTrack({
                 track: {
-                  encoded: next.encoded
+                  encoded: track.encoded
                 }
               });
 
               console.log(
-                '✅ PLAY COMMAND ACCEPTED'
+                '✅ Lavalink accepted play command'
               );
 
-              console.log(
-                'Waiting for TRACK START event...'
+              // Chỉ báo rằng lệnh đã được chấp nhận.
+              // TrackStartEvent không đảm bảo có âm thanh.
+              //
+              // Nếu không xuất hiện sự kiện kết thúc,
+              // kiểm tra trạng thái player sau 15 giây.
+
+              clearPlayTimer(state);
+
+              state.playTimer = setTimeout(
+                async () => {
+                  if (
+                    state.current !== track ||
+                    state.stopped
+                  ) {
+                    return;
+                  }
+
+                  try {
+                    const position =
+                      state.player?.position ?? 0;
+
+                    console.log(
+                      '🎧 Playback check:',
+                      inspect({
+                        title: title(track),
+                        position,
+                        connected:
+                          state.player?.connection?.state
+                      })
+                    );
+
+                    if (position > 0) {
+                      await sendSafe(
+                        state.textChannel,
+                        '🎶 Đang phát: **' +
+                        title(track) +
+                        '**'
+                      );
+                    } else {
+                      console.warn(
+                        '⚠️ Playback position is 0'
+                      );
+                    }
+                  } catch (error) {
+                    logError(
+                      'PLAYBACK CHECK',
+                      error
+                    );
+                  }
+                },
+                15000
               );
+
             } catch (error) {
-              state.starting = false;
-              state.current = null;
+              clearPlayTimer(state);
 
-              logError('PLAY TRACK FAILED', error);
+              state.current = null;
+              state.starting = false;
+
+              logError(
+                'PLAY COMMAND FAILED',
+                error
+              );
 
               await sendSafe(
                 state.textChannel,
-                '❌ Không thể bắt đầu phát track: ' +
-                error.message
+                '❌ Không thể bắt đầu bài **' +
+                title(track) +
+                '**.'
               );
 
               await playNext(guildId);
@@ -813,21 +1008,26 @@ jobs:
           async function enqueue(
             message,
             query,
-            options = {}
+            mode = 'auto',
+            silent = false
           ) {
-            const state = getState(message.guild.id);
-
-            const tracks = await resolveTracks(query);
-
-            if (!tracks.length) {
-              await message.reply(
-                '❌ Không tìm thấy bài nhạc.'
+            const tracks =
+              await resolveTracks(
+                query,
+                mode
               );
 
-              return;
+            if (!tracks.length) {
+              return message.reply(
+                '❌ Không tìm thấy bài nhạc.'
+              );
             }
 
             await connectVoice(message);
+
+            const state = getState(
+              message.guild.id
+            );
 
             state.stopped = false;
             state.textChannel = message.channel;
@@ -841,25 +1041,18 @@ jobs:
             );
 
             if (!selected.length) {
-              await message.reply(
+              return message.reply(
                 '❌ Hàng chờ đã đầy.'
               );
-
-              return;
             }
 
             state.queue.push(...selected);
 
-            console.log(
-              'Queue size:',
-              state.queue.length
-            );
-
-            if (!options.silent) {
+            if (!silent) {
               await message.reply(
                 selected.length === 1
                   ? '➕ Đã thêm: **' +
-                    trackTitle(selected[0]) +
+                    title(selected[0]) +
                     '**'
                   : '➕ Đã thêm ' +
                     selected.length +
@@ -867,16 +1060,21 @@ jobs:
               );
             }
 
-            if (!state.current && !state.starting) {
-              await playNext(message.guild.id);
+            if (
+              !state.current &&
+              !state.starting
+            ) {
+              await playNext(
+                message.guild.id
+              );
             }
           }
 
-          // =========================================================
+          // =====================================================
           // SUPABASE
-          // =========================================================
+          // =====================================================
 
-          function supabaseEnabled() {
+          function hasSupabase() {
             return Boolean(
               CONFIG.supabaseURL &&
               CONFIG.supabaseKey
@@ -887,32 +1085,36 @@ jobs:
             method,
             table,
             params = {},
-            data = null,
-            headers = {}
+            data = null
           ) {
-            if (!supabaseEnabled()) {
+            if (!hasSupabase()) {
               throw new Error(
                 'Supabase chưa được cấu hình.'
               );
             }
 
-            const base = CONFIG.supabaseURL.replace(
-              /\/$/,
-              ''
-            );
+            const base =
+              CONFIG.supabaseURL.replace(
+                /\/$/,
+                ''
+              );
 
             const response = await axios({
               method,
-              url: base + '/rest/v1/' + table,
+              url:
+                base +
+                '/rest/v1/' +
+                table,
               params,
               data,
               headers: {
                 apikey: CONFIG.supabaseKey,
                 Authorization:
                   'Bearer ' + CONFIG.supabaseKey,
-                'Content-Type': 'application/json',
-                Prefer: 'return=representation',
-                ...headers
+                'Content-Type':
+                  'application/json',
+                Prefer:
+                  'return=representation'
               },
               timeout: 20000
             });
@@ -924,7 +1126,7 @@ jobs:
             userId,
             guildId
           ) {
-            if (!supabaseEnabled()) return [];
+            if (!hasSupabase()) return [];
 
             try {
               return await supabase(
@@ -933,43 +1135,53 @@ jobs:
                 {
                   user_id: 'eq.' + userId,
                   guild_id: 'eq.' + guildId,
-                  select: 'id,content,created_at',
-                  order: 'created_at.desc',
+                  select:
+                    'id,content,created_at',
+                  order:
+                    'created_at.desc',
                   limit: 20
                 }
               );
             } catch (error) {
-              logError('GET MEMORIES', error);
+              logError(
+                'GET MEMORIES',
+                error
+              );
+
               return [];
             }
           }
 
-          // =========================================================
-          // AI
-          // =========================================================
+          // =====================================================
+          // OLLAMA CLOUD AI
+          // =====================================================
 
           const histories = new Map();
 
-          function historyKey(message) {
-            return (
-              message.guild?.id +
-              ':' +
-              message.author.id
-            );
-          }
-
-          async function askAI(message, question) {
-            if (!CONFIG.ollamaKey) {
-              return '❌ Chưa cấu hình OLLAMA_API_KEY.';
+          async function askAI(
+            message,
+            question
+          ) {
+            if (!CONFIG.aiKey) {
+              return (
+                '❌ Chưa cấu hình ' +
+                'OLLAMA_API_KEY.'
+              );
             }
 
-            const key = historyKey(message);
-            const history = histories.get(key) || [];
+            const key =
+              message.guild.id +
+              ':' +
+              message.author.id;
 
-            const memories = await getMemories(
-              message.author.id,
-              message.guild?.id || 'DM'
-            );
+            const history =
+              histories.get(key) || [];
+
+            const memories =
+              await getMemories(
+                message.author.id,
+                message.guild.id
+              );
 
             const memoryText = memories
               .map(m => '- ' + m.content)
@@ -978,10 +1190,10 @@ jobs:
             const system = [
               CONFIG.systemPrompt,
               memoryText
-                ? '\nThông tin cần nhớ về người dùng:\n' +
+                ? 'Thông tin đã ghi nhớ:\n' +
                   memoryText
                 : ''
-            ].join('\n');
+            ].join('\n\n');
 
             const messages = [
               {
@@ -996,22 +1208,25 @@ jobs:
             ];
 
             try {
-              const response = await axios.post(
-                CONFIG.ollamaURL,
-                {
-                  model: CONFIG.aiModel,
-                  messages,
-                  stream: false
-                },
-                {
-                  headers: {
-                    Authorization:
-                      'Bearer ' + CONFIG.ollamaKey,
-                    'Content-Type': 'application/json'
+              const response =
+                await axios.post(
+                  CONFIG.aiURL,
+                  {
+                    model: CONFIG.aiModel,
+                    messages,
+                    stream: false
                   },
-                  timeout: 120000
-                }
-              );
+                  {
+                    headers: {
+                      Authorization:
+                        'Bearer ' +
+                        CONFIG.aiKey,
+                      'Content-Type':
+                        'application/json'
+                    },
+                    timeout: 120000
+                  }
+                );
 
               const answer =
                 response.data?.message?.content ||
@@ -1035,36 +1250,42 @@ jobs:
               );
 
               return answer;
+
             } catch (error) {
               logError(
-                'OLLAMA API ERROR',
+                'OLLAMA ERROR',
                 error.response?.data || error
               );
 
-              return '❌ AI đang gặp lỗi. Xem GitHub Actions.';
+              return (
+                '❌ AI đang gặp lỗi. ' +
+                'Kiểm tra GitHub Actions.'
+              );
             }
           }
 
-          async function replyLong(message, text) {
-            const content = String(text || '');
-
-            if (!content) return;
-
-            const chunks = [];
+          async function replyLong(
+            message,
+            text
+          ) {
+            const content = String(
+              text || ''
+            );
 
             for (
               let i = 0;
-              i < content.length;
+              i < Math.min(
+                content.length,
+                1900 * 8
+              );
               i += 1900
             ) {
-              chunks.push(
-                content.slice(i, i + 1900)
-              );
-            }
-
-            for (const chunk of chunks.slice(0, 8)) {
               await message.reply({
-                content: chunk,
+                content:
+                  content.slice(
+                    i,
+                    i + 1900
+                  ),
                 allowedMentions: {
                   repliedUser: false
                 }
@@ -1072,43 +1293,51 @@ jobs:
             }
           }
 
-          // =========================================================
+          // =====================================================
           // FIRECRAWL
-          // =========================================================
+          // =====================================================
 
-          async function firecrawl(endpoint, payload) {
+          async function firecrawl(
+            endpoint,
+            payload
+          ) {
             if (!CONFIG.firecrawlKey) {
               throw new Error(
                 'Chưa cấu hình FIRECRAWL_API_KEY.'
               );
             }
 
-            const response = await axios.post(
-              'https://api.firecrawl.dev/v2/' +
-              endpoint,
-              payload,
-              {
-                headers: {
-                  Authorization:
-                    'Bearer ' + CONFIG.firecrawlKey
-                },
-                timeout: 60000
-              }
-            );
+            const response =
+              await axios.post(
+                'https://api.firecrawl.dev/v2/' +
+                endpoint,
+                payload,
+                {
+                  headers: {
+                    Authorization:
+                      'Bearer ' +
+                      CONFIG.firecrawlKey
+                  },
+                  timeout: 60000
+                }
+              );
 
             return response.data;
           }
 
-          // =========================================================
+          // =====================================================
           // FAVORITES
-          // =========================================================
+          // =====================================================
 
           async function favoritesCommand(
             message,
             args
           ) {
-            const guildId = message.guild.id;
-            const userId = message.author.id;
+            const guildId =
+              message.guild.id;
+
+            const userId =
+              message.author.id;
 
             if (
               !args ||
@@ -1128,20 +1357,22 @@ jobs:
 
               if (!rows.length) {
                 return message.reply(
-                  '⭐ Danh sách yêu thích đang trống.'
+                  '⭐ Favorites đang trống.'
                 );
               }
 
               return replyLong(
                 message,
                 '⭐ **Favorites**\n' +
-                rows.map((r, i) =>
-                  `${i + 1}. ${r.title}`
+                rows.map(
+                  (r, i) =>
+                    `${i + 1}. ${r.title}`
                 ).join('\n')
               );
             }
 
-            const tracks = await resolveTracks(args);
+            const tracks =
+              await resolveTracks(args);
 
             if (!tracks.length) {
               return message.reply(
@@ -1158,30 +1389,34 @@ jobs:
               {
                 user_id: userId,
                 guild_id: guildId,
-                title: trackTitle(track),
-                url: trackURI(track)
+                title: title(track),
+                url: uri(track)
               }
             );
 
             return message.reply(
               '⭐ Đã lưu: **' +
-              trackTitle(track) +
+              title(track) +
               '**'
             );
           }
 
-          // =========================================================
+          // =====================================================
           // PLAYLISTS
-          // =========================================================
+          // =====================================================
 
           async function playlistCommand(
             message,
             args
           ) {
-            const guildId = message.guild.id;
-            const userId = message.author.id;
+            const userId =
+              message.author.id;
 
-            const input = args.trim();
+            const guildId =
+              message.guild.id;
+
+            const input =
+              String(args || '').trim();
 
             if (
               !input ||
@@ -1207,13 +1442,15 @@ jobs:
               return message.reply(
                 names.length
                   ? '📂 **Playlists**\n' +
-                    names.map(n => '• ' + n).join('\n')
-                      .slice(0, 1800)
-                  : '📂 Chưa có playlist nào.'
+                    names.map(
+                      n => '• ' + n
+                    ).join('\n').slice(0, 1800)
+                  : '📂 Chưa có playlist.'
               );
             }
 
-            const space = input.indexOf(' ');
+            const space =
+              input.indexOf(' ');
 
             const action = (
               space === -1
@@ -1228,11 +1465,12 @@ jobs:
             ).trim();
 
             if (action === 'add') {
-              const separator = rest.indexOf('|');
+              const separator =
+                rest.indexOf('|');
 
               if (separator === -1) {
                 return message.reply(
-                  'Dùng: `d.pl add Tên playlist | Tên bài hát`'
+                  'Dùng: `d.pl add Tên playlist | Tên bài`'
                 );
               }
 
@@ -1246,12 +1484,14 @@ jobs:
 
               if (!name || !query) {
                 return message.reply(
-                  '❌ Thiếu tên playlist hoặc bài hát.'
+                  '❌ Thiếu tên playlist hoặc bài.'
                 );
               }
 
               const tracks =
-                await resolveTracks(query);
+                await resolveTracks(
+                  query
+                );
 
               if (!tracks.length) {
                 return message.reply(
@@ -1269,15 +1509,15 @@ jobs:
                   user_id: userId,
                   guild_id: guildId,
                   name,
-                  title: trackTitle(track),
-                  url: trackURI(track)
+                  title: title(track),
+                  url: uri(track)
                 }
               );
 
               return message.reply(
                 '✅ Đã thêm **' +
-                trackTitle(track) +
-                '** vào playlist **' +
+                title(track) +
+                '** vào **' +
                 name +
                 '**.'
               );
@@ -1308,7 +1548,7 @@ jobs:
 
               if (!rows.length) {
                 return message.reply(
-                  '❌ Playlist trống hoặc không tồn tại.'
+                  '❌ Playlist không tồn tại hoặc trống.'
                 );
               }
 
@@ -1330,7 +1570,8 @@ jobs:
               );
 
               state.stopped = false;
-              state.textChannel = message.channel;
+              state.textChannel =
+                message.channel;
 
               let added = 0;
 
@@ -1349,12 +1590,15 @@ jobs:
                     );
 
                   if (tracks.length) {
-                    state.queue.push(tracks[0]);
+                    state.queue.push(
+                      tracks[0]
+                    );
+
                     added++;
                   }
                 } catch (error) {
                   logError(
-                    'PLAYLIST TRACK LOAD',
+                    'PLAYLIST RESOLVE',
                     error
                   );
                 }
@@ -1372,7 +1616,9 @@ jobs:
                 !state.current &&
                 !state.starting
               ) {
-                await playNext(message.guild.id);
+                await playNext(
+                  message.guild.id
+                );
               }
 
               return;
@@ -1382,19 +1628,22 @@ jobs:
               '📂 Lệnh playlist:\n' +
               '`d.pl list`\n' +
               '`d.pl show <tên>`\n' +
-              '`d.pl add <tên> | <bài hát>`\n' +
+              '`d.pl add <tên> | <bài>`\n' +
               '`d.pl play <tên>`'
             );
           }
 
-          // =========================================================
+          // =====================================================
           // MUSIC COMMANDS
-          // =========================================================
+          // =====================================================
 
           const MUSIC_COMMANDS = new Set([
             'join',
             'play',
             'p',
+            'ytm',
+            'youtube',
+            'yt',
             'pause',
             'resume',
             'skip',
@@ -1426,35 +1675,65 @@ jobs:
                 case 'join': {
                   await connectVoice(message);
 
-                  await message.reply(
-                    '🔊 Đã vào voice channel.'
+                  return message.reply(
+                    '🔊 Đã vào voice.'
                   );
-
-                  return;
                 }
 
                 case 'play':
                 case 'p': {
                   if (!args) {
-                    await message.reply(
-                      'Dùng: `d.play <tên bài hoặc URL>`'
+                    return message.reply(
+                      'Dùng: `d.play <bài hát hoặc URL>`'
                     );
-
-                    return;
                   }
 
-                  await enqueue(message, args);
-                  return;
+                  return enqueue(
+                    message,
+                    args,
+                    'auto'
+                  );
+                }
+
+                case 'ytm': {
+                  if (!args) {
+                    return message.reply(
+                      'Dùng: `d.ytm <tên bài>`'
+                    );
+                  }
+
+                  return enqueue(
+                    message,
+                    args,
+                    'music'
+                  );
+                }
+
+                case 'youtube':
+                case 'yt': {
+                  if (!args) {
+                    return message.reply(
+                      'Dùng: `d.yt <tên bài>`'
+                    );
+                  }
+
+                  return enqueue(
+                    message,
+                    args,
+                    'youtube'
+                  );
                 }
 
                 case 'pause': {
                   if (!state.player) {
                     return message.reply(
-                      '❌ Bot chưa vào voice.'
+                      '❌ Chưa có player.'
                     );
                   }
 
-                  await state.player.setPaused(true);
+                  await state.player.setPaused(
+                    true
+                  );
 
                   return message.reply(
                     '⏸️ Đã tạm dừng.'
@@ -1464,11 +1743,13 @@ jobs:
                 case 'resume': {
                   if (!state.player) {
                     return message.reply(
-                      '❌ Bot chưa vào voice.'
+                      '❌ Chưa có player.'
                     );
                   }
 
-                  await state.player.setPaused(false);
+                  await state.player.setPaused(
+                    false
+                  );
 
                   return message.reply(
                     '▶️ Tiếp tục phát.'
@@ -1483,10 +1764,16 @@ jobs:
                     );
                   }
 
+                  if (!state.current) {
+                    return message.reply(
+                      '❌ Không có bài đang phát.'
+                    );
+                  }
+
                   await state.player.stopTrack();
 
                   return message.reply(
-                    '⏭️ Đã bỏ qua bài.'
+                    '⏭️ Đã skip.'
                   );
                 }
 
@@ -1495,13 +1782,16 @@ jobs:
                   state.queue = [];
                   state.current = null;
                   state.starting = false;
+                  state.failedTracks = 0;
+
+                  clearPlayTimer(state);
 
                   if (state.player) {
                     await state.player.stopTrack();
                   }
 
                   return message.reply(
-                    '⏹️ Đã dừng và xóa hàng chờ.'
+                    '⏹️ Đã dừng và xóa queue.'
                   );
                 }
 
@@ -1511,6 +1801,9 @@ jobs:
                   state.queue = [];
                   state.current = null;
                   state.starting = false;
+                  state.failedTracks = 0;
+
+                  clearPlayTimer(state);
 
                   if (state.player) {
                     await shoukaku.leaveVoiceChannel(
@@ -1521,13 +1814,14 @@ jobs:
                   state.player = null;
 
                   return message.reply(
-                    '👋 Đã rời voice channel.'
+                    '👋 Đã rời voice.'
                   );
                 }
 
                 case 'volume':
                 case 'v': {
-                  const volume = Number(args);
+                  const volume =
+                    Number(args);
 
                   if (
                     !args ||
@@ -1549,7 +1843,7 @@ jobs:
                   }
 
                   return message.reply(
-                    '🔊 Âm lượng: ' +
+                    '🔊 Volume: ' +
                     volume +
                     '%'
                   );
@@ -1560,9 +1854,9 @@ jobs:
                   return message.reply(
                     state.current
                       ? '🎵 Hiện tại: **' +
-                        trackTitle(state.current) +
+                        title(state.current) +
                         '**'
-                      : '🎵 Không có bài nào đang phát.'
+                      : '🎵 Không có bài đang phát.'
                   );
                 }
 
@@ -1571,23 +1865,23 @@ jobs:
                   const lines = state.queue
                     .slice(0, 20)
                     .map(
-                      (t, i) =>
-                        `${i + 1}. ${trackTitle(t)}`
+                      (track, i) =>
+                        `${i + 1}. ${title(track)}`
                     );
 
                   return message.reply(
-                    '🎶 **Hàng chờ**\n' +
+                    '🎶 **Queue**\n' +
                     (
                       state.current
-                        ? 'Đang phát: **' +
-                          trackTitle(state.current) +
+                        ? 'Hiện tại: **' +
+                          title(state.current) +
                           '**\n'
                         : ''
                     ) +
                     (
                       lines.length
                         ? lines.join('\n')
-                        : 'Không có bài chờ.'
+                        : 'Queue trống.'
                     )
                   );
                 }
@@ -1606,23 +1900,25 @@ jobs:
                   );
                 }
               }
+
             } catch (error) {
               logError(
-                'MUSIC COMMAND: ' + command,
+                'MUSIC COMMAND ' + command,
                 error
               );
 
-              await message.reply(
+              return message.reply(
                 '❌ Music lỗi: ' +
-                String(error.message || error)
-                  .slice(0, 1200)
+                String(
+                  error.message || error
+                ).slice(0, 1200)
               );
             }
           }
 
-          // =========================================================
+          // =====================================================
           // AI COMMANDS
-          // =========================================================
+          // =====================================================
 
           async function aiCommand(
             message,
@@ -1638,13 +1934,14 @@ jobs:
                     );
                   }
 
-                  const data = await firecrawl(
-                    'search',
-                    {
-                      query: args,
-                      limit: 5
-                    }
-                  );
+                  const data =
+                    await firecrawl(
+                      'search',
+                      {
+                        query: args,
+                        limit: 5
+                      }
+                    );
 
                   const results = (
                     data.data || []
@@ -1663,19 +1960,24 @@ jobs:
                 }
 
                 case 'read': {
-                  if (!/^https?:\/\//i.test(args)) {
+                  if (
+                    !/^https?:\/\//i.test(args)
+                  ) {
                     return message.reply(
                       'Dùng: `d.read <URL>`'
                     );
                   }
 
-                  const data = await firecrawl(
-                    'scrape',
-                    {
-                      url: args,
-                      formats: ['markdown']
-                    }
-                  );
+                  const data =
+                    await firecrawl(
+                      'scrape',
+                      {
+                        url: args,
+                        formats: [
+                          'markdown'
+                        ]
+                      }
+                    );
 
                   const markdown =
                     data.data?.markdown ||
@@ -1688,11 +1990,15 @@ jobs:
                     );
                   }
 
-                  const summary = await askAI(
-                    message,
-                    'Tóm tắt nội dung trang web sau:\n\n' +
-                    markdown.slice(0, 14000)
-                  );
+                  const summary =
+                    await askAI(
+                      message,
+                      'Tóm tắt nội dung:\n\n' +
+                      markdown.slice(
+                        0,
+                        14000
+                      )
+                    );
 
                   return replyLong(
                     message,
@@ -1712,8 +2018,10 @@ jobs:
                     'bot_memories',
                     {},
                     {
-                      user_id: message.author.id,
-                      guild_id: message.guild.id,
+                      user_id:
+                        message.author.id,
+                      guild_id:
+                        message.guild.id,
                       content: args
                     }
                   );
@@ -1724,10 +2032,11 @@ jobs:
                 }
 
                 case 'memory': {
-                  const rows = await getMemories(
-                    message.author.id,
-                    message.guild.id
-                  );
+                  const rows =
+                    await getMemories(
+                      message.author.id,
+                      message.guild.id
+                    );
 
                   return replyLong(
                     message,
@@ -1747,14 +2056,16 @@ jobs:
                     'bot_memories',
                     {
                       user_id:
-                        'eq.' + message.author.id,
+                        'eq.' +
+                        message.author.id,
                       guild_id:
-                        'eq.' + message.guild.id
+                        'eq.' +
+                        message.guild.id
                     }
                   );
 
                   return message.reply(
-                    '🗑️ Đã xóa bộ nhớ của bro trong server này.'
+                    '🗑️ Đã xóa bộ nhớ.'
                   );
                 }
 
@@ -1764,10 +2075,11 @@ jobs:
                     args
                   ].filter(Boolean).join(' ');
 
-                  const answer = await askAI(
-                    message,
-                    question
-                  );
+                  const answer =
+                    await askAI(
+                      message,
+                      question
+                    );
 
                   return replyLong(
                     message,
@@ -1777,31 +2089,24 @@ jobs:
               }
             } catch (error) {
               logError(
-                'AI COMMAND: ' + command,
+                'AI COMMAND ' + command,
                 error
               );
 
               return message.reply(
                 '❌ Lỗi: ' +
-                String(error.message || error)
-                  .slice(0, 1000)
+                String(
+                  error.message || error
+                ).slice(0, 1000)
               );
             }
           }
 
-          // =========================================================
+          // =====================================================
           // MESSAGE ROUTER
-          // =========================================================
+          // =====================================================
 
-          const AI_COMMANDS = new Set([
-            'search',
-            'read',
-            'remember',
-            'memory',
-            'forget'
-          ]);
-
-          const TRIGGER_WORDS = [
+          const KEYWORDS = [
             'thgadu',
             'thg adu',
             'đú à',
@@ -1822,9 +2127,13 @@ jobs:
                 const content =
                   message.content.trim();
 
-                if (content.startsWith(PREFIX)) {
+                if (
+                  content.startsWith(PREFIX)
+                ) {
                   const body = content
-                    .slice(PREFIX.length)
+                    .slice(
+                      PREFIX.length
+                    )
                     .trim();
 
                   if (!body) {
@@ -1839,17 +2148,24 @@ jobs:
                   const command = (
                     space === -1
                       ? body
-                      : body.slice(0, space)
+                      : body.slice(
+                          0,
+                          space
+                        )
                   ).toLowerCase();
 
                   const args = (
                     space === -1
                       ? ''
-                      : body.slice(space + 1)
+                      : body.slice(
+                          space + 1
+                        )
                   ).trim();
 
                   if (
-                    MUSIC_COMMANDS.has(command)
+                    MUSIC_COMMANDS.has(
+                      command
+                    )
                   ) {
                     await musicCommand(
                       message,
@@ -1870,25 +2186,26 @@ jobs:
                 }
 
                 const mentioned =
-                  client.user &&
                   message.mentions.has(
                     client.user.id
                   );
 
                 let repliedToBot = false;
 
-                if (message.reference?.messageId) {
+                if (
+                  message.reference?.messageId
+                ) {
                   try {
-                    const referenced =
+                    const reference =
                       await message.channel.messages.fetch(
                         message.reference.messageId
                       );
 
                     repliedToBot =
-                      referenced.author.id ===
+                      reference.author.id ===
                       client.user.id;
                   } catch {
-                    // Referenced message unavailable.
+                    // Ignore missing message.
                   }
                 }
 
@@ -1896,8 +2213,11 @@ jobs:
                   content.toLowerCase();
 
                 const keyword =
-                  TRIGGER_WORDS.some(
-                    word => lower.includes(word)
+                  KEYWORDS.some(
+                    word =>
+                      lower.includes(
+                        word
+                      )
                   );
 
                 const random =
@@ -1922,15 +2242,17 @@ jobs:
 
                 if (!question) return;
 
-                const answer = await askAI(
-                  message,
-                  question
-                );
+                const answer =
+                  await askAI(
+                    message,
+                    question
+                  );
 
                 await replyLong(
                   message,
                   answer
                 );
+
               } catch (error) {
                 logError(
                   'MESSAGE HANDLER',
@@ -1940,12 +2262,14 @@ jobs:
             }
           );
 
-          // =========================================================
+          // =====================================================
           // AUTO CHAT
-          // =========================================================
+          // =====================================================
 
           async function autoChat() {
-            if (!CONFIG.autoChannel) return;
+            if (!CONFIG.autoChannel) {
+              return;
+            }
 
             try {
               const channel =
@@ -1953,7 +2277,10 @@ jobs:
                   CONFIG.autoChannel
                 );
 
-              if (!channel?.isTextBased()) {
+              if (
+                !channel ||
+                !channel.isTextBased()
+              ) {
                 return;
               }
 
@@ -1964,14 +2291,18 @@ jobs:
               console.log(
                 '✅ Auto-chat sent'
               );
+
             } catch (error) {
-              logError('AUTO CHAT', error);
+              logError(
+                'AUTO CHAT',
+                error
+              );
             }
           }
 
-          // =========================================================
-          // START
-          // =========================================================
+          // =====================================================
+          // READY
+          // =====================================================
 
           client.once(
             Events.ClientReady,
@@ -1987,21 +2318,30 @@ jobs:
                   {
                     name:
                       'drama trong server 🍿',
-                    type: ActivityType.Watching
+                    type:
+                      ActivityType.Watching
                   }
                 ]
               });
 
               console.log(
-                '✅ Random reply: 20%'
+                '🎵 Music: Lavalink'
               );
 
               console.log(
-                '✅ Auto-chat interval: 2 hours'
+                '🎵 YouTube plugin: 1.18.2'
               );
 
               console.log(
-                '✅ Debug logging enabled'
+                '🎵 Search: YouTube Music + YouTube'
+              );
+
+              console.log(
+                '🤖 Random replies: 20%'
+              );
+
+              console.log(
+                '⏰ Auto-chat: 2 hours'
               );
 
               setInterval(
@@ -2013,61 +2353,52 @@ jobs:
 
           if (!CONFIG.token) {
             console.error(
-              '❌ Missing TOKEN secret'
+              '❌ Missing TOKEN'
             );
 
             process.exit(1);
           }
 
-          client.login(CONFIG.token);
+          client.login(
+            CONFIG.token
+          );
           EOF
 
           node --check index.js
 
-          echo "✅ Bot source generated successfully"
+          echo "✅ ThgAdu v5.2 generated"
 
-      - name: Run Bot With Live Lavalink Logs
+      - name: Run ThgAdu
         shell: bash
         run: |
           set -o pipefail
 
-          echo "===================================="
-          echo "🚀 STARTING THGADU V5.1 DEBUG"
-          echo "===================================="
+          echo "================================"
+          echo "🚀 THGADU V5.2"
+          echo "================================"
 
-          echo "Node version:"
-          node --version
-
-          echo "Java version:"
-          java -version
+          echo "YouTube Plugin: 1.18.2"
+          echo "YouTube Music: Enabled"
+          echo "YouTube Search: Enabled"
 
           echo ""
-          echo "===== INITIAL LAVALINK LOG ====="
-          tail -n 40 lavalink-console.log || true
+          echo "===== LAVALINK STARTUP LOG ====="
+
+          tail -n 50 lavalink.log || true
 
           echo ""
-          echo "===== START LIVE LAVALINK LOGGING ====="
+          echo "===== LIVE LAVALINK LOG ====="
 
-          (
-            tail -n 0 -F lavalink-console.log \
-              | while IFS= read -r line; do
-                  case "$line" in
-                    *ERROR*|*WARN*|*Exception*|*exception*|*Failed*|*failed*|*403*|*429*|*bot*|*Bot*|*youtube*|*YouTube*|*Youtube*|*mismatch*|*DAVE*)
-                      printf '[LAVALINK] %s\n' "$line"
-                      ;;
-                  esac
-                done
-          ) &
+          tail -n 0 -F lavalink.log \
+            | sed -u 's/^/[LAVALINK] /' &
 
           LOG_PID=$!
 
           cleanup() {
             echo ""
-            echo "===================================="
-            echo "===== FINAL LAVALINK DEBUG LOG ====="
-            echo "===================================="
+            echo "===== FINAL LAVALINK LOG ====="
 
-            tail -n 200 lavalink-console.log || true
+            tail -n 150 lavalink.log || true
 
             kill "$LOG_PID" 2>/dev/null || true
           }
@@ -2075,7 +2406,7 @@ jobs:
           trap cleanup EXIT
 
           echo ""
-          echo "===== BOT START ====="
+          echo "===== BOT ====="
 
           npm start
 
@@ -2083,10 +2414,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: thgadu-lavalink-debug
+          name: thgadu-v5-2-debug
           path: |
-            lavalink-console.log
-            lavalink/logs/
-            youtube-test.json
+            lavalink.log
+            ytm-test.json
+            yt-test.json
           retention-days: 3
           if-no-files-found: ignore
