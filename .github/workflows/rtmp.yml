@@ -1,0 +1,113 @@
+name: RTMP test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Start MediaMTX and tunnels
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        shell: bash
+        run: |
+          set -eu
+
+          if [ -z "$NGROK_AUTHTOKEN" ]; then
+            echo "Chưa có secret NGROK_AUTHTOKEN."
+            exit 1
+          fi
+
+          # MediaMTX nhận RTMP ở 1935, phục vụ HLS ở 8888.
+          docker run -d --name mediamtx \
+            -p 1935:1935 \
+            -p 8888:8888 \
+            bluenviron/mediamtx:latest
+
+          # Tải ngrok.
+          curl -fL \
+            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+            -o /tmp/ngrok.tgz
+          tar -xzf /tmp/ngrok.tgz -C /tmp
+
+          # Tải cloudflared cho HLS đầu ra.
+          curl -fL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+
+          # Public cổng RTMP bằng ngrok.
+          /tmp/ngrok tcp 1935 --log stdout > /tmp/ngrok.log 2>&1 &
+          NGROK_PID=$!
+
+          # Public HTTP HLS bằng Cloudflare Quick Tunnel.
+          /tmp/cloudflared tunnel --url http://localhost:8888 \
+            > /tmp/cloudflared.log 2>&1 &
+          CF_PID=$!
+
+          cleanup() {
+            kill "$NGROK_PID" "$CF_PID" 2>/dev/null || true
+            docker rm -f mediamtx >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          RTMP_ADDR=""
+          HLS_HOST=""
+
+          echo "Đang chờ hai tunnel khởi động..."
+
+          for i in $(seq 1 60); do
+            if [ -z "$RTMP_ADDR" ]; then
+              RTMP_ADDR=$(curl -fsS http://127.0.0.1:4040/api/tunnels 2>/dev/null \
+                | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((t["public_url"].removeprefix("tcp://") for t in d["tunnels"] if t["public_url"].startswith("tcp://")), ""))' \
+                2>/dev/null || true)
+            fi
+
+            if [ -z "$HLS_HOST" ]; then
+              HLS_HOST=$(grep -oE \
+                'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+                /tmp/cloudflared.log | head -n 1 || true)
+            fi
+
+            if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_HOST" ]; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_HOST" ]; then
+            echo "Không mở được tunnel."
+            echo "=== ngrok log ==="
+            cat /tmp/ngrok.log
+            echo "=== cloudflared log ==="
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+          echo ""
+          echo "========== CẤU HÌNH OBS =========="
+          echo "Server:     rtmp://$RTMP_ADDR/live"
+          echo "Stream Key: stream"
+          echo ""
+          echo "========== LINK VLC =============="
+          echo "$HLS_HOST/live/stream/index.m3u8"
+          echo "=================================="
+          echo "Bắt đầu OBS, chờ vài giây rồi mở link VLC."
+          echo "Workflow tự dừng sau tối đa 30 phút."
+
+          # Giữ runner sống và dừng nếu tunnel chết.
+          while kill -0 "$NGROK_PID" 2>/dev/null \
+            && kill -0 "$CF_PID" 2>/dev/null; do
+            sleep 5
+          done
+
+          echo "Một tunnel đã dừng."
+          echo "=== ngrok log ==="
+          cat /tmp/ngrok.log
+          echo "=== cloudflared log ==="
+          cat /tmp/cloudflared.log
+          exit 1
