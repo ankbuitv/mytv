@@ -1,4 +1,4 @@
-name: RTMP test bore
+name: RTMP and IPTV reproxy test
 
 on:
   workflow_dispatch:
@@ -13,105 +13,121 @@ jobs:
         shell: bash
         run: |
           set -eu
-
-          # Runner Ubuntu thường đã có Rust/Cargo.
-          cargo --version
-
-          # Cài bore vào thư mục tạm của runner.
           cargo install --locked bore-cli --root /tmp/bore-install
 
-      - name: Start MediaMTX and tunnels
+      - name: Start MediaMTX and bore tunnels
         shell: bash
         run: |
           set -eu
 
+          # Tạo thông tin đăng nhập mới cho mỗi lần chạy.
+          PUB_PASS=$(openssl rand -hex 16)
+          READ_PASS=$(openssl rand -hex 16)
+
+          # Chỉ cho publish và đọc đúng path live/channel.
+          cat > /tmp/mediamtx.yml <<EOF
+          authMethod: internal
+
+          authInternalUsers:
+            - user: publisher
+              pass: "$PUB_PASS"
+              permissions:
+                - action: publish
+                  path: live/channel
+
+            - user: viewer
+              pass: "$READ_PASS"
+              permissions:
+                - action: read
+                  path: live/channel
+          EOF
+
           docker run -d --name mediamtx \
             -p 1935:1935 \
             -p 8888:8888 \
+            -v /tmp/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:latest
 
-          curl -fL \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o /tmp/cloudflared
-
-          chmod +x /tmp/cloudflared
-
           cleanup() {
-            kill "${BORE_PID:-}" "${CF_PID:-}" 2>/dev/null || true
+            kill "${RTMP_PID:-}" "${HLS_PID:-}" 2>/dev/null || true
             docker rm -f mediamtx >/dev/null 2>&1 || true
+            rm -f /tmp/mediamtx.yml
           }
           trap cleanup EXIT
 
-          # Đưa cổng RTMP lên bore.pub.
+          # Tunnel 1: OBS đẩy RTMP vào.
           /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/bore.log 2>&1 &
-          BORE_PID=$!
+            > /tmp/bore-rtmp.log 2>&1 &
+          RTMP_PID=$!
 
-          # Public HLS đầu ra để xem bằng VLC.
-          /tmp/cloudflared tunnel --url http://localhost:8888 \
-            > /tmp/cloudflared.log 2>&1 &
-          CF_PID=$!
+          # Tunnel 2: IPTV reproxy kéo HLS.
+          /tmp/bore-install/bin/bore local 8888 --to bore.pub \
+            > /tmp/bore-hls.log 2>&1 &
+          HLS_PID=$!
 
           RTMP_ADDR=""
-          HLS_HOST=""
+          HLS_ADDR=""
 
-          echo "Đang chờ bore và Cloudflare Tunnel..."
+          echo "Đang chờ hai bore tunnel..."
 
           for i in $(seq 1 60); do
             if [ -z "$RTMP_ADDR" ]; then
               RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/bore.log | head -n 1 || true)
+                /tmp/bore-rtmp.log | head -n 1 || true)
             fi
 
-            if [ -z "$HLS_HOST" ]; then
-              HLS_HOST=$(grep -oE \
-                'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
-                /tmp/cloudflared.log | head -n 1 || true)
+            if [ -z "$HLS_ADDR" ]; then
+              HLS_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
+                /tmp/bore-hls.log | head -n 1 || true)
             fi
 
-            if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_HOST" ]; then
+            if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_ADDR" ]; then
               break
             fi
 
-            if ! kill -0 "$BORE_PID" 2>/dev/null \
-              || ! kill -0 "$CF_PID" 2>/dev/null; then
+            if ! kill -0 "$RTMP_PID" 2>/dev/null \
+              || ! kill -0 "$HLS_PID" 2>/dev/null; then
               break
             fi
 
             sleep 1
           done
 
-          if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_HOST" ]; then
-            echo "Không mở được tunnel."
-            echo "=== bore log ==="
-            cat /tmp/bore.log
-            echo "=== cloudflared log ==="
-            cat /tmp/cloudflared.log
+          if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_ADDR" ]; then
+            echo "Không mở được cả hai tunnel."
+            echo "=== RTMP tunnel ==="
+            cat /tmp/bore-rtmp.log
+            echo "=== HLS tunnel ==="
+            cat /tmp/bore-hls.log
+            echo "=== MediaMTX ==="
+            docker logs mediamtx
             exit 1
           fi
 
-          # Đường dẫn ngẫu nhiên để tránh dùng stream key dễ đoán.
-          STREAM_KEY=$(openssl rand -hex 12)
-
           echo ""
-          echo "========== CẤU HÌNH OBS =========="
+          echo "========= CẤU HÌNH OBS ========="
           echo "Server:     rtmp://$RTMP_ADDR/live"
-          echo "Stream Key: $STREAM_KEY"
+          echo "Stream Key: channel?user=publisher&pass=$PUB_PASS"
           echo ""
-          echo "========== LINK VLC =============="
-          echo "$HLS_HOST/live/$STREAM_KEY/index.m3u8"
-          echo "=================================="
-          echo "Bắt đầu OBS, chờ vài giây rồi mở link VLC."
+          echo "========= NGUỒN IPTV REPROXY ========="
+          echo "URL:      http://$HLS_ADDR/live/channel/index.m3u8"
+          echo "Username: viewer"
+          echo "Password: $READ_PASS"
+          echo "======================================"
+          echo "Chạy OBS trước, chờ vài giây rồi thử kéo HLS."
           echo "Workflow tự dừng sau tối đa 30 phút."
 
-          while kill -0 "$BORE_PID" 2>/dev/null \
-            && kill -0 "$CF_PID" 2>/dev/null; do
+          while kill -0 "$RTMP_PID" 2>/dev/null \
+            && kill -0 "$HLS_PID" 2>/dev/null \
+            && [ "$(docker inspect -f '{{.State.Running}}' mediamtx)" = "true" ]; do
             sleep 5
           done
 
-          echo "Một tunnel đã dừng."
-          echo "=== bore log ==="
-          cat /tmp/bore.log
-          echo "=== cloudflared log ==="
-          cat /tmp/cloudflared.log
+          echo "Tunnel hoặc MediaMTX đã dừng."
+          echo "=== RTMP tunnel ==="
+          cat /tmp/bore-rtmp.log
+          echo "=== HLS tunnel ==="
+          cat /tmp/bore-hls.log
+          echo "=== MediaMTX ==="
+          docker logs mediamtx
           exit 1
