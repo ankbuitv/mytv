@@ -1,4 +1,4 @@
-name: IPTV HLS origin
+name: IPTV named tunnel test
 
 on:
   workflow_dispatch:
@@ -6,9 +6,8 @@ on:
 permissions:
   contents: read
 
-# Tránh hai phiên cùng chạy gây nhầm địa chỉ.
 concurrency:
-  group: iptv-origin
+  group: iptv-named-tunnel
   cancel-in-progress: false
 
 jobs:
@@ -17,21 +16,36 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Install bore
+      - name: Install tools
         shell: bash
         run: |
           set -eu
+
+          sudo apt-get update
+          sudo apt-get install -y nginx
+
           cargo install --locked bore-cli --root /tmp/bore-install
 
-      - name: Start RTMP and HLS origin
+          curl -fL --retry 3 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+
+          chmod +x /tmp/cloudflared
+
+      - name: Start stream
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
+          TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
+          TUNNEL_ID: ${{ vars.TUNNEL_ID }}
         shell: bash
         run: |
           set -eu
+          umask 077
 
-          if [ -z "$PUBLISH_PASSWORD" ]; then
-            echo "Thiếu GitHub secret PUBLISH_PASSWORD."
+          if [ -z "$PUBLISH_PASSWORD" ] || \
+             [ -z "$TUNNEL_CREDENTIALS" ] || \
+             [ -z "$TUNNEL_ID" ]; then
+            echo "Thiếu PUBLISH_PASSWORD, TUNNEL_CREDENTIALS hoặc TUNNEL_ID."
             exit 1
           fi
 
@@ -40,16 +54,33 @@ jobs:
             exit 1
           fi
 
+          if ! [[ "$TUNNEL_ID" =~ ^[a-fA-F0-9-]+$ ]]; then
+            echo "TUNNEL_ID không đúng định dạng."
+            exit 1
+          fi
+
+          mkdir -p /tmp/iptv
+
           cleanup() {
-            [ -z "${LOG_PID:-}" ] || kill "$LOG_PID" 2>/dev/null || true
-            [ -z "${RTMP_PID:-}" ] || kill "$RTMP_PID" 2>/dev/null || true
-            [ -z "${HLS_PID:-}" ] || kill "$HLS_PID" 2>/dev/null || true
-            docker rm -f iptv-origin >/dev/null 2>&1 || true
-            rm -f /tmp/iptv-mediamtx.yml
+            for pid in \
+              "${LOG_PID:-}" \
+              "${BORE_PID:-}" \
+              "${CF_PID:-}" \
+              "${NGINX_PID:-}"
+            do
+              if [ -n "$pid" ]; then
+                kill "$pid" 2>/dev/null || true
+              fi
+            done
+
+            docker rm -f iptv-mediamtx >/dev/null 2>&1 || true
+            rm -rf /tmp/iptv
           }
           trap cleanup EXIT
 
-          cat > /tmp/iptv-mediamtx.yml <<EOF
+          printf '%s' "$TUNNEL_CREDENTIALS" > /tmp/iptv/credentials.json
+
+          cat > /tmp/iptv/mediamtx.yml <<EOF
           authMethod: internal
 
           authInternalUsers:
@@ -72,62 +103,95 @@ jobs:
             live/channel:
           EOF
 
-          docker run -d --name iptv-origin \
+          docker run -d --name iptv-mediamtx \
             -p 127.0.0.1:1935:1935 \
             -p 127.0.0.1:8888:8888 \
-            -v /tmp/iptv-mediamtx.yml:/mediamtx.yml:ro \
+            -v /tmp/iptv/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:1.21.3
 
-          /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/bore-rtmp.log 2>&1 &
-          RTMP_PID=$!
+          # Nginx ánh xạ đường dẫn công khai sang HLS MediaMTX.
+          cat > /tmp/iptv/nginx.conf <<'EOF'
+          worker_processes 1;
+          error_log /tmp/iptv/nginx-error.log warn;
+          pid /tmp/iptv/nginx.pid;
 
-          /tmp/bore-install/bin/bore local 8888 --to bore.pub \
-            > /tmp/bore-hls.log 2>&1 &
-          HLS_PID=$!
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              access_log off;
+
+              server {
+                  listen 127.0.0.1:8080;
+
+                  location = /livestream01/manifest.m3u8 {
+                      proxy_pass http://127.0.0.1:8888/live/channel/index.m3u8;
+                      proxy_set_header Host $host;
+                      proxy_redirect /live/channel/ /livestream01/;
+                      proxy_buffering off;
+                  }
+
+                  location /livestream01/ {
+                      proxy_pass http://127.0.0.1:8888/live/channel/;
+                      proxy_set_header Host $host;
+                      proxy_redirect /live/channel/ /livestream01/;
+                      proxy_buffering off;
+                  }
+
+                  location / {
+                      return 404;
+                  }
+              }
+          }
+          EOF
+
+          nginx -t -c /tmp/iptv/nginx.conf
+          nginx -c /tmp/iptv/nginx.conf -g 'daemon off;' &
+          NGINX_PID=$!
+
+          # Locally managed named tunnel.
+          cat > /tmp/iptv/cloudflared.yml <<EOF
+          tunnel: $TUNNEL_ID
+          credentials-file: /tmp/iptv/credentials.json
+
+          ingress:
+            - hostname: ott0.ankworks.bond
+              service: http://localhost:8080
+            - service: http_status:404
+          EOF
+
+          /tmp/cloudflared \
+            --config /tmp/iptv/cloudflared.yml \
+            tunnel run \
+            > /tmp/iptv/cloudflared.log 2>&1 &
+          CF_PID=$!
+
+          # Cổng RTMP public qua bore.
+          /tmp/bore-install/bin/bore local 1935 --to bore.pub \
+            > /tmp/iptv/bore.log 2>&1 &
+          BORE_PID=$!
 
           RTMP_ADDR=""
-          HLS_ADDR=""
-
-          echo "Đang chờ bore cấp hai địa chỉ..."
 
           for i in $(seq 1 60); do
-            if [ -z "$RTMP_ADDR" ]; then
-              RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/bore-rtmp.log | head -n 1 || true)
-            fi
+            RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
+              /tmp/iptv/bore.log | head -n 1 || true)
 
-            if [ -z "$HLS_ADDR" ]; then
-              HLS_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/bore-hls.log | head -n 1 || true)
-            fi
-
-            if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_ADDR" ]; then
+            if [ -n "$RTMP_ADDR" ]; then
               break
             fi
 
-            if ! kill -0 "$RTMP_PID" 2>/dev/null \
-              || ! kill -0 "$HLS_PID" 2>/dev/null; then
+            if ! kill -0 "$BORE_PID" 2>/dev/null; then
               break
             fi
 
             sleep 1
           done
 
-          if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_ADDR" ]; then
-            echo "Không mở được tunnel."
-            echo "=== bore RTMP ==="
-            cat /tmp/bore-rtmp.log
-            echo "=== bore HLS ==="
-            cat /tmp/bore-hls.log
-            echo "=== MediaMTX ==="
-            docker logs iptv-origin
-            exit 1
-          fi
-
-          if [ "$(docker inspect -f '{{.State.Running}}' iptv-origin)" != "true" ]; then
-            echo "MediaMTX không chạy:"
-            docker logs iptv-origin
+          if [ -z "$RTMP_ADDR" ]; then
+            echo "Không mở được bore:"
+            cat /tmp/iptv/bore.log
             exit 1
           fi
 
@@ -136,27 +200,29 @@ jobs:
           echo "Server: rtmp://$RTMP_ADDR/live"
           echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
           echo ""
-          echo "========= HLS ORIGIN CHO WORKER ========="
-          echo "http://$HLS_ADDR/live/channel/index.m3u8"
-          echo "========================================="
-          echo "Bật OBS, đợi HLS tạo segment rồi test."
-          echo "Workflow chạy tối đa 45 phút."
+          echo "========= HLS ========="
+          echo "https://ott0.ankworks.bond/livestream01/manifest.m3u8"
+          echo "======================="
+          echo "Đợi tunnel kết nối, bật OBS rồi thử link HLS."
 
           echo "=== MediaMTX log ==="
-          docker logs -f iptv-origin &
+          docker logs -f iptv-mediamtx &
           LOG_PID=$!
 
-          while kill -0 "$RTMP_PID" 2>/dev/null \
-            && kill -0 "$HLS_PID" 2>/dev/null \
-            && [ "$(docker inspect -f '{{.State.Running}}' iptv-origin)" = "true" ]; do
+          while kill -0 "$BORE_PID" 2>/dev/null \
+            && kill -0 "$CF_PID" 2>/dev/null \
+            && kill -0 "$NGINX_PID" 2>/dev/null \
+            && [ "$(docker inspect -f '{{.State.Running}}' iptv-mediamtx)" = "true" ]; do
             sleep 5
           done
 
-          echo "Một tunnel hoặc MediaMTX đã dừng."
-          echo "=== bore RTMP ==="
-          cat /tmp/bore-rtmp.log
-          echo "=== bore HLS ==="
-          cat /tmp/bore-hls.log
+          echo "Một thành phần đã dừng."
+          echo "=== bore ==="
+          cat /tmp/iptv/bore.log
+          echo "=== cloudflared ==="
+          cat /tmp/iptv/cloudflared.log
+          echo "=== nginx ==="
+          cat /tmp/iptv/nginx-error.log
           echo "=== MediaMTX ==="
-          docker logs iptv-origin
+          docker logs iptv-mediamtx
           exit 1
