@@ -1,4 +1,4 @@
-name: IPTV RTMP test
+name: IPTV multi bitrate test
 
 on:
   workflow_dispatch:
@@ -9,13 +9,17 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Install bore
+      - name: Install tools
         shell: bash
         run: |
           set -eu
+
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg nginx librsvg2-bin
+
           cargo install --locked bore-cli --root /tmp/bore-install
 
-      - name: Start MediaMTX and tunnels
+      - name: Start IPTV channel
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
         shell: bash
@@ -27,29 +31,53 @@ jobs:
             exit 1
           fi
 
-          # Chỉ chấp nhận chữ và số để tránh lỗi YAML/URL.
           if ! [[ "$PUBLISH_PASSWORD" =~ ^[a-zA-Z0-9]+$ ]]; then
             echo "PUBLISH_PASSWORD chỉ được gồm chữ và số."
             exit 1
           fi
 
+          mkdir -p /tmp/tv/assets /tmp/tv/www
+
           cleanup() {
-            if [ -n "${LOG_PID:-}" ]; then
-              kill "$LOG_PID" 2>/dev/null || true
-            fi
-            if [ -n "${RTMP_PID:-}" ]; then
-              kill "$RTMP_PID" 2>/dev/null || true
-            fi
-            if [ -n "${HLS_PID:-}" ]; then
-              kill "$HLS_PID" 2>/dev/null || true
-            fi
+            for pid in \
+              "${FF_LOOP_PID:-}" \
+              "${RTMP_PID:-}" \
+              "${HLS_PID:-}" \
+              "${NGINX_PID:-}" \
+              "${LOG_PID:-}"
+            do
+              if [ -n "$pid" ]; then
+                kill "$pid" 2>/dev/null || true
+              fi
+            done
+
             docker rm -f mediamtx >/dev/null 2>&1 || true
-            rm -f /tmp/mediamtx.yml
+            rm -f /tmp/tv/mediamtx.yml
           }
+
           trap cleanup EXIT
 
-          # Publish cần mật khẩu; xem HLS không cần đăng nhập.
-          cat > /tmp/mediamtx.yml <<EOF
+          echo "Đang tải logo và QR..."
+
+          curl -fL \
+            "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg" \
+            -o /tmp/tv/assets/logo.svg
+
+          curl -fL \
+            "https://i.ibb.co/JFwFnKZ9/download.png" \
+            -o /tmp/tv/assets/qr.png
+
+          # Chuyển SVG sang PNG để FFmpeg xử lý ổn định hơn.
+          rsvg-convert \
+            -w 140 \
+            -o /tmp/tv/assets/logo.png \
+            /tmp/tv/assets/logo.svg
+
+          # MediaMTX:
+          # - OBS publish vào live/channel bằng password.
+          # - FFmpeg publish 2 bản vào out/720 và out/1080.
+          # - Các path được đọc công khai.
+          cat > /tmp/tv/mediamtx.yml <<EOF
           authMethod: internal
 
           authInternalUsers:
@@ -58,46 +86,105 @@ jobs:
               permissions:
                 - action: publish
                   path: live/channel
+                - action: publish
+                  path: out/720
+                - action: publish
+                  path: out/1080
 
             - user: any
-              pass: 
+              pass:
               permissions:
                 - action: read
                   path: live/channel
+                - action: read
+                  path: out/720
+                - action: read
+                  path: out/1080
+
+          hlsAlwaysRemux: yes
+
           paths:
             live/channel:
+            out/720:
+            out/1080:
           EOF
 
           docker run -d --name mediamtx \
             -p 127.0.0.1:1935:1935 \
             -p 127.0.0.1:8888:8888 \
-            -v /tmp/mediamtx.yml:/mediamtx.yml:ro \
+            -v /tmp/tv/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:latest
 
-          # Tunnel OBS → MediaMTX.
+          # Playlist master để IPTV chọn 720p hoặc 1080p.
+          cat > /tmp/tv/www/index.m3u8 <<'EOF'
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=3200000,RESOLUTION=1280x720
+          /out/720/index.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=5700000,RESOLUTION=1920x1080
+          /out/1080/index.m3u8
+          EOF
+
+          # Nginx phục vụ master playlist và proxy các playlist/segment
+          # của MediaMTX. Chỉ nghe localhost; bore public cổng này.
+          cat > /tmp/tv/nginx.conf <<'EOF'
+          worker_processes 1;
+          error_log /tmp/tv/nginx-error.log warn;
+          pid /tmp/tv/nginx.pid;
+
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              access_log off;
+
+              server {
+                  listen 127.0.0.1:8080;
+
+                  location = /index.m3u8 {
+                      root /tmp/tv/www;
+                      default_type application/vnd.apple.mpegurl;
+                      add_header Cache-Control "no-cache";
+                  }
+
+                  location /out/ {
+                      proxy_pass http://127.0.0.1:8888;
+                      proxy_set_header Host $host;
+                      proxy_buffering off;
+                  }
+              }
+          }
+          EOF
+
+          nginx -t -c /tmp/tv/nginx.conf
+          nginx -c /tmp/tv/nginx.conf -g 'daemon off;' &
+          NGINX_PID=$!
+
+          # Tunnel 1: OBS gửi RTMP.
           /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/bore-rtmp.log 2>&1 &
+            > /tmp/tv/bore-rtmp.log 2>&1 &
           RTMP_PID=$!
 
-          # Tunnel IPTV → HLS MediaMTX.
-          /tmp/bore-install/bin/bore local 8888 --to bore.pub \
-            > /tmp/bore-hls.log 2>&1 &
+          # Tunnel 2: IPTV lấy master và các playlist/segment.
+          /tmp/bore-install/bin/bore local 8080 --to bore.pub \
+            > /tmp/tv/bore-hls.log 2>&1 &
           HLS_PID=$!
 
           RTMP_ADDR=""
           HLS_ADDR=""
 
-          echo "Đang chờ hai bore tunnel..."
+          echo "Đang chờ bore..."
 
           for i in $(seq 1 60); do
             if [ -z "$RTMP_ADDR" ]; then
               RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/bore-rtmp.log | head -n 1 || true)
+                /tmp/tv/bore-rtmp.log | head -n 1 || true)
             fi
 
             if [ -z "$HLS_ADDR" ]; then
               HLS_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/bore-hls.log | head -n 1 || true)
+                /tmp/tv/bore-hls.log | head -n 1 || true)
             fi
 
             if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_ADDR" ]; then
@@ -113,11 +200,11 @@ jobs:
           done
 
           if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_ADDR" ]; then
-            echo "Không mở được cả hai tunnel."
-            echo "=== RTMP tunnel ==="
-            cat /tmp/bore-rtmp.log
-            echo "=== HLS tunnel ==="
-            cat /tmp/bore-hls.log
+            echo "Không mở được cả hai bore tunnel."
+            echo "=== RTMP ==="
+            cat /tmp/tv/bore-rtmp.log
+            echo "=== HLS ==="
+            cat /tmp/tv/bore-hls.log
             echo "=== MediaMTX ==="
             docker logs mediamtx
             exit 1
@@ -127,30 +214,81 @@ jobs:
           echo "========= OBS ========="
           echo "Server: rtmp://$RTMP_ADDR/live"
           echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
-          echo "Thay MAT_KHAU_CUA_BRO bằng secret đã tạo."
           echo ""
           echo "========= IPTV / VLC ========="
-          echo "http://$HLS_ADDR/live/channel/index.m3u8"
-          echo "Không cần đăng nhập để xem."
+          echo "Master: http://$HLS_ADDR/index.m3u8"
+          echo "720p:   http://$HLS_ADDR/out/720/index.m3u8"
+          echo "1080p:  http://$HLS_ADDR/out/1080/index.m3u8"
           echo "=============================="
-          echo "Bật OBS trước, chờ vài giây rồi mở link HLS."
-          echo ""
-          echo "=== MediaMTX log ==="
+          echo "Bật OBS, sau đó chờ FFmpeg và HLS khởi động."
+          echo "Không gửi password vào chat hoặc chia sẻ log OBS."
 
+          echo "=== MediaMTX log ==="
           docker logs -f mediamtx &
           LOG_PID=$!
 
+          # FFmpeg thử kết nối lại khi OBS chưa lên hoặc ngắt.
+          # Không có fallback: khi OBS ngắt thì đầu ra cũng ngừng.
+          (
+            while true; do
+              echo ">>> FFmpeg: thử lấy nguồn OBS..."
+
+              ffmpeg -hide_banner -loglevel warning \
+                -i "rtmp://127.0.0.1:1935/live/channel" \
+                -loop 1 -framerate 30 -i /tmp/tv/assets/logo.png \
+                -loop 1 -framerate 30 -i /tmp/tv/assets/qr.png \
+                -filter_complex "\
+          [0:v]fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,\
+          pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[base];\
+          [1:v]scale=140:-1,format=rgba[logo];\
+          [2:v]scale=140:140,format=rgba[qr];\
+          [base][logo]overlay=\
+          x='if(lt(mod(t\,660)\,1)\,W-w-20+(1-mod(t\,660))*(w+20)\,W-w-20)':\
+          y='H-h-20':enable='lt(mod(t\,660)\,600)'[withlogo];\
+          [withlogo][qr]overlay=\
+          x='if(lt(mod(t\,660)-600\,1)\,W-w-20+(1-(mod(t\,660)-600))*(w+20)\,W-w-20)':\
+          y='H-h-20':enable='gte(mod(t\,660)\,600)'[composed];\
+          [composed]split=2[v1080in][v720in];\
+          [v1080in]format=yuv420p[v1080];\
+          [v720in]scale=1280:720,format=yuv420p[v720]" \
+                \
+                -map "[v720]" -map 0:a:0? \
+                -c:v libx264 -preset veryfast \
+                -b:v 2800k -maxrate 3000k -bufsize 6000k \
+                -g 60 -keyint_min 60 -sc_threshold 0 \
+                -c:a aac -b:a 128k \
+                -f flv \
+                "rtmp://127.0.0.1:1935/out/720?user=publisher&pass=$PUBLISH_PASSWORD" \
+                \
+                -map "[v1080]" -map 0:a:0? \
+                -c:v libx264 -preset veryfast \
+                -b:v 5000k -maxrate 5500k -bufsize 11000k \
+                -g 60 -keyint_min 60 -sc_threshold 0 \
+                -c:a aac -b:a 128k \
+                -f flv \
+                "rtmp://127.0.0.1:1935/out/1080?user=publisher&pass=$PUBLISH_PASSWORD" \
+                || true
+
+              echo ">>> FFmpeg dừng. Thử lại sau 5 giây..."
+              sleep 5
+            done
+          ) &
+          FF_LOOP_PID=$!
+
           while kill -0 "$RTMP_PID" 2>/dev/null \
             && kill -0 "$HLS_PID" 2>/dev/null \
+            && kill -0 "$NGINX_PID" 2>/dev/null \
             && [ "$(docker inspect -f '{{.State.Running}}' mediamtx)" = "true" ]; do
             sleep 5
           done
 
-          echo "Tunnel hoặc MediaMTX đã dừng."
+          echo "Tunnel, Nginx hoặc MediaMTX đã dừng."
           echo "=== RTMP tunnel ==="
-          cat /tmp/bore-rtmp.log
+          cat /tmp/tv/bore-rtmp.log
           echo "=== HLS tunnel ==="
-          cat /tmp/bore-hls.log
+          cat /tmp/tv/bore-hls.log
+          echo "=== Nginx ==="
+          cat /tmp/tv/nginx-error.log
           echo "=== MediaMTX ==="
           docker logs mediamtx
           exit 1
