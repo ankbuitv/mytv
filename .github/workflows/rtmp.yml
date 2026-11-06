@@ -64,6 +64,8 @@ jobs:
               permissions:
                 - action: read
                   path: live/channel
+          paths:
+            live/channel:
           EOF
 
           docker run -d --name mediamtx \
