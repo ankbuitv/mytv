@@ -1,4 +1,4 @@
-name: RTMP and IPTV reproxy test
+name: IPTV RTMP test
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Install bore
@@ -15,52 +15,69 @@ jobs:
           set -eu
           cargo install --locked bore-cli --root /tmp/bore-install
 
-      - name: Start MediaMTX and bore tunnels
+      - name: Start MediaMTX and tunnels
+        env:
+          PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
         shell: bash
         run: |
           set -eu
 
-          # Tạo thông tin đăng nhập mới cho mỗi lần chạy.
-          PUB_PASS=$(openssl rand -hex 16)
-          READ_PASS=$(openssl rand -hex 16)
+          if [ -z "$PUBLISH_PASSWORD" ]; then
+            echo "Thiếu GitHub secret PUBLISH_PASSWORD."
+            exit 1
+          fi
 
-          # Chỉ cho publish và đọc đúng path live/channel.
+          # Chỉ chấp nhận chữ và số để tránh lỗi YAML/URL.
+          if ! [[ "$PUBLISH_PASSWORD" =~ ^[a-zA-Z0-9]+$ ]]; then
+            echo "PUBLISH_PASSWORD chỉ được gồm chữ và số."
+            exit 1
+          fi
+
+          cleanup() {
+            if [ -n "${LOG_PID:-}" ]; then
+              kill "$LOG_PID" 2>/dev/null || true
+            fi
+            if [ -n "${RTMP_PID:-}" ]; then
+              kill "$RTMP_PID" 2>/dev/null || true
+            fi
+            if [ -n "${HLS_PID:-}" ]; then
+              kill "$HLS_PID" 2>/dev/null || true
+            fi
+            docker rm -f mediamtx >/dev/null 2>&1 || true
+            rm -f /tmp/mediamtx.yml
+          }
+          trap cleanup EXIT
+
+          # Publish cần mật khẩu; xem HLS không cần đăng nhập.
           cat > /tmp/mediamtx.yml <<EOF
           authMethod: internal
 
           authInternalUsers:
             - user: publisher
-              pass: "$PUB_PASS"
+              pass: "$PUBLISH_PASSWORD"
               permissions:
                 - action: publish
                   path: live/channel
 
-            - user: viewer
-              pass: "$READ_PASS"
+            - user: any
+              pass: any
               permissions:
                 - action: read
                   path: live/channel
           EOF
 
           docker run -d --name mediamtx \
-            -p 1935:1935 \
-            -p 8888:8888 \
+            -p 127.0.0.1:1935:1935 \
+            -p 127.0.0.1:8888:8888 \
             -v /tmp/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:latest
 
-          cleanup() {
-            kill "${RTMP_PID:-}" "${HLS_PID:-}" 2>/dev/null || true
-            docker rm -f mediamtx >/dev/null 2>&1 || true
-            rm -f /tmp/mediamtx.yml
-          }
-          trap cleanup EXIT
-
-          # Tunnel 1: OBS đẩy RTMP vào.
+          # Tunnel OBS → MediaMTX.
           /tmp/bore-install/bin/bore local 1935 --to bore.pub \
             > /tmp/bore-rtmp.log 2>&1 &
           RTMP_PID=$!
 
-          # Tunnel 2: IPTV reproxy kéo HLS.
+          # Tunnel IPTV → HLS MediaMTX.
           /tmp/bore-install/bin/bore local 8888 --to bore.pub \
             > /tmp/bore-hls.log 2>&1 &
           HLS_PID=$!
@@ -105,17 +122,21 @@ jobs:
           fi
 
           echo ""
-          echo "========= CẤU HÌNH OBS ========="
-          echo "Server:     rtmp://$RTMP_ADDR/live"
-          echo "Stream Key: channel?user=publisher&pass=$PUB_PASS"
+          echo "========= OBS ========="
+          echo "Server: rtmp://$RTMP_ADDR/live"
+          echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
+          echo "Thay MAT_KHAU_CUA_BRO bằng secret đã tạo."
           echo ""
-          echo "========= NGUỒN IPTV REPROXY ========="
-          echo "URL:      http://$HLS_ADDR/live/channel/index.m3u8"
-          echo "Username: viewer"
-          echo "Password: $READ_PASS"
-          echo "======================================"
-          echo "Chạy OBS trước, chờ vài giây rồi thử kéo HLS."
-          echo "Workflow tự dừng sau tối đa 30 phút."
+          echo "========= IPTV / VLC ========="
+          echo "http://$HLS_ADDR/live/channel/index.m3u8"
+          echo "Không cần đăng nhập để xem."
+          echo "=============================="
+          echo "Bật OBS trước, chờ vài giây rồi mở link HLS."
+          echo ""
+          echo "=== MediaMTX log ==="
+
+          docker logs -f mediamtx &
+          LOG_PID=$!
 
           while kill -0 "$RTMP_PID" 2>/dev/null \
             && kill -0 "$HLS_PID" 2>/dev/null \
