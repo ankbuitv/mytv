@@ -1,43 +1,33 @@
-name: IPTV fallback prototype
+name: IPTV Cloudflare - test OBS
 
 on:
   workflow_dispatch:
-    inputs:
-      source:
-        description: "Nguồn chính"
-        type: choice
-        required: true
-        default: obs
-        options:
-          - obs
-          - edm
+
+permissions:
+  contents: read
 
 jobs:
-  channel:
+  stream:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Install tools
+      - name: Install bore
         shell: bash
         run: |
           set -eu
-
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx librsvg2-bin
-
           cargo install --locked bore-cli --root /tmp/bore-install
 
-      - name: Run channel
+      - name: Start MediaMTX and tunnels
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
-          SOURCE_CHOICE: ${{ inputs.source }}
+          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         shell: bash
         run: |
           set -eu
 
-          if [ -z "$PUBLISH_PASSWORD" ]; then
-            echo "Thiếu secret PUBLISH_PASSWORD."
+          if [ -z "$PUBLISH_PASSWORD" ] || [ -z "$TUNNEL_TOKEN" ]; then
+            echo "Thiếu PUBLISH_PASSWORD hoặc CLOUDFLARE_TUNNEL_TOKEN."
             exit 1
           fi
 
@@ -46,56 +36,22 @@ jobs:
             exit 1
           fi
 
-          mkdir -p /tmp/iptv/assets /tmp/iptv/www/720 /tmp/iptv/www/1080
-
           cleanup() {
-            if [ -n "${SUPERVISOR_PID:-}" ]; then
-              kill "$SUPERVISOR_PID" 2>/dev/null || true
+            if [ -n "${BORE_PID:-}" ]; then
+              kill "$BORE_PID" 2>/dev/null || true
             fi
-            if [ -n "${RTMP_PID:-}" ]; then
-              kill "$RTMP_PID" 2>/dev/null || true
-            fi
-            if [ -n "${HLS_PID:-}" ]; then
-              kill "$HLS_PID" 2>/dev/null || true
-            fi
-            if [ -n "${NGINX_PID:-}" ]; then
-              kill "$NGINX_PID" 2>/dev/null || true
-            fi
+
             if [ -n "${LOG_PID:-}" ]; then
               kill "$LOG_PID" 2>/dev/null || true
             fi
 
-            # Dừng FFmpeg còn sót trong runner dùng riêng cho job.
-            pkill -TERM -x ffmpeg 2>/dev/null || true
-            pkill -TERM -x ffprobe 2>/dev/null || true
-
-            docker rm -f mediamtx >/dev/null 2>&1 || true
-            rm -f /tmp/iptv/mediamtx.yml
+            docker rm -f iptv-cloudflared iptv-mediamtx \
+              >/dev/null 2>&1 || true
+            rm -f /tmp/iptv-mediamtx.yml
           }
-
           trap cleanup EXIT
 
-          echo ">>> Tải logo và QR..."
-
-          curl -fL --max-time 30 \
-            "https://github.com/ankbuitv/zztv/raw/refs/heads/main/apps/web/public/favicon.svg" \
-            -o /tmp/iptv/assets/logo.svg
-
-          curl -fL --max-time 30 \
-            "https://i.ibb.co/JFwFnKZ9/download.png" \
-            -o /tmp/iptv/assets/qr.png
-
-          rsvg-convert -w 70 \
-            -o /tmp/iptv/assets/logo.png \
-            /tmp/iptv/assets/logo.svg
-
-          # Kiểm tra segment đầu của fallback có tải được không.
-          curl -fIL --max-time 20 \
-            "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/output0.ts" \
-            >/dev/null
-
-          # MediaMTX chỉ dùng để nhận nguồn OBS.
-          cat > /tmp/iptv/mediamtx.yml <<EOF
+          cat > /tmp/iptv-mediamtx.yml <<EOF
           authMethod: internal
 
           authInternalUsers:
@@ -111,104 +67,52 @@ jobs:
                 - action: read
                   path: live/channel
 
+          hlsAlwaysRemux: yes
+
           paths:
             live/channel:
           EOF
 
-          docker run -d --name mediamtx \
+          # MediaMTX chỉ mở cổng trên localhost của runner.
+          docker run -d --name iptv-mediamtx \
             -p 127.0.0.1:1935:1935 \
-            -v /tmp/iptv/mediamtx.yml:/mediamtx.yml:ro \
+            -p 127.0.0.1:8888:8888 \
+            -v /tmp/iptv-mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:1.21.3
 
-          # Master trỏ thẳng tới media playlist do FFmpeg tạo,
-          # không trỏ tới master playlist khác.
-          cat > /tmp/iptv/www/manifest.m3u8 <<'EOF'
-          #EXTM3U
-          #EXT-X-VERSION:3
-          #EXT-X-STREAM-INF:BANDWIDTH=3300000,RESOLUTION=1280x720
-          720/index.m3u8
-          #EXT-X-STREAM-INF:BANDWIDTH=5800000,RESOLUTION=1920x1080
-          1080/index.m3u8
-          EOF
+          # Cloudflare connector dùng mạng host để tới localhost:8888.
+          # Token truyền qua biến môi trường, không in ra log.
+          docker run -d --name iptv-cloudflared \
+            --network host \
+            -e TUNNEL_TOKEN \
+            cloudflare/cloudflared:latest \
+            tunnel --no-autoupdate run
 
-          cat > /tmp/iptv/nginx.conf <<'EOF'
-          worker_processes 1;
-          error_log /tmp/iptv/nginx-error.log warn;
-          pid /tmp/iptv/nginx.pid;
-
-          events {
-              worker_connections 1024;
-          }
-
-          http {
-              access_log off;
-
-              types {
-                  application/vnd.apple.mpegurl m3u8;
-                  video/mp2t ts;
-              }
-
-              server {
-                  listen 127.0.0.1:8080;
-
-                  root /tmp/iptv/www;
-
-                  location / {
-                      add_header Cache-Control "no-cache" always;
-                      add_header Access-Control-Allow-Origin "*" always;
-                  }
-              }
-          }
-          EOF
-
-          nginx -t -c /tmp/iptv/nginx.conf
-          nginx -c /tmp/iptv/nginx.conf -g 'daemon off;' &
-          NGINX_PID=$!
-
+          # bore public cổng RTMP cho OBS.
           /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/iptv/bore-rtmp.log 2>&1 &
-          RTMP_PID=$!
-
-          /tmp/bore-install/bin/bore local 8080 --to bore.pub \
-            > /tmp/iptv/bore-hls.log 2>&1 &
-          HLS_PID=$!
+            > /tmp/iptv-bore.log 2>&1 &
+          BORE_PID=$!
 
           RTMP_ADDR=""
-          HLS_ADDR=""
-
-          echo ">>> Đang chờ hai tunnel bore..."
 
           for i in $(seq 1 60); do
-            if [ -z "$RTMP_ADDR" ]; then
-              RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/iptv/bore-rtmp.log | head -n 1 || true)
-            fi
+            RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
+              /tmp/iptv-bore.log | head -n 1 || true)
 
-            if [ -z "$HLS_ADDR" ]; then
-              HLS_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-                /tmp/iptv/bore-hls.log | head -n 1 || true)
-            fi
-
-            if [ -n "$RTMP_ADDR" ] && [ -n "$HLS_ADDR" ]; then
+            if [ -n "$RTMP_ADDR" ]; then
               break
             fi
 
-            if ! kill -0 "$RTMP_PID" 2>/dev/null \
-              || ! kill -0 "$HLS_PID" 2>/dev/null; then
+            if ! kill -0 "$BORE_PID" 2>/dev/null; then
               break
             fi
 
             sleep 1
           done
 
-          if [ -z "$RTMP_ADDR" ] || [ -z "$HLS_ADDR" ]; then
-            echo "Không mở được tunnel."
-            echo "=== RTMP tunnel ==="
-            cat /tmp/iptv/bore-rtmp.log
-            echo "=== HLS tunnel ==="
-            cat /tmp/iptv/bore-hls.log
-            echo "=== MediaMTX ==="
-            docker logs mediamtx
+          if [ -z "$RTMP_ADDR" ]; then
+            echo "Không mở được bore:"
+            cat /tmp/iptv-bore.log
             exit 1
           fi
 
@@ -217,231 +121,27 @@ jobs:
           echo "Server: rtmp://$RTMP_ADDR/live"
           echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
           echo ""
-          echo "========= IPTV / VLC ========="
-          echo "Master: http://$HLS_ADDR/manifest.m3u8"
-          echo "720p:   http://$HLS_ADDR/720/index.m3u8"
-          echo "1080p:  http://$HLS_ADDR/1080/index.m3u8"
-          echo "=============================="
-          echo "Nguồn chính được chọn: $SOURCE_CHOICE"
-          echo "Chờ FFmpeg tạo playlist và segment trước khi xem."
+          echo "========= HLS TEST ========="
+          echo "https://ott0.ankworks.bond/live/channel/index.m3u8"
+          echo "============================"
+          echo "Đợi Cloudflare Tunnel kết nối, bật OBS rồi mở HLS."
+          echo ""
 
-          docker logs -f mediamtx &
+          echo "=== MediaMTX log ==="
+          docker logs -f iptv-mediamtx &
           LOG_PID=$!
 
-          # Supervisor đơn giản:
-          # - kiểm tra nguồn chính định kỳ;
-          # - chuyển giữa chính và fallback bằng cách khởi động lại FFmpeg.
-          cat > /tmp/iptv/supervisor.py <<'PY'
-          import os
-          import signal
-          import subprocess
-          import time
-          import uuid
-
-          OBS = "rtmp://127.0.0.1:1935/live/channel"
-          EDM = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
-          FALLBACK = (
-              "https://raw.githubusercontent.com/ankbuitv/"
-              "mytv/refs/heads/main/output.m3u8"
-          )
-
-          choice = os.environ.get("SOURCE_CHOICE", "obs")
-          main_url = OBS if choice == "obs" else EDM
-
-          process = None
-          mode = None
-          stopping = False
-
-          def handle_stop(signum, frame):
-              global stopping
-              stopping = True
-
-          signal.signal(signal.SIGTERM, handle_stop)
-          signal.signal(signal.SIGINT, handle_stop)
-
-          def probe(url):
-              """Kiểm tra có đọc được video; timeout tránh treo vô hạn."""
-              try:
-                  result = subprocess.run(
-                      [
-                          "ffprobe",
-                          "-v", "error",
-                          "-rw_timeout", "5000000",
-                          "-select_streams", "v:0",
-                          "-show_entries", "stream=codec_type",
-                          "-of", "csv=p=0",
-                          url,
-                      ],
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL,
-                      timeout=10,
-                      text=True,
-                  )
-                  return result.returncode == 0 and "video" in result.stdout
-              except (subprocess.TimeoutExpired, OSError):
-                  return False
-
-          def stop_process():
-              global process
-              if process is None:
-                  return
-
-              if process.poll() is None:
-                  process.terminate()
-                  try:
-                      process.wait(timeout=8)
-                  except subprocess.TimeoutExpired:
-                      process.kill()
-                      process.wait()
-
-              process = None
-
-          def start_process(url, new_mode):
-              global process, mode
-
-              stop_process()
-              mode = new_mode
-
-              # Segment có tên riêng mỗi lần chuyển nguồn, tránh ghi đè
-              # segment cũ mà player vẫn đang đọc.
-              run_id = uuid.uuid4().hex[:10]
-
-              filters = (
-                  "[0:v]fps=30,"
-                  "scale=1920:1080:force_original_aspect_ratio=decrease,"
-                  "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
-                  "setsar=1[base];"
-                  "[1:v]scale=70:-1,format=rgba[logo];"
-                  "[2:v]scale=70:70,format=rgba[qr];"
-                  "[base][logo]overlay="
-                  "x=W-w-20:y=H-h-20:"
-                  "enable='lt(mod(t,660),600)':shortest=1[withlogo];"
-                  "[withlogo][qr]overlay="
-                  "x=W-w-20:y=H-h-20:"
-                  "enable='gte(mod(t,660),600)':shortest=1[composed];"
-                  "[composed]split=2[a][b];"
-                  "[a]scale=1280:720,format=yuv420p[v720];"
-                  "[b]format=yuv420p[v1080]"
-              )
-
-              cmd = [
-                  "ffmpeg",
-                  "-hide_banner",
-                  "-loglevel", "warning",
-                  "-rw_timeout", "10000000",
-              ]
-
-              # HLS fallback của bro là video hữu hạn.
-              # Nếu FFmpeg không lặp được HLS demuxer, supervisor sẽ
-              # khởi động lại nó khi kết thúc.
-              if new_mode == "fallback":
-                  cmd += ["-re"]
-
-              cmd += [
-                  "-i", url,
-                  "-loop", "1", "-framerate", "30",
-                  "-i", "/tmp/iptv/assets/logo.png",
-                  "-loop", "1", "-framerate", "30",
-                  "-i", "/tmp/iptv/assets/qr.png",
-                  "-filter_complex", filters,
-
-                  # Output 720p
-                  "-map", "[v720]",
-                  "-map", "0:a:0?",
-                  "-c:v", "libx264",
-                  "-preset", "ultrafast",
-                  "-b:v", "2800k",
-                  "-maxrate", "3000k",
-                  "-bufsize", "6000k",
-                  "-g", "60",
-                  "-keyint_min", "60",
-                  "-sc_threshold", "0",
-                  "-c:a", "aac",
-                  "-b:a", "128k",
-                  "-f", "hls",
-                  "-hls_time", "2",
-                  "-hls_list_size", "6",
-                  "-hls_flags", "delete_segments+temp_file+omit_endlist",
-                  "-hls_segment_filename",
-                  f"/tmp/iptv/www/720/{run_id}_%06d.ts",
-                  "/tmp/iptv/www/720/index.m3u8",
-
-                  # Output 1080p
-                  "-map", "[v1080]",
-                  "-map", "0:a:0?",
-                  "-c:v", "libx264",
-                  "-preset", "ultrafast",
-                  "-b:v", "5000k",
-                  "-maxrate", "5500k",
-                  "-bufsize", "11000k",
-                  "-g", "60",
-                  "-keyint_min", "60",
-                  "-sc_threshold", "0",
-                  "-c:a", "aac",
-                  "-b:a", "128k",
-                  "-f", "hls",
-                  "-hls_time", "2",
-                  "-hls_list_size", "6",
-                  "-hls_flags", "delete_segments+temp_file+omit_endlist",
-                  "-hls_segment_filename",
-                  f"/tmp/iptv/www/1080/{run_id}_%06d.ts",
-                  "/tmp/iptv/www/1080/index.m3u8",
-              ]
-
-              print(f">>> Chuyển sang: {new_mode}", flush=True)
-              process = subprocess.Popen(cmd)
-
-          print(f">>> Supervisor bắt đầu. Nguồn chính: {choice}", flush=True)
-
-          try:
-              while not stopping:
-                  main_ok = probe(main_url)
-
-                  if main_ok:
-                      if mode != "main" or process is None or process.poll() is not None:
-                          start_process(main_url, "main")
-                  else:
-                      if mode == "main":
-                          print(">>> Nguồn chính lỗi hoặc timeout.", flush=True)
-                          stop_process()
-                          mode = None
-
-                      if mode != "fallback" or process is None or process.poll() is not None:
-                          if probe(FALLBACK):
-                              start_process(FALLBACK, "fallback")
-                          else:
-                              print(">>> Fallback cũng không đọc được; thử lại sau.", flush=True)
-                              stop_process()
-                              mode = None
-
-                  # Probe mất thời gian riêng; đây không phải chuyển 0 giây.
-                  for _ in range(5):
-                      if stopping:
-                          break
-                      time.sleep(1)
-          finally:
-              stop_process()
-              print(">>> Supervisor đã dừng.", flush=True)
-          PY
-
-          python3 -u /tmp/iptv/supervisor.py &
-          SUPERVISOR_PID=$!
-
-          while kill -0 "$RTMP_PID" 2>/dev/null \
-            && kill -0 "$HLS_PID" 2>/dev/null \
-            && kill -0 "$NGINX_PID" 2>/dev/null \
-            && kill -0 "$SUPERVISOR_PID" 2>/dev/null \
-            && [ "$(docker inspect -f '{{.State.Running}}' mediamtx)" = "true" ]; do
+          while kill -0 "$BORE_PID" 2>/dev/null \
+            && [ "$(docker inspect -f '{{.State.Running}}' iptv-mediamtx)" = "true" ] \
+            && [ "$(docker inspect -f '{{.State.Running}}' iptv-cloudflared)" = "true" ]; do
             sleep 5
           done
 
           echo "Một thành phần đã dừng."
-          echo "=== RTMP tunnel ==="
-          cat /tmp/iptv/bore-rtmp.log
-          echo "=== HLS tunnel ==="
-          cat /tmp/iptv/bore-hls.log
-          echo "=== Nginx ==="
-          cat /tmp/iptv/nginx-error.log
+          echo "=== bore ==="
+          cat /tmp/iptv-bore.log
           echo "=== MediaMTX ==="
-          docker logs mediamtx
+          docker logs iptv-mediamtx
+          echo "=== Cloudflare connector ==="
+          docker logs iptv-cloudflared
           exit 1
