@@ -60,7 +60,7 @@ jobs:
                   path: live/channel
 
             - user: any
-              pass: any
+              pass: 
               permissions:
                 - action: read
                   path: live/channel
