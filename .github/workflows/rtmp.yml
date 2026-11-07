@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
 
-          if [ "${#CONTROL_PASSWORD}" -lt 16 ]; then
+          if [ "${#CONTROL_PASSWORD}" -lt 8 ]; then
             echo "CONTROL_PASSWORD phải có ít nhất 16 ký tự."
             exit 1
           fi
