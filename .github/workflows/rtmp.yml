@@ -27,7 +27,7 @@ jobs:
           set -eu
 
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx fonts-dejavu-core
+          sudo apt-get install -y ffmpeg nginx fonts-dejavu-core curl
 
           curl -fL --retry 3 --max-time 120 \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
@@ -36,12 +36,12 @@ jobs:
           chmod +x /tmp/cloudflared
 
       - name: Run VeoTV
+        shell: bash
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
           TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
           TUNNEL_ID: ${{ vars.TUNNEL_ID }}
-        shell: bash
         run: |
           set -eu
           umask 077
@@ -108,7 +108,8 @@ jobs:
             echo ">>> Không tải được ảnh fallback; tạo nền tối."
 
             ffmpeg -hide_banner -loglevel error -y \
-              -f lavfi -i "color=c=0x15172b:s=1280x720" \
+              -f lavfi \
+              -i "color=c=0x15172b:s=1280x720" \
               -frames:v 1 -threads 1 \
               "$ROOT/assets/fallback.png"
           fi
@@ -122,17 +123,16 @@ jobs:
             echo ">>> Không tải được logo; tạo ảnh trong suốt."
 
             ffmpeg -hide_banner -loglevel error -y \
-              -f lavfi -i "color=c=black@0.0:s=100x100,format=rgba" \
+              -f lavfi \
+              -i "color=c=black@0.0:s=100x100,format=rgba" \
               -frames:v 1 -threads 1 \
               "$ROOT/assets/logo.png"
           fi
 
           echo ">>> Tải ident..."
 
-          IDENT_URL="https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
-
           if curl -fL --retry 2 --max-time 120 \
-            "$IDENT_URL" \
+            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4" \
             -o "$ROOT/assets/ident.mp4"; then
 
             if ffprobe -v error \
@@ -141,13 +141,13 @@ jobs:
               -of csv=p=0 \
               "$ROOT/assets/ident.mp4" | grep -q video; then
 
-              echo ">>> Ident tải thành công."
+              echo ">>> Tải ident thành công."
             else
-              echo ">>> Ident không có video hợp lệ; bỏ qua."
+              echo ">>> Ident không hợp lệ; sẽ bỏ qua ident."
               rm -f "$ROOT/assets/ident.mp4"
             fi
           else
-            echo ">>> Không tải được ident; chạy không có ident."
+            echo ">>> Không tải được ident; sẽ bỏ qua ident."
             rm -f "$ROOT/assets/ident.mp4"
           fi
 
@@ -244,7 +244,7 @@ jobs:
           echo ""
           echo "========= OBS QUA TAILSCALE ========="
           echo "Server: rtmp://$TS_IP:1935/live"
-          echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
+          echo "Stream key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
           echo ""
           echo "========= HLS ========="
           echo "Master: https://ott0.ankworks.bond/livestream01/manifest.m3u8"
@@ -268,7 +268,14 @@ jobs:
 
           from datetime import datetime, timedelta
           from pathlib import Path
+          from urllib.parse import urlsplit
           from zoneinfo import ZoneInfo
+
+          ROOT = Path("/tmp/veotv")
+          ASSETS = ROOT / "assets"
+          IDENT = ASSETS / "ident.mp4"
+
+          FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
           API_URL = (
               "https://veotv.htxuan-business.workers.dev"
@@ -276,23 +283,20 @@ jobs:
           )
 
           TOKEN = os.environ["RUNNER_TOKEN"]
-          OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
 
+          OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
           EDM_URL = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
           BACKUP_AUDIO_URL = (
               "https://multi-playlist-zmp3.zmdcdn.me/"
               "-XosZVJX9XA/zhls/playback-realtime/f49e383"
           )
 
-          ROOT = Path("/tmp/veotv")
-          IDENT = ROOT / "assets" / "ident.mp4"
-          FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
           CONFIG_INTERVAL = 2
           PROBE_INTERVAL = 20
+          AUDIO_PROBE_INTERVAL = 90
           MAX_PROBE_FAILURES = 3
-          AUDIO_RETRY_INTERVAL = 90
           RESTART_DELAY = 5
 
           stop_event = threading.Event()
@@ -300,29 +304,24 @@ jobs:
 
           shared = {
               "config": None,
-              "generation": 0,
               "selected": None,
-              "main_available": False,
-              "failures": 0,
-              "audio_request": None,
+              "generation": 0,
+              "video_available": False,
+              "video_failures": 0,
+              "audio_candidates": (),
+              "audio_generation": 0,
               "audio_result": None,
           }
 
           process = None
           current_key = None
           current_mode = None
-          current_audio = None
+          last_start = 0.0
+          last_cleanup = 0.0
 
-          last_start = 0
-          last_cleanup = 0
-          last_audio_request = 0
-
-          # Dùng để phát hiện chuyển mục lịch.
           previous_selection = None
-
-          # Ident chỉ được phát một lần cho mỗi lần chuyển lịch.
           ident_playing = False
-          ident_deadline = 0
+          ident_deadline = 0.0
 
           def log(message):
               print(">>> " + message, flush=True)
@@ -332,6 +331,20 @@ jobs:
 
           signal.signal(signal.SIGTERM, on_signal)
           signal.signal(signal.SIGINT, on_signal)
+
+          def valid_url(value):
+              return (
+                  isinstance(value, str)
+                  and value.startswith(("http://", "https://", "rtmp://"))
+              )
+
+          def is_mp4(value):
+              try:
+                  return urlsplit(value).path.lower().endswith(
+                      (".mp4", ".m4v", ".mov")
+                  )
+              except Exception:
+                  return False
 
           def fetch_config():
               request = urllib.request.Request(
@@ -353,7 +366,7 @@ jobs:
               return data
 
           def config_loop():
-              last_error_log = 0
+              last_error = 0.0
 
               while not stop_event.is_set():
                   started = time.monotonic()
@@ -367,13 +380,13 @@ jobs:
                   except Exception as exc:
                       now = time.monotonic()
 
-                      if now - last_error_log >= 30:
+                      if now - last_error >= 30:
                           log(
                               "Không đọc được Worker: "
                               + type(exc).__name__
                               + ". Giữ cấu hình gần nhất."
                           )
-                          last_error_log = now
+                          last_error = now
 
                   elapsed = time.monotonic() - started
                   stop_event.wait(max(0.2, CONFIG_INTERVAL - elapsed))
@@ -389,10 +402,30 @@ jobs:
 
               return hour * 60 + minute
 
-          def select_source(config):
+          def resolve_source(config, name):
+              if name == "obs":
+                  return OBS_URL
+
+              sources = config.get("sources", {})
+
+              if not isinstance(sources, dict):
+                  return None
+
+              value = sources.get(name)
+              return value if valid_url(value) else None
+
+          def select_program(config):
               if config.get("mode") == "manual":
                   name = str(config.get("manualSource", "obs"))
-                  return name, "manual", None
+
+                  return {
+                      "reason": "manual",
+                      "name": name,
+                      "kind": "source",
+                      "url": resolve_source(config, name),
+                      "occurrence": None,
+                      "waiting": {},
+                  }
 
               now = datetime.now(TZ)
               current = now.hour * 60 + now.minute
@@ -421,51 +454,63 @@ jobs:
                           continue
 
                       name = str(item.get("source", "obs"))
+                      kind = (
+                          "waiting"
+                          if item.get("type") == "waiting"
+                          else "source"
+                      )
 
-                      # Với lịch qua đêm, sau 00:00 vẫn thuộc
-                      # cùng một lượt chương trình của ngày trước.
+                      waiting = item.get("waiting", {})
+
+                      if not isinstance(waiting, dict):
+                          waiting = {}
+
+                      if kind == "waiting":
+                          value = waiting.get("videoUrl")
+                          url = value if valid_url(value) else None
+                      else:
+                          url = resolve_source(config, name)
+
                       occurrence_date = now.date()
 
                       if start > end and current < end:
                           occurrence_date -= timedelta(days=1)
 
-                      # Không phụ thuộc vị trí trong danh sách:
-                      # kéo thả thứ tự không tự phát lại ident.
                       occurrence = (
                           occurrence_date.isoformat(),
                           str(item.get("start")),
                           str(item.get("end")),
                           name,
+                          kind,
                       )
 
-                      return name, "epg", occurrence
+                      return {
+                          "reason": "epg",
+                          "name": (
+                              str(item.get("title", "Chờ event"))
+                              if kind == "waiting"
+                              else name
+                          ),
+                          "kind": kind,
+                          "url": url,
+                          "occurrence": occurrence,
+                          "waiting": waiting,
+                      }
 
                   except (ValueError, KeyError, TypeError):
                       continue
 
-              return "obs", "default", None
-
-          def resolve_source(config, name):
-              if name == "obs":
-                  return OBS_URL
-
-              sources = config.get("sources", {})
-
-              if not isinstance(sources, dict):
-                  return None
-
-              value = sources.get(name)
-
-              if not isinstance(value, str):
-                  return None
-
-              if not value.startswith(("http://", "https://", "rtmp://")):
-                  return None
-
-              return value
+              return {
+                  "reason": "default",
+                  "name": "obs",
+                  "kind": "source",
+                  "url": OBS_URL,
+                  "occurrence": None,
+                  "waiting": {},
+              }
 
           def probe(url, stream_type):
-              if not url:
+              if not valid_url(url):
                   return False
 
               try:
@@ -485,7 +530,11 @@ jobs:
                       timeout=15,
                   )
 
-                  expected = "video" if stream_type == "v:0" else "audio"
+                  expected = (
+                      "video"
+                      if stream_type == "v:0"
+                      else "audio"
+                  )
 
                   return (
                       result.returncode == 0
@@ -495,9 +544,9 @@ jobs:
               except (subprocess.TimeoutExpired, OSError):
                   return False
 
-          def main_probe_loop():
+          def video_probe_loop():
               last_generation = -1
-              next_probe = 0
+              next_probe = 0.0
 
               while not stop_event.is_set():
                   with lock:
@@ -510,7 +559,7 @@ jobs:
 
                   if generation != last_generation:
                       last_generation = generation
-                      next_probe = 0
+                      next_probe = 0.0
 
                   now = time.monotonic()
 
@@ -518,7 +567,7 @@ jobs:
                       stop_event.wait(min(0.5, next_probe - now))
                       continue
 
-                  name, url = selected
+                  kind, url = selected
                   available = probe(url, "v:0")
                   next_probe = time.monotonic() + PROBE_INTERVAL
 
@@ -527,54 +576,98 @@ jobs:
                           continue
 
                       if available:
-                          previous_failures = shared["failures"]
-                          shared["failures"] = 0
-                          shared["main_available"] = True
+                          previous = shared["video_failures"]
+                          shared["video_failures"] = 0
+                          shared["video_available"] = True
                       else:
-                          shared["failures"] += 1
-                          previous_failures = shared["failures"]
+                          shared["video_failures"] += 1
+                          previous = shared["video_failures"]
 
-                          if shared["failures"] >= MAX_PROBE_FAILURES:
-                              shared["main_available"] = False
+                          if previous >= MAX_PROBE_FAILURES:
+                              shared["video_available"] = False
 
-                  if available and previous_failures:
-                      log(f"Nguồn {name} kiểm tra lại OK.")
-                  elif not available:
-                      if (
-                          previous_failures <= MAX_PROBE_FAILURES
-                          or previous_failures % 5 == 0
-                      ):
-                          log(
-                              f"Probe {name} lỗi "
-                              f"{previous_failures} lần liên tiếp."
-                          )
+                  if available and previous:
+                      log(f"Video {kind} kiểm tra lại OK.")
+                  elif not available and (
+                      previous <= MAX_PROBE_FAILURES
+                      or previous % 5 == 0
+                  ):
+                      log(
+                          f"Probe video {kind} lỗi "
+                          f"{previous} lần liên tiếp."
+                      )
 
           def audio_probe_loop():
-              handled = None
+              last_generation = -1
+              next_probe = 0.0
 
               while not stop_event.is_set():
                   with lock:
-                      request = shared["audio_request"]
+                      candidates = shared["audio_candidates"]
+                      generation = shared["audio_generation"]
 
-                  if request is None or request == handled:
-                      stop_event.wait(0.5)
+                  if generation != last_generation:
+                      last_generation = generation
+                      next_probe = 0.0
+
+                  now = time.monotonic()
+
+                  if now < next_probe:
+                      stop_event.wait(min(0.5, next_probe - now))
                       continue
 
-                  request_id, edm, backup = request
-                  handled = request
+                  chosen = None
 
-                  if isinstance(edm, str) and probe(edm, "a:0"):
-                      result = (request_id, edm, "EDM")
-                  elif isinstance(backup, str) and probe(backup, "a:0"):
-                      result = (request_id, backup, "audio dự phòng")
-                  else:
-                      result = (request_id, None, "im lặng")
+                  for candidate in candidates:
+                      if stop_event.is_set():
+                          break
+
+                      if probe(candidate, "a:0"):
+                          chosen = candidate
+                          break
 
                   with lock:
-                      current = shared["audio_request"]
+                      if generation == shared["audio_generation"]:
+                          shared["audio_result"] = chosen
 
-                      if current is not None and current[0] == request_id:
-                          shared["audio_result"] = result
+                  next_probe = time.monotonic() + AUDIO_PROBE_INTERVAL
+
+                  if candidates:
+                      if chosen:
+                          log("Audio riêng kiểm tra OK.")
+                      else:
+                          log("Audio riêng chưa khả dụng; dùng im lặng.")
+
+          def set_audio_candidates(candidates):
+              clean = tuple(
+                  url for url in candidates
+                  if valid_url(url)
+              )
+
+              with lock:
+                  if clean != shared["audio_candidates"]:
+                      shared["audio_candidates"] = clean
+                      shared["audio_generation"] += 1
+                      shared["audio_result"] = None
+
+          def fallback_audio_candidates(config):
+              sources = config.get("sources", {})
+
+              if not isinstance(sources, dict):
+                  sources = {}
+
+              return (
+                  sources.get("edm", EDM_URL),
+                  sources.get("audioBackup", BACKUP_AUDIO_URL),
+              )
+
+          def waiting_audio_candidates(program):
+              waiting = program["waiting"]
+
+              if waiting.get("audioEnabled") is not True:
+                  return ()
+
+              return (waiting.get("audioUrl"),)
 
           def ident_duration():
               if not IDENT.is_file():
@@ -597,7 +690,6 @@ jobs:
 
                   duration = float(result.stdout.strip())
 
-                  # Giới hạn để tránh file lỗi làm ident chạy quá lâu.
                   if result.returncode == 0 and 0 < duration <= 300:
                       return duration
 
@@ -627,53 +719,91 @@ jobs:
 
               process = None
 
-          def build_filters(config, fallback, ident=False):
+          def signature(value):
+              raw = json.dumps(
+                  value,
+                  sort_keys=True,
+                  ensure_ascii=False,
+              )
+
+              return hashlib.sha256(
+                  raw.encode("utf-8")
+              ).hexdigest()
+
+          def build_filters(config, mode, waiting):
               logo_cfg = config.get("logo", {})
-              banner_cfg = config.get("banner", {})
+              fallback_banner = config.get("banner", {})
 
               if not isinstance(logo_cfg, dict):
                   logo_cfg = {}
 
-              if not isinstance(banner_cfg, dict):
-                  banner_cfg = {}
+              if not isinstance(fallback_banner, dict):
+                  fallback_banner = {}
 
               try:
-                  width = int(logo_cfg.get("width", 70))
+                  width = int(logo_cfg.get("width", 75))
               except (ValueError, TypeError):
-                  width = 70
+                  width = 75
 
               width = max(24, min(width, 400))
-              logo_enabled = bool(logo_cfg.get("enabled", True))
-              banner_enabled = bool(banner_cfg.get("enabled", True))
 
-              text = str(
-                  banner_cfg.get(
-                      "text",
-                      "VeoTV 1 — Nguồn phát không khả dụng."
+              logo_enabled = bool(
+                  logo_cfg.get("enabled", True)
+              )
+
+              banner_enabled = False
+              banner_text = ""
+
+              if mode == "fallback":
+                  banner_enabled = bool(
+                      fallback_banner.get("enabled", True)
                   )
-              )[:300]
 
-              (ROOT / "banner.txt").write_text(text, encoding="utf-8")
+                  banner_text = str(
+                      fallback_banner.get(
+                          "text",
+                          "VeoTV 1 — Nguồn phát không khả dụng."
+                      )
+                  )[:300]
+
+              elif mode == "waiting":
+                  banner_enabled = bool(
+                      waiting.get("bannerEnabled", True)
+                  )
+
+                  banner_text = str(
+                      waiting.get("bannerText", "")
+                  )[:300]
+
+              (ROOT / "banner.txt").write_text(
+                  banner_text,
+                  encoding="utf-8",
+              )
 
               parts = [
                   "[0:v]fps=30,"
-                  "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                  "scale=1920:1080:"
+                  "force_original_aspect_ratio=decrease,"
                   "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
                   "setsar=1[base]"
               ]
 
               current = "base"
 
-              # Ident đã có logo riêng, không đè thêm logo góc.
-              if logo_enabled and not ident:
-                  parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
+              if logo_enabled and mode != "ident":
+                  parts.append(
+                      f"[1:v]scale={width}:-1,format=rgba[logo]"
+                  )
+
                   parts.append(
                       f"[{current}][logo]"
-                      "overlay=W-w-20:H-h-20:shortest=1[withlogo]"
+                      "overlay=W-w-20:H-h-20:"
+                      "shortest=1[withlogo]"
                   )
+
                   current = "withlogo"
 
-              if fallback and banner_enabled:
+              if banner_enabled and banner_text:
                   parts.append(
                       f"[{current}]"
                       "drawbox=x=0:y=ih-70:w=iw:h=70:"
@@ -685,11 +815,16 @@ jobs:
                       "x=w-mod(t*150\\,w+text_w):"
                       "y=h-55[bannered]"
                   )
+
                   current = "bannered"
 
               parts.append(f"[{current}]split=2[a][b]")
-              parts.append("[a]scale=1280:720,format=yuv420p[v720]")
-              parts.append("[b]format=yuv420p[v1080]")
+              parts.append(
+                  "[a]scale=1280:720,format=yuv420p[v720]"
+              )
+              parts.append(
+                  "[b]format=yuv420p[v1080]"
+              )
 
               return ";".join(parts)
 
@@ -701,7 +836,9 @@ jobs:
               run_id,
               duration=None,
           ):
-              folder = ROOT / "www" / "livestream01" / resolution
+              folder = (
+                  ROOT / "www" / "livestream01" / resolution
+              )
 
               args = [
                   "-map", label,
@@ -737,51 +874,79 @@ jobs:
               mode,
               source_url=None,
               audio_url=None,
+              waiting=None,
               duration=None,
           ):
               global process, last_start
 
               stop_ffmpeg()
 
+              waiting = waiting or {}
               run_id = uuid.uuid4().hex[:10]
-              fallback = mode == "fallback"
-              ident = mode == "ident"
 
               cmd = [
                   "ffmpeg",
+                  "-nostdin",
                   "-hide_banner",
                   "-loglevel", "warning",
                   "-y",
               ]
 
-              if fallback:
+              if mode == "fallback":
                   cmd += [
                       "-re",
                       "-loop", "1",
                       "-framerate", "30",
-                      "-i", str(ROOT / "assets" / "fallback.png"),
+                      "-i", str(ASSETS / "fallback.png"),
                   ]
-              elif ident:
+
+              elif mode == "ident":
                   cmd += [
                       "-re",
                       "-i", str(IDENT),
                   ]
-              else:
+
+              elif mode == "waiting":
+                  if is_mp4(source_url):
+                      cmd += [
+                          "-re",
+                          "-stream_loop", "-1",
+                      ]
+
                   cmd += [
                       "-thread_queue_size", "512",
                       "-rw_timeout", "10000000",
                       "-i", source_url,
                   ]
 
-              # Input 1: logo PNG.
+              else:
+                  if is_mp4(source_url):
+                      cmd += [
+                          "-re",
+                          "-stream_loop", "-1",
+                      ]
+
+                  cmd += [
+                      "-thread_queue_size", "512",
+                      "-rw_timeout", "10000000",
+                      "-i", source_url,
+                  ]
+
+              # Input 1: logo.
               cmd += [
                   "-loop", "1",
                   "-framerate", "30",
-                  "-i", str(ROOT / "assets" / "logo.png"),
+                  "-i", str(ASSETS / "logo.png"),
               ]
 
-              if fallback:
+              if mode in ("fallback", "waiting"):
                   if audio_url:
+                      if is_mp4(audio_url):
+                          cmd += [
+                              "-re",
+                              "-stream_loop", "-1",
+                          ]
+
                       cmd += [
                           "-thread_queue_size", "512",
                           "-rw_timeout", "10000000",
@@ -793,14 +958,15 @@ jobs:
                           "-i", "anullsrc=r=44100:cl=stereo",
                       ]
 
+                  # Không map audio gốc của video chờ.
                   audio_map = "2:a:0"
               else:
-                  # Ident hoặc nguồn chính có thể không có audio.
+                  # Nguồn chính hoặc ident có thể không có audio.
                   audio_map = "0:a:0?"
 
               cmd += [
                   "-filter_complex",
-                  build_filters(config, fallback, ident),
+                  build_filters(config, mode, waiting),
               ]
 
               cmd += output_args(
@@ -823,32 +989,17 @@ jobs:
 
               log("Khởi động FFmpeg: " + mode)
 
-              # Không in lệnh: URL nguồn có thể chứa token.
+              # Không in cmd: URL nguồn có thể chứa token.
               process = subprocess.Popen(cmd)
               last_start = time.monotonic()
-
-          def config_signature(config, fallback):
-              relevant = {
-                  "logo": config.get("logo"),
-              }
-
-              # Chỉ banner fallback mới cần làm FFmpeg khởi động lại.
-              if fallback:
-                  relevant["banner"] = config.get("banner")
-
-              raw = json.dumps(
-                  relevant,
-                  sort_keys=True,
-                  ensure_ascii=False,
-              )
-
-              return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
           def cleanup_old_segments():
               now = time.time()
 
               for resolution in ("720", "1080"):
-                  folder = ROOT / "www" / "livestream01" / resolution
+                  folder = (
+                      ROOT / "www" / "livestream01" / resolution
+                  )
 
                   for path in folder.glob("*.ts"):
                       try:
@@ -857,35 +1008,24 @@ jobs:
                       except OSError:
                           pass
 
-          def request_audio(config):
-              global last_audio_request
+          threading.Thread(
+              target=config_loop,
+              daemon=True,
+          ).start()
 
-              sources = config.get("sources", {})
+          threading.Thread(
+              target=video_probe_loop,
+              daemon=True,
+          ).start()
 
-              if not isinstance(sources, dict):
-                  sources = {}
-
-              request_id = uuid.uuid4().hex
-
-              request = (
-                  request_id,
-                  sources.get("edm", EDM_URL),
-                  sources.get("audioBackup", BACKUP_AUDIO_URL),
-              )
-
-              with lock:
-                  shared["audio_request"] = request
-                  shared["audio_result"] = None
-
-              last_audio_request = time.monotonic()
-
-          threading.Thread(target=config_loop, daemon=True).start()
-          threading.Thread(target=main_probe_loop, daemon=True).start()
-          threading.Thread(target=audio_probe_loop, daemon=True).start()
+          threading.Thread(
+              target=audio_probe_loop,
+              daemon=True,
+          ).start()
 
           log("Supervisor bắt đầu.")
-          log("Đọc dashboard mỗi 2 giây; probe chạy độc lập.")
-          log("Ident chỉ phát khi auto chuyển sang mục lịch mới.")
+          log("Hỗ trợ chương trình chờ event theo Worker mới.")
+          log("Đây là bản FFmpeg thử nghiệm; HLS vẫn có thể khựng.")
 
           try:
               while not stop_event.is_set():
@@ -897,22 +1037,22 @@ jobs:
                       continue
 
                   try:
-                      source_name, reason, occurrence = select_source(config)
-                      source_url = resolve_source(config, source_name)
-                      selected = (source_name, source_url)
+                      program = select_program(config)
 
-                      # Phát hiện chuyển lịch:
-                      # - Không phát ở lần đọc cấu hình đầu tiên.
-                      # - Không phát khi chuyển từ manual sang auto.
-                      # - Có phát khi auto chuyển sang một mục EPG khác,
-                      #   kể cả hai mục dùng cùng nguồn.
-                      # - Không phát khi EPG kết thúc và trở về OBS mặc định.
-                      current_selection = (reason, occurrence)
+                      reason = program["reason"]
+                      occurrence = program["occurrence"]
+
+                      current_selection = (
+                          reason,
+                          occurrence,
+                      )
 
                       schedule_changed = False
 
                       if previous_selection is not None:
-                          previous_reason, previous_occurrence = previous_selection
+                          previous_reason, previous_occurrence = (
+                              previous_selection
+                          )
 
                           if (
                               previous_reason in ("epg", "default")
@@ -923,45 +1063,49 @@ jobs:
 
                       previous_selection = current_selection
 
+                      selected = (
+                          program["kind"],
+                          program["url"],
+                      )
+
                       with lock:
                           if selected != shared["selected"]:
                               shared["selected"] = selected
                               shared["generation"] += 1
-                              shared["main_available"] = False
-                              shared["failures"] = 0
-                              source_changed = True
+                              shared["video_available"] = False
+                              shared["video_failures"] = 0
+                              changed = True
                           else:
-                              source_changed = False
+                              changed = False
 
-                          main_available = shared["main_available"]
-                          audio_result = shared["audio_result"]
+                          video_available = shared["video_available"]
 
-                      if source_changed:
+                      if changed:
                           log(
-                              f"Nguồn được chọn: {source_name} "
-                              f"({reason})."
+                              "Nguồn được chọn: "
+                              + program["name"]
+                              + " ("
+                              + reason
+                              + ", "
+                              + program["kind"]
+                              + ")."
                           )
 
-                      now = time.monotonic()
-
-                      # Manual luôn có quyền ngắt ident.
                       if ident_playing and reason == "manual":
-                          log("Chuyển manual: ngắt ident.")
+                          log("Manual được chọn: ngắt ident.")
                           stop_ffmpeg()
                           ident_playing = False
                           current_key = None
                           current_mode = None
-                          current_audio = None
+                          last_start = 0.0
 
-                      # Nếu lịch đổi tiếp trong khi ident đang phát,
-                      # khởi động ident mới cho mục lịch mới nhất.
                       if schedule_changed:
                           duration = ident_duration()
 
                           if duration is None:
                               log(
-                                  "Lịch đổi nhưng ident không hợp lệ "
-                                  "hoặc không tải được; bỏ qua ident."
+                                  "Lịch đổi nhưng ident không hợp lệ; "
+                                  "bỏ qua ident."
                               )
 
                               if ident_playing:
@@ -969,11 +1113,12 @@ jobs:
                                   ident_playing = False
                                   current_key = None
                                   current_mode = None
-                                  current_audio = None
+                                  last_start = 0.0
                           else:
                               log(
-                                  f"Lịch chuyển sang {source_name}; "
-                                  f"phát ident {duration:.1f} giây."
+                                  "Lịch chuyển sang "
+                                  + program["name"]
+                                  + f"; phát ident {duration:.1f} giây."
                               )
 
                               start_ffmpeg(
@@ -983,28 +1128,33 @@ jobs:
                               )
 
                               ident_playing = True
-
-                              # Giới hạn dự phòng nếu FFmpeg bị treo.
                               ident_deadline = (
-                                  time.monotonic() + duration + 20
+                                  time.monotonic()
+                                  + duration
+                                  + 20
                               )
 
-                              current_key = ("ident", occurrence)
+                              current_key = (
+                                  "ident",
+                                  occurrence,
+                              )
                               current_mode = "ident"
-                              current_audio = None
 
                       if ident_playing:
                           if process is None or process.poll() is not None:
-                              code = None if process is None else process.returncode
-                              log(f"Ident kết thúc; FFmpeg mã {code}.")
+                              code = (
+                                  None
+                                  if process is None
+                                  else process.returncode
+                              )
+
+                              log(f"Ident kết thúc; mã {code}.")
+
                               process = None
                               ident_playing = False
                               current_key = None
                               current_mode = None
-                              current_audio = None
-
-                              # Cho phép chuyển sang chương trình ngay.
-                              last_start = 0
+                              last_start = 0.0
 
                           elif time.monotonic() >= ident_deadline:
                               log("Ident quá thời gian; chuyển tiếp.")
@@ -1012,18 +1162,11 @@ jobs:
                               ident_playing = False
                               current_key = None
                               current_mode = None
-                              current_audio = None
-                              last_start = 0
+                              last_start = 0.0
 
                           else:
-                              if time.monotonic() - last_cleanup > 60:
-                                  cleanup_old_segments()
-                                  last_cleanup = time.monotonic()
-
                               stop_event.wait(0.5)
                               continue
-
-                      now = time.monotonic()
 
                       if process is not None and process.poll() is not None:
                           log(
@@ -1034,101 +1177,103 @@ jobs:
                           process = None
                           current_key = None
                           current_mode = None
-                          current_audio = None
 
-                      process_dead = process is None
-                      can_restart = now - last_start >= RESTART_DELAY
+                      if video_available:
+                          desired_mode = (
+                              "waiting"
+                              if program["kind"] == "waiting"
+                              else "main"
+                          )
+                      else:
+                          desired_mode = "fallback"
 
-                      if main_available:
-                          signature = config_signature(config, False)
+                      if desired_mode == "waiting":
+                          set_audio_candidates(
+                              waiting_audio_candidates(program)
+                          )
+                      elif desired_mode == "fallback":
+                          set_audio_candidates(
+                              fallback_audio_candidates(config)
+                          )
+                      else:
+                          set_audio_candidates(())
+
+                      with lock:
+                          audio_url = shared["audio_result"]
+
+                      logo_cfg = config.get("logo", {})
+
+                      if desired_mode == "waiting":
+                          relevant = {
+                              "logo": logo_cfg,
+                              "waiting": program["waiting"],
+                          }
 
                           desired_key = (
-                              "main",
-                              source_name,
-                              source_url,
-                              signature,
+                              "waiting",
+                              program["url"],
+                              audio_url,
+                              signature(relevant),
                           )
 
-                          if (
-                              desired_key != current_key or process_dead
-                          ) and can_restart:
-                              log(
-                                  f"Chọn nguồn {source_name} "
-                                  f"theo chế độ {reason}."
-                              )
-
-                              start_ffmpeg(
-                                  config,
-                                  "main",
-                                  source_url=source_url,
-                              )
-
-                              current_key = desired_key
-                              current_mode = "main"
-                              current_audio = None
-
-                      else:
-                          signature = config_signature(config, True)
+                      elif desired_mode == "fallback":
+                          relevant = {
+                              "logo": logo_cfg,
+                              "banner": config.get("banner", {}),
+                          }
 
                           desired_key = (
                               "fallback",
-                              source_name,
-                              signature,
+                              program["kind"],
+                              program["url"],
+                              audio_url,
+                              signature(relevant),
                           )
 
-                          if (
-                              desired_key != current_key or process_dead
-                          ) and can_restart:
+                      else:
+                          desired_key = (
+                              "main",
+                              program["url"],
+                              signature({"logo": logo_cfg}),
+                          )
+
+                      now = time.monotonic()
+                      can_restart = (
+                          now - last_start >= RESTART_DELAY
+                      )
+
+                      if (
+                          desired_key != current_key
+                          or process is None
+                      ) and can_restart:
+                          if desired_mode == "fallback":
                               log(
-                                  f"Nguồn {source_name} chưa khả dụng; "
+                                  "Video được chọn chưa khả dụng; "
                                   "phát fallback."
                               )
 
-                              start_ffmpeg(
-                                  config,
-                                  "fallback",
-                                  audio_url=None,
+                          elif desired_mode == "waiting":
+                              log(
+                                  "Phát chờ event; tiếng gốc video "
+                                  "được tắt."
                               )
 
-                              current_key = desired_key
-                              current_mode = "fallback"
-                              current_audio = None
+                          else:
+                              log(
+                                  "Phát nguồn chính: "
+                                  + program["name"]
+                              )
 
-                              request_audio(config)
+                          start_ffmpeg(
+                              config,
+                              desired_mode,
+                              source_url=program["url"],
+                              audio_url=audio_url,
+                              waiting=program["waiting"],
+                          )
 
-                          elif (
-                              current_mode == "fallback"
-                              and current_audio is None
-                              and now - last_audio_request >= AUDIO_RETRY_INTERVAL
-                          ):
-                              log("Đang thử lại audio fallback...")
-                              request_audio(config)
-
-                      if current_mode == "fallback" and audio_result is not None:
-                          request_id, audio_url, audio_name = audio_result
-
-                          with lock:
-                              if shared["audio_result"] == audio_result:
-                                  shared["audio_result"] = None
-
-                          if audio_url and current_audio != audio_url:
-                              if time.monotonic() - last_start >= RESTART_DELAY:
-                                  log("Audio fallback: " + audio_name)
-
-                                  start_ffmpeg(
-                                      config,
-                                      "fallback",
-                                      audio_url=audio_url,
-                                  )
-
-                                  current_audio = audio_url
-                              else:
-                                  with lock:
-                                      if shared["audio_result"] is None:
-                                          shared["audio_result"] = audio_result
-
-                          elif audio_url is None:
-                              log("Audio fallback: im lặng; sẽ thử lại sau.")
+                          current_key = desired_key
+                          current_mode = desired_mode
 
                       if time.monotonic() - last_cleanup > 60:
                           cleanup_old_segments()
@@ -1162,12 +1307,12 @@ jobs:
           echo ">>> Một thành phần đã dừng."
 
           echo "=== cloudflared ==="
-          cat "$ROOT/cloudflared.log"
+          cat "$ROOT/cloudflared.log" 2>/dev/null || true
 
           echo "=== nginx ==="
-          cat "$ROOT/nginx-error.log"
+          cat "$ROOT/nginx-error.log" 2>/dev/null || true
 
           echo "=== MediaMTX ==="
-          docker logs veotv-mediamtx
+          docker logs veotv-mediamtx 2>&1 || true
 
           exit 1
