@@ -66,7 +66,7 @@ jobs:
           TS_IP="$(tailscale ip -4 | head -n 1)"
 
           if [ -z "$TS_IP" ]; then
-            echo "Không lấy được IP Tailscale của runner."
+            echo "Không lấy được IP Tailscale."
             exit 1
           fi
 
@@ -105,7 +105,7 @@ jobs:
             "https://i.ibb.co/b5ZC62p5/1-1.png" \
             -o "$ROOT/assets/fallback.png"; then
 
-            echo ">>> Không tải được ảnh; tạo nền tối."
+            echo ">>> Không tải được ảnh fallback; tạo nền tối."
 
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi -i "color=c=0x15172b:s=1280x720" \
@@ -125,6 +125,30 @@ jobs:
               -f lavfi -i "color=c=black@0.0:s=100x100,format=rgba" \
               -frames:v 1 -threads 1 \
               "$ROOT/assets/logo.png"
+          fi
+
+          echo ">>> Tải ident..."
+
+          IDENT_URL="https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
+
+          if curl -fL --retry 2 --max-time 120 \
+            "$IDENT_URL" \
+            -o "$ROOT/assets/ident.mp4"; then
+
+            if ffprobe -v error \
+              -select_streams v:0 \
+              -show_entries stream=codec_type \
+              -of csv=p=0 \
+              "$ROOT/assets/ident.mp4" | grep -q video; then
+
+              echo ">>> Ident tải thành công."
+            else
+              echo ">>> Ident không có video hợp lệ; bỏ qua."
+              rm -f "$ROOT/assets/ident.mp4"
+            fi
+          else
+            echo ">>> Không tải được ident; chạy không có ident."
+            rm -f "$ROOT/assets/ident.mp4"
           fi
 
           printf '%s' "$TUNNEL_CREDENTIALS" > "$ROOT/credentials.json"
@@ -228,7 +252,6 @@ jobs:
           echo "1080p:  https://ott0.ankworks.bond/livestream01/1080/index.m3u8"
           echo "======================="
 
-          echo "=== MediaMTX log ==="
           docker logs -f veotv-mediamtx &
           LOG_PID=$!
 
@@ -243,7 +266,7 @@ jobs:
           import urllib.request
           import uuid
 
-          from datetime import datetime
+          from datetime import datetime, timedelta
           from pathlib import Path
           from zoneinfo import ZoneInfo
 
@@ -251,8 +274,8 @@ jobs:
               "https://veotv.htxuan-business.workers.dev"
               "/api/runner/config"
           )
-          TOKEN = os.environ["RUNNER_TOKEN"]
 
+          TOKEN = os.environ["RUNNER_TOKEN"]
           OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
 
           EDM_URL = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
@@ -262,6 +285,7 @@ jobs:
           )
 
           ROOT = Path("/tmp/veotv")
+          IDENT = ROOT / "assets" / "ident.mp4"
           FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
           TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -276,15 +300,10 @@ jobs:
 
           shared = {
               "config": None,
-
-              # Mỗi lần đổi nguồn tăng generation. Probe cũ trả về
-              # sẽ bị bỏ qua nếu generation không còn khớp.
               "generation": 0,
               "selected": None,
               "main_available": False,
               "failures": 0,
-
-              # Kết quả dò nhạc fallback.
               "audio_request": None,
               "audio_result": None,
           }
@@ -297,6 +316,13 @@ jobs:
           last_start = 0
           last_cleanup = 0
           last_audio_request = 0
+
+          # Dùng để phát hiện chuyển mục lịch.
+          previous_selection = None
+
+          # Ident chỉ được phát một lần cho mỗi lần chuyển lịch.
+          ident_playing = False
+          ident_deadline = 0
 
           def log(message):
               print(">>> " + message, flush=True)
@@ -312,7 +338,7 @@ jobs:
                   API_URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
-                      "User-Agent": "VeoTV-Control-Test/1.0",
+                      "User-Agent": "VeoTV-Control/1.0",
                       "Accept": "application/json",
                       "Cache-Control": "no-cache",
                   },
@@ -365,7 +391,8 @@ jobs:
 
           def select_source(config):
               if config.get("mode") == "manual":
-                  return str(config.get("manualSource", "obs")), "manual"
+                  name = str(config.get("manualSource", "obs"))
+                  return name, "manual", None
 
               now = datetime.now(TZ)
               current = now.hour * 60 + now.minute
@@ -377,6 +404,9 @@ jobs:
 
               for item in epg:
                   try:
+                      if not isinstance(item, dict):
+                          continue
+
                       start = minute_value(item["start"])
                       end = minute_value(item["end"])
 
@@ -387,13 +417,33 @@ jobs:
                       else:
                           active = False
 
-                      if active:
-                          return str(item.get("source", "obs")), "epg"
+                      if not active:
+                          continue
+
+                      name = str(item.get("source", "obs"))
+
+                      # Với lịch qua đêm, sau 00:00 vẫn thuộc
+                      # cùng một lượt chương trình của ngày trước.
+                      occurrence_date = now.date()
+
+                      if start > end and current < end:
+                          occurrence_date -= timedelta(days=1)
+
+                      # Không phụ thuộc vị trí trong danh sách:
+                      # kéo thả thứ tự không tự phát lại ident.
+                      occurrence = (
+                          occurrence_date.isoformat(),
+                          str(item.get("start")),
+                          str(item.get("end")),
+                          name,
+                      )
+
+                      return name, "epg", occurrence
 
                   except (ValueError, KeyError, TypeError):
                       continue
 
-              return "obs", "default"
+              return "obs", "default", None
 
           def resolve_source(config, name):
               if name == "obs":
@@ -526,6 +576,40 @@ jobs:
                       if current is not None and current[0] == request_id:
                           shared["audio_result"] = result
 
+          def ident_duration():
+              if not IDENT.is_file():
+                  return None
+
+              try:
+                  result = subprocess.run(
+                      [
+                          "ffprobe",
+                          "-v", "error",
+                          "-show_entries", "format=duration",
+                          "-of", "default=noprint_wrappers=1:nokey=1",
+                          str(IDENT),
+                      ],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                      timeout=10,
+                  )
+
+                  duration = float(result.stdout.strip())
+
+                  # Giới hạn để tránh file lỗi làm ident chạy quá lâu.
+                  if result.returncode == 0 and 0 < duration <= 300:
+                      return duration
+
+              except (
+                  ValueError,
+                  OSError,
+                  subprocess.TimeoutExpired,
+              ):
+                  pass
+
+              return None
+
           def stop_ffmpeg():
               global process
 
@@ -543,7 +627,7 @@ jobs:
 
               process = None
 
-          def build_filters(config, fallback):
+          def build_filters(config, fallback, ident=False):
               logo_cfg = config.get("logo", {})
               banner_cfg = config.get("banner", {})
 
@@ -580,7 +664,8 @@ jobs:
 
               current = "base"
 
-              if logo_enabled:
+              # Ident đã có logo riêng, không đè thêm logo góc.
+              if logo_enabled and not ident:
                   parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
                   parts.append(
                       f"[{current}][logo]"
@@ -608,10 +693,17 @@ jobs:
 
               return ";".join(parts)
 
-          def output_args(label, audio_map, resolution, bitrate, run_id):
+          def output_args(
+              label,
+              audio_map,
+              resolution,
+              bitrate,
+              run_id,
+              duration=None,
+          ):
               folder = ROOT / "www" / "livestream01" / resolution
 
-              return [
+              args = [
                   "-map", label,
                   "-map", audio_map,
                   "-c:v", "libx264",
@@ -622,6 +714,12 @@ jobs:
                   "-sc_threshold", "0",
                   "-c:a", "aac",
                   "-b:a", "128k",
+              ]
+
+              if duration is not None:
+                  args += ["-t", str(duration)]
+
+              args += [
                   "-f", "hls",
                   "-hls_time", "2",
                   "-hls_list_size", "6",
@@ -632,13 +730,22 @@ jobs:
                   str(folder / "index.m3u8"),
               ]
 
-          def start_ffmpeg(config, mode, source_url=None, audio_url=None):
+              return args
+
+          def start_ffmpeg(
+              config,
+              mode,
+              source_url=None,
+              audio_url=None,
+              duration=None,
+          ):
               global process, last_start
 
               stop_ffmpeg()
 
               run_id = uuid.uuid4().hex[:10]
               fallback = mode == "fallback"
+              ident = mode == "ident"
 
               cmd = [
                   "ffmpeg",
@@ -653,6 +760,11 @@ jobs:
                       "-loop", "1",
                       "-framerate", "30",
                       "-i", str(ROOT / "assets" / "fallback.png"),
+                  ]
+              elif ident:
+                  cmd += [
+                      "-re",
+                      "-i", str(IDENT),
                   ]
               else:
                   cmd += [
@@ -683,23 +795,46 @@ jobs:
 
                   audio_map = "2:a:0"
               else:
+                  # Ident hoặc nguồn chính có thể không có audio.
                   audio_map = "0:a:0?"
 
-              cmd += ["-filter_complex", build_filters(config, fallback)]
-              cmd += output_args("[v720]", audio_map, "720", "2800k", run_id)
-              cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id)
+              cmd += [
+                  "-filter_complex",
+                  build_filters(config, fallback, ident),
+              ]
+
+              cmd += output_args(
+                  "[v720]",
+                  audio_map,
+                  "720",
+                  "2800k",
+                  run_id,
+                  duration,
+              )
+
+              cmd += output_args(
+                  "[v1080]",
+                  audio_map,
+                  "1080",
+                  "5000k",
+                  run_id,
+                  duration,
+              )
 
               log("Khởi động FFmpeg: " + mode)
 
-              # Không in lệnh vì URL nguồn có thể chứa token.
+              # Không in lệnh: URL nguồn có thể chứa token.
               process = subprocess.Popen(cmd)
               last_start = time.monotonic()
 
-          def config_signature(config):
+          def config_signature(config, fallback):
               relevant = {
                   "logo": config.get("logo"),
-                  "banner": config.get("banner"),
               }
+
+              # Chỉ banner fallback mới cần làm FFmpeg khởi động lại.
+              if fallback:
+                  relevant["banner"] = config.get("banner")
 
               raw = json.dumps(
                   relevant,
@@ -731,6 +866,7 @@ jobs:
                   sources = {}
 
               request_id = uuid.uuid4().hex
+
               request = (
                   request_id,
                   sources.get("edm", EDM_URL),
@@ -749,6 +885,7 @@ jobs:
 
           log("Supervisor bắt đầu.")
           log("Đọc dashboard mỗi 2 giây; probe chạy độc lập.")
+          log("Ident chỉ phát khi auto chuyển sang mục lịch mới.")
 
           try:
               while not stop_event.is_set():
@@ -760,10 +897,31 @@ jobs:
                       continue
 
                   try:
-                      source_name, reason = select_source(config)
+                      source_name, reason, occurrence = select_source(config)
                       source_url = resolve_source(config, source_name)
                       selected = (source_name, source_url)
-                      signature = config_signature(config)
+
+                      # Phát hiện chuyển lịch:
+                      # - Không phát ở lần đọc cấu hình đầu tiên.
+                      # - Không phát khi chuyển từ manual sang auto.
+                      # - Có phát khi auto chuyển sang một mục EPG khác,
+                      #   kể cả hai mục dùng cùng nguồn.
+                      # - Không phát khi EPG kết thúc và trở về OBS mặc định.
+                      current_selection = (reason, occurrence)
+
+                      schedule_changed = False
+
+                      if previous_selection is not None:
+                          previous_reason, previous_occurrence = previous_selection
+
+                          if (
+                              previous_reason in ("epg", "default")
+                              and reason == "epg"
+                              and occurrence != previous_occurrence
+                          ):
+                              schedule_changed = True
+
+                      previous_selection = current_selection
 
                       with lock:
                           if selected != shared["selected"]:
@@ -786,6 +944,87 @@ jobs:
 
                       now = time.monotonic()
 
+                      # Manual luôn có quyền ngắt ident.
+                      if ident_playing and reason == "manual":
+                          log("Chuyển manual: ngắt ident.")
+                          stop_ffmpeg()
+                          ident_playing = False
+                          current_key = None
+                          current_mode = None
+                          current_audio = None
+
+                      # Nếu lịch đổi tiếp trong khi ident đang phát,
+                      # khởi động ident mới cho mục lịch mới nhất.
+                      if schedule_changed:
+                          duration = ident_duration()
+
+                          if duration is None:
+                              log(
+                                  "Lịch đổi nhưng ident không hợp lệ "
+                                  "hoặc không tải được; bỏ qua ident."
+                              )
+
+                              if ident_playing:
+                                  stop_ffmpeg()
+                                  ident_playing = False
+                                  current_key = None
+                                  current_mode = None
+                                  current_audio = None
+                          else:
+                              log(
+                                  f"Lịch chuyển sang {source_name}; "
+                                  f"phát ident {duration:.1f} giây."
+                              )
+
+                              start_ffmpeg(
+                                  config,
+                                  "ident",
+                                  duration=duration,
+                              )
+
+                              ident_playing = True
+
+                              # Giới hạn dự phòng nếu FFmpeg bị treo.
+                              ident_deadline = (
+                                  time.monotonic() + duration + 20
+                              )
+
+                              current_key = ("ident", occurrence)
+                              current_mode = "ident"
+                              current_audio = None
+
+                      if ident_playing:
+                          if process is None or process.poll() is not None:
+                              code = None if process is None else process.returncode
+                              log(f"Ident kết thúc; FFmpeg mã {code}.")
+                              process = None
+                              ident_playing = False
+                              current_key = None
+                              current_mode = None
+                              current_audio = None
+
+                              # Cho phép chuyển sang chương trình ngay.
+                              last_start = 0
+
+                          elif time.monotonic() >= ident_deadline:
+                              log("Ident quá thời gian; chuyển tiếp.")
+                              stop_ffmpeg()
+                              ident_playing = False
+                              current_key = None
+                              current_mode = None
+                              current_audio = None
+                              last_start = 0
+
+                          else:
+                              if time.monotonic() - last_cleanup > 60:
+                                  cleanup_old_segments()
+                                  last_cleanup = time.monotonic()
+
+                              stop_event.wait(0.5)
+                              continue
+
+                      now = time.monotonic()
+
                       if process is not None and process.poll() is not None:
                           log(
                               "FFmpeg đã thoát, mã: "
@@ -801,6 +1040,8 @@ jobs:
                       can_restart = now - last_start >= RESTART_DELAY
 
                       if main_available:
+                          signature = config_signature(config, False)
+
                           desired_key = (
                               "main",
                               source_name,
@@ -827,6 +1068,8 @@ jobs:
                               current_audio = None
 
                       else:
+                          signature = config_signature(config, True)
+
                           desired_key = (
                               "fallback",
                               source_name,
@@ -841,8 +1084,6 @@ jobs:
                                   "phát fallback."
                               )
 
-                              # Bắt đầu bằng im lặng để không chờ probe audio.
-                              # Audio được dò ở luồng riêng.
                               start_ffmpeg(
                                   config,
                                   "fallback",
@@ -863,7 +1104,6 @@ jobs:
                               log("Đang thử lại audio fallback...")
                               request_audio(config)
 
-                      # Chỉ dùng kết quả audio khi đang ở fallback.
                       if current_mode == "fallback" and audio_result is not None:
                           request_id, audio_url, audio_name = audio_result
 
@@ -883,8 +1123,6 @@ jobs:
 
                                   current_audio = audio_url
                               else:
-                                  # Chưa hết thời gian chờ restart.
-                                  # Để lại kết quả cho vòng sau.
                                   with lock:
                                       if shared["audio_result"] is None:
                                           shared["audio_result"] = audio_result
