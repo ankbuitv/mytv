@@ -16,6 +16,11 @@ jobs:
     timeout-minutes: 350
 
     steps:
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
       - name: Install tools
         shell: bash
         run: |
@@ -23,9 +28,6 @@ jobs:
 
           sudo apt-get update
           sudo apt-get install -y ffmpeg nginx fonts-dejavu-core
-
-          # bore.pub, không phải TryBore.com.
-          cargo install --locked bore-cli --root /tmp/bore-install
 
           curl -fL --retry 3 --max-time 120 \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
@@ -61,6 +63,13 @@ jobs:
             exit 1
           fi
 
+          TS_IP=$(tailscale ip -4 | head -n 1)
+
+          if [ -z "$TS_IP" ]; then
+            echo ">>> Không lấy được IP Tailscale của runner."
+            exit 1
+          fi
+
           mkdir -p /tmp/veotv/assets
           mkdir -p /tmp/veotv/www/livestream01/720
           mkdir -p /tmp/veotv/www/livestream01/1080
@@ -68,7 +77,6 @@ jobs:
           cleanup() {
             for pid in \
               "${SUP_PID:-}" \
-              "${BORE_PID:-}" \
               "${CF_PID:-}" \
               "${NGINX_PID:-}" \
               "${LOG_PID:-}"
@@ -115,7 +123,8 @@ jobs:
               /tmp/veotv/assets/logo.png
           fi
 
-          printf '%s' "$TUNNEL_CREDENTIALS" > /tmp/veotv/credentials.json
+          printf '%s' "$TUNNEL_CREDENTIALS" \
+            > /tmp/veotv/credentials.json
 
           cat > /tmp/veotv/mediamtx.yml <<EOF
           authMethod: internal
@@ -139,6 +148,7 @@ jobs:
 
           docker run -d --name veotv-mediamtx \
             -p 127.0.0.1:1935:1935 \
+            -p "$TS_IP:1935:1935" \
             -v /tmp/veotv/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:1.21.3
 
@@ -185,6 +195,7 @@ jobs:
           EOF
 
           nginx -t -c /tmp/veotv/nginx.conf
+
           nginx -c /tmp/veotv/nginx.conf -g 'daemon off;' &
           NGINX_PID=$!
 
@@ -204,38 +215,9 @@ jobs:
             > /tmp/veotv/cloudflared.log 2>&1 &
           CF_PID=$!
 
-          /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/veotv/bore.log 2>&1 &
-          BORE_PID=$!
-
-          RTMP_ADDR=""
-
-          echo ">>> Đang chờ bore..."
-
-          for i in $(seq 1 60); do
-            RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-              /tmp/veotv/bore.log | head -n 1 || true)
-
-            if [ -n "$RTMP_ADDR" ]; then
-              break
-            fi
-
-            if ! kill -0 "$BORE_PID" 2>/dev/null; then
-              break
-            fi
-
-            sleep 1
-          done
-
-          if [ -z "$RTMP_ADDR" ]; then
-            echo ">>> Không mở được bore:"
-            cat /tmp/veotv/bore.log
-            exit 1
-          fi
-
           echo ""
-          echo "========= OBS ========="
-          echo "Server: rtmp://$RTMP_ADDR/live"
+          echo "========= OBS QUA TAILSCALE ========="
+          echo "Server: rtmp://$TS_IP:1935/live"
           echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
           echo ""
           echo "========= HLS ========="
@@ -526,7 +508,6 @@ jobs:
 
               current = "base"
 
-              # Input 1 luôn là logo.
               if logo_enabled:
                   parts.append(
                       f"[1:v]scale={width}:-1,format=rgba[logo]"
@@ -766,8 +747,7 @@ jobs:
 
                       now = time.monotonic()
 
-                      # Probe định kỳ. Probe đồng bộ nên có thể mất
-                      # tối đa 15 giây cho mỗi lần.
+                      # Probe đồng bộ có thể mất tới 15 giây.
                       if now - last_probe >= PROBE_INTERVAL:
                           available = probe(source_url, "v:0")
                           last_probe = time.monotonic()
@@ -888,9 +868,7 @@ jobs:
                               and time.monotonic() - last_audio_retry
                               >= SILENT_AUDIO_RETRY_INTERVAL
                           ):
-                              log(
-                                  "Đang thử lại audio fallback..."
-                              )
+                              log("Đang thử lại audio fallback...")
 
                               audio_url, audio_name = (
                                   choose_fallback_audio(config)
@@ -941,8 +919,7 @@ jobs:
           python3 -u /tmp/veotv/supervisor.py &
           SUP_PID=$!
 
-          while kill -0 "$BORE_PID" 2>/dev/null \
-            && kill -0 "$CF_PID" 2>/dev/null \
+          while kill -0 "$CF_PID" 2>/dev/null \
             && kill -0 "$NGINX_PID" 2>/dev/null \
             && kill -0 "$SUP_PID" 2>/dev/null \
             && [ "$(docker inspect -f '{{.State.Running}}' veotv-mediamtx)" = "true" ]; do
@@ -950,9 +927,6 @@ jobs:
           done
 
           echo ">>> Một thành phần đã dừng."
-
-          echo "=== bore ==="
-          cat /tmp/veotv/bore.log
 
           echo "=== cloudflared ==="
           cat /tmp/veotv/cloudflared.log
