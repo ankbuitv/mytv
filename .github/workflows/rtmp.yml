@@ -1,4 +1,4 @@
-name: IPTV named tunnel test
+name: VeoTV control test
 
 on:
   workflow_dispatch:
@@ -6,223 +6,134 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: iptv-named-tunnel
-  cancel-in-progress: false
-
 jobs:
-  stream:
+  control:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
-      - name: Install tools
-        shell: bash
-        run: |
-          set -eu
-
-          sudo apt-get update
-          sudo apt-get install -y nginx
-
-          cargo install --locked bore-cli --root /tmp/bore-install
-
-          curl -fL --retry 3 \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o /tmp/cloudflared
-
-          chmod +x /tmp/cloudflared
-
-      - name: Start stream
+      - name: Read dashboard config
         env:
-          PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
-          TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
-          TUNNEL_ID: ${{ vars.TUNNEL_ID }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
         shell: bash
         run: |
           set -eu
-          umask 077
 
-          if [ -z "$PUBLISH_PASSWORD" ] || \
-             [ -z "$TUNNEL_CREDENTIALS" ] || \
-             [ -z "$TUNNEL_ID" ]; then
-            echo "Thiếu PUBLISH_PASSWORD, TUNNEL_CREDENTIALS hoặc TUNNEL_ID."
+          if [ -z "$RUNNER_TOKEN" ]; then
+            echo "Thiếu GitHub Secret RUNNER_TOKEN."
             exit 1
           fi
 
-          if ! [[ "$PUBLISH_PASSWORD" =~ ^[a-zA-Z0-9]+$ ]]; then
-            echo "PUBLISH_PASSWORD chỉ được gồm chữ và số."
-            exit 1
-          fi
+          cat > /tmp/veotv-control.py <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
 
-          if ! [[ "$TUNNEL_ID" =~ ^[a-fA-F0-9-]+$ ]]; then
-            echo "TUNNEL_ID không đúng định dạng."
-            exit 1
-          fi
+          API_URL = (
+              "https://veotv.htxuan-business.workers.dev"
+              "/api/runner/config"
+          )
+          TOKEN = os.environ["RUNNER_TOKEN"]
+          TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-          mkdir -p /tmp/iptv
+          def minutes(value):
+              """Chuyển HH:MM thành số phút; cho phép 24:00."""
+              hour, minute = map(int, value.split(":"))
+              if not (0 <= hour <= 24 and 0 <= minute < 60):
+                  raise ValueError("Giờ không hợp lệ")
+              if hour == 24 and minute != 0:
+                  raise ValueError("Chỉ chấp nhận 24:00")
+              return hour * 60 + minute
 
-          cleanup() {
-            for pid in \
-              "${LOG_PID:-}" \
-              "${BORE_PID:-}" \
-              "${CF_PID:-}" \
-              "${NGINX_PID:-}"
-            do
-              if [ -n "$pid" ]; then
-                kill "$pid" 2>/dev/null || true
-              fi
-            done
+          def get_config():
+              request = urllib.request.Request(
+                  API_URL,
+                  headers={
+                      "Authorization": "Bearer " + TOKEN,
+                      "Cache-Control": "no-cache",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  return json.load(response)
 
-            docker rm -f iptv-mediamtx >/dev/null 2>&1 || true
-            rm -rf /tmp/iptv
-          }
-          trap cleanup EXIT
+          def select_source(config):
+              if config.get("mode") == "manual":
+                  return (
+                      config.get("manualSource", "obs"),
+                      "manual",
+                      None,
+                  )
 
-          printf '%s' "$TUNNEL_CREDENTIALS" > /tmp/iptv/credentials.json
+              now = datetime.now(TZ)
+              current = now.hour * 60 + now.minute
 
-          cat > /tmp/iptv/mediamtx.yml <<EOF
-          authMethod: internal
+              for item in config.get("epg", []):
+                  start = minutes(item["start"])
+                  end = minutes(item["end"])
 
-          authInternalUsers:
-            - user: publisher
-              pass: "$PUBLISH_PASSWORD"
-              permissions:
-                - action: publish
-                  path: live/channel
+                  # Hỗ trợ khung giờ thường và khung qua nửa đêm.
+                  active = (
+                      start <= current < end
+                      if start < end
+                      else current >= start or current < end
+                      if start > end
+                      else False
+                  )
 
-            - user: any
-              pass:
-              permissions:
-                - action: read
-                  path: live/channel
+                  if active:
+                      return (
+                          item.get("source", "obs"),
+                          "epg",
+                          item.get("title", ""),
+                      )
 
-          hlsAlwaysRemux: yes
-          hlsVariant: mpegts
+              return ("obs", "default", None)
 
-          paths:
-            live/channel:
-          EOF
+          previous = None
+          print(">>> Đang đọc dashboard mỗi 10 giây...", flush=True)
 
-          docker run -d --name iptv-mediamtx \
-            -p 127.0.0.1:1935:1935 \
-            -p 127.0.0.1:8888:8888 \
-            -v /tmp/iptv/mediamtx.yml:/mediamtx.yml:ro \
-            bluenviron/mediamtx:1.21.3
+          while True:
+              try:
+                  config = get_config()
+                  source, reason, title = select_source(config)
 
-          # Nginx ánh xạ đường dẫn công khai sang HLS MediaMTX.
-          cat > /tmp/iptv/nginx.conf <<'EOF'
-          worker_processes 1;
-          error_log /tmp/iptv/nginx-error.log warn;
-          pid /tmp/iptv/nginx.pid;
+                  # Không in URL nguồn hoặc token vào log.
+                  state = (
+                      source,
+                      reason,
+                      title,
+                      bool(config.get("logo", {}).get("enabled")),
+                      bool(config.get("banner", {}).get("enabled")),
+                  )
 
-          events {
-              worker_connections 1024;
-          }
+                  if state != previous:
+                      print(
+                          ">>> Nguồn chọn:", source,
+                          "| Chế độ:", reason,
+                          "| Chương trình:", title or "-",
+                          "| Logo:", "bật" if state[3] else "tắt",
+                          "| Banner:", "bật" if state[4] else "tắt",
+                          flush=True,
+                      )
+                      previous = state
 
-          http {
-              access_log off;
+              except urllib.error.HTTPError as exc:
+                  print(
+                      f">>> Worker trả HTTP {exc.code}. "
+                      "Kiểm tra RUNNER_TOKEN và endpoint.",
+                      flush=True,
+                  )
+              except Exception as exc:
+                  print(
+                      f">>> Không đọc được cấu hình: {type(exc).__name__}",
+                      flush=True,
+                  )
 
-              server {
-                  listen 127.0.0.1:8080;
+              time.sleep(10)
+          PY
 
-                  location = /livestream01/manifest.m3u8 {
-                      proxy_pass http://127.0.0.1:8888/live/channel/index.m3u8;
-                      proxy_set_header Host $host;
-                      proxy_redirect /live/channel/ /livestream01/;
-                      proxy_buffering off;
-                  }
-
-                  location /livestream01/ {
-                      proxy_pass http://127.0.0.1:8888/live/channel/;
-                      proxy_set_header Host $host;
-                      proxy_redirect /live/channel/ /livestream01/;
-                      proxy_buffering off;
-                  }
-
-                  location / {
-                      return 404;
-                  }
-              }
-          }
-          EOF
-
-          nginx -t -c /tmp/iptv/nginx.conf
-          nginx -c /tmp/iptv/nginx.conf -g 'daemon off;' &
-          NGINX_PID=$!
-
-          # Locally managed named tunnel.
-          cat > /tmp/iptv/cloudflared.yml <<EOF
-          tunnel: $TUNNEL_ID
-          credentials-file: /tmp/iptv/credentials.json
-
-          ingress:
-            - hostname: ott0.ankworks.bond
-              service: http://localhost:8080
-            - service: http_status:404
-          EOF
-
-          /tmp/cloudflared \
-            --config /tmp/iptv/cloudflared.yml \
-            tunnel run \
-            > /tmp/iptv/cloudflared.log 2>&1 &
-          CF_PID=$!
-
-          # Cổng RTMP public qua bore.
-          /tmp/bore-install/bin/bore local 1935 --to bore.pub \
-            > /tmp/iptv/bore.log 2>&1 &
-          BORE_PID=$!
-
-          RTMP_ADDR=""
-
-          for i in $(seq 1 60); do
-            RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
-              /tmp/iptv/bore.log | head -n 1 || true)
-
-            if [ -n "$RTMP_ADDR" ]; then
-              break
-            fi
-
-            if ! kill -0 "$BORE_PID" 2>/dev/null; then
-              break
-            fi
-
-            sleep 1
-          done
-
-          if [ -z "$RTMP_ADDR" ]; then
-            echo "Không mở được bore:"
-            cat /tmp/iptv/bore.log
-            exit 1
-          fi
-
-          echo ""
-          echo "========= OBS ========="
-          echo "Server: rtmp://$RTMP_ADDR/live"
-          echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
-          echo ""
-          echo "========= HLS ========="
-          echo "https://ott0.ankworks.bond/livestream01/manifest.m3u8"
-          echo "======================="
-          echo "Đợi tunnel kết nối, bật OBS rồi thử link HLS."
-
-          echo "=== MediaMTX log ==="
-          docker logs -f iptv-mediamtx &
-          LOG_PID=$!
-
-          while kill -0 "$BORE_PID" 2>/dev/null \
-            && kill -0 "$CF_PID" 2>/dev/null \
-            && kill -0 "$NGINX_PID" 2>/dev/null \
-            && [ "$(docker inspect -f '{{.State.Running}}' iptv-mediamtx)" = "true" ]; do
-            sleep 5
-          done
-
-          echo "Một thành phần đã dừng."
-          echo "=== bore ==="
-          cat /tmp/iptv/bore.log
-          echo "=== cloudflared ==="
-          cat /tmp/iptv/cloudflared.log
-          echo "=== nginx ==="
-          cat /tmp/iptv/nginx-error.log
-          echo "=== MediaMTX ==="
-          docker logs iptv-mediamtx
-          exit 1
+          python3 -u /tmp/veotv-control.py
