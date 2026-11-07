@@ -1,4 +1,4 @@
-name: VeoTV control test
+name: VeoTV dashboard connection
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 jobs:
-  control:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     steps:
-      - name: Read dashboard config
+      - name: Read dashboard settings
         env:
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
         shell: bash
@@ -20,120 +20,104 @@ jobs:
           set -eu
 
           if [ -z "$RUNNER_TOKEN" ]; then
-            echo "Thiếu GitHub Secret RUNNER_TOKEN."
+            echo "Thiếu GitHub secret RUNNER_TOKEN."
             exit 1
           fi
 
-          cat > /tmp/veotv-control.py <<'PY'
+          cat > /tmp/veotv-test.py <<'PY'
           import json
           import os
           import time
           import urllib.error
           import urllib.request
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
 
-          API_URL = (
-              "https://veotv.htxuan-business.workers.dev"
-              "/api/runner/config"
-          )
+          URL = "https://veotv.htxuan-business.workers.dev/api/runner/config"
           TOKEN = os.environ["RUNNER_TOKEN"]
-          TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
-          def minutes(value):
-              """Chuyển HH:MM thành số phút; cho phép 24:00."""
-              hour, minute = map(int, value.split(":"))
-              if not (0 <= hour <= 24 and 0 <= minute < 60):
-                  raise ValueError("Giờ không hợp lệ")
-              if hour == 24 and minute != 0:
-                  raise ValueError("Chỉ chấp nhận 24:00")
-              return hour * 60 + minute
 
           def get_config():
               request = urllib.request.Request(
-                  API_URL,
+                  URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
+                      "User-Agent": "VeoTV-Control-Test/1.0",
+                      "Accept": "application/json",
                       "Cache-Control": "no-cache",
                   },
               )
-              with urllib.request.urlopen(request, timeout=10) as response:
+
+              with urllib.request.urlopen(request, timeout=15) as response:
                   return json.load(response)
 
-          def select_source(config):
-              if config.get("mode") == "manual":
-                  return (
-                      config.get("manualSource", "obs"),
-                      "manual",
-                      None,
+          print(">>> Đang kết nối Worker...", flush=True)
+
+          try:
+              config = get_config()
+          except urllib.error.HTTPError as exc:
+              print(f">>> Worker trả HTTP {exc.code}", flush=True)
+              print(f">>> Server: {exc.headers.get('Server', '-')}", flush=True)
+              print(f">>> CF-Ray: {exc.headers.get('CF-Ray', '-')}", flush=True)
+
+              if exc.code == 401:
+                  print(
+                      ">>> Kiểm tra RUNNER_TOKEN ở GitHub và Worker.",
+                      flush=True,
                   )
-
-              now = datetime.now(TZ)
-              current = now.hour * 60 + now.minute
-
-              for item in config.get("epg", []):
-                  start = minutes(item["start"])
-                  end = minutes(item["end"])
-
-                  # Hỗ trợ khung giờ thường và khung qua nửa đêm.
-                  active = (
-                      start <= current < end
-                      if start < end
-                      else current >= start or current < end
-                      if start > end
-                      else False
+              elif exc.code == 403:
+                  print(
+                      ">>> Request có thể bị Cloudflare hoặc rule từ chối. "
+                      "Kiểm tra Security Events bằng CF-Ray.",
+                      flush=True,
                   )
+              else:
+                  print(">>> Kiểm tra Worker và KV binding.", flush=True)
 
-                  if active:
-                      return (
-                          item.get("source", "obs"),
-                          "epg",
-                          item.get("title", ""),
-                      )
+              raise SystemExit(1)
+          except Exception as exc:
+              print(
+                  f">>> Không kết nối được: {type(exc).__name__}: {exc}",
+                  flush=True,
+              )
+              raise SystemExit(1)
 
-              return ("obs", "default", None)
+          print(">>> KẾT NỐI THÀNH CÔNG!", flush=True)
+          print(">>> Theo dõi cấu hình mỗi 10 giây.", flush=True)
 
           previous = None
-          print(">>> Đang đọc dashboard mỗi 10 giây...", flush=True)
 
           while True:
               try:
                   config = get_config()
-                  source, reason, title = select_source(config)
 
-                  # Không in URL nguồn hoặc token vào log.
+                  # Chỉ in trạng thái cần test, không in token hay URL nguồn.
                   state = (
-                      source,
-                      reason,
-                      title,
-                      bool(config.get("logo", {}).get("enabled")),
-                      bool(config.get("banner", {}).get("enabled")),
+                      config.get("mode", "auto"),
+                      config.get("manualSource", "obs"),
+                      config.get("logo", {}).get("enabled", False),
+                      config.get("banner", {}).get("enabled", False),
                   )
 
                   if state != previous:
+                      mode, source, logo, banner = state
                       print(
-                          ">>> Nguồn chọn:", source,
-                          "| Chế độ:", reason,
-                          "| Chương trình:", title or "-",
-                          "| Logo:", "bật" if state[3] else "tắt",
-                          "| Banner:", "bật" if state[4] else "tắt",
+                          f">>> mode={mode} | manualSource={source} "
+                          f"| logo={logo} | banner={banner}",
                           flush=True,
                       )
                       previous = state
 
               except urllib.error.HTTPError as exc:
                   print(
-                      f">>> Worker trả HTTP {exc.code}. "
-                      "Kiểm tra RUNNER_TOKEN và endpoint.",
+                      f">>> Lần đọc này bị HTTP {exc.code}; sẽ thử lại.",
                       flush=True,
                   )
               except Exception as exc:
                   print(
-                      f">>> Không đọc được cấu hình: {type(exc).__name__}",
+                      f">>> Lỗi đọc cấu hình: {type(exc).__name__}; "
+                      "sẽ thử lại.",
                       flush=True,
                   )
 
               time.sleep(10)
           PY
 
-          python3 -u /tmp/veotv-control.py
+          python3 -u /tmp/veotv-test.py
