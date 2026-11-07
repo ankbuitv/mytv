@@ -724,7 +724,7 @@ jobs:
                   "-hls_time", "2",
                   "-hls_list_size", "6",
                   "-hls_flags",
-                  "delete_segments+temp_file+omit_endlist",
+                  "append_list+delete_segments+temp_file+omit_endlist",
                   "-hls_segment_filename",
                   str(folder / f"{run_id}_%06d.ts"),
                   str(folder / "index.m3u8"),
