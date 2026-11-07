@@ -1,4 +1,4 @@
-name: VeoTV dashboard connection
+name: VeoTV live prototype
 
 on:
   workflow_dispatch:
@@ -6,37 +6,321 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: veotv-live
+  cancel-in-progress: false
+
 jobs:
-  test:
+  live:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+
+    # Dừng sớm hơn giới hạn job để test; chưa tự restart.
+    timeout-minutes: 350
 
     steps:
-      - name: Read dashboard settings
-        env:
-          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+      - name: Install tools
         shell: bash
         run: |
           set -eu
 
-          if [ -z "$RUNNER_TOKEN" ]; then
-            echo "Thiếu GitHub secret RUNNER_TOKEN."
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg nginx fonts-dejavu-core
+
+          # Đây là bore cũ dùng bore.pub, không phải TryBore.com.
+          cargo install --locked bore-cli --root /tmp/bore-install
+
+          curl -fL --retry 3 --max-time 120 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+
+          chmod +x /tmp/cloudflared
+
+      - name: Run VeoTV
+        env:
+          PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+          TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
+          TUNNEL_ID: ${{ vars.TUNNEL_ID }}
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+
+          for var in PUBLISH_PASSWORD RUNNER_TOKEN TUNNEL_CREDENTIALS TUNNEL_ID; do
+            if [ -z "${!var:-}" ]; then
+              echo "Thiếu cấu hình: $var"
+              exit 1
+            fi
+          done
+
+          if ! [[ "$PUBLISH_PASSWORD" =~ ^[a-zA-Z0-9]+$ ]]; then
+            echo "PUBLISH_PASSWORD chỉ được gồm chữ và số."
             exit 1
           fi
 
-          cat > /tmp/veotv-test.py <<'PY'
+          if ! [[ "$TUNNEL_ID" =~ ^[a-fA-F0-9-]+$ ]]; then
+            echo "TUNNEL_ID không đúng định dạng."
+            exit 1
+          fi
+
+          mkdir -p /tmp/veotv/assets
+          mkdir -p /tmp/veotv/www/livestream01/720
+          mkdir -p /tmp/veotv/www/livestream01/1080
+
+          cleanup() {
+            for pid in \
+              "${SUP_PID:-}" \
+              "${BORE_PID:-}" \
+              "${CF_PID:-}" \
+              "${NGINX_PID:-}" \
+              "${LOG_PID:-}"
+            do
+              if [ -n "$pid" ]; then
+                kill "$pid" 2>/dev/null || true
+              fi
+            done
+
+            pkill -TERM -x ffmpeg 2>/dev/null || true
+            docker rm -f veotv-mediamtx >/dev/null 2>&1 || true
+            rm -rf /tmp/veotv
+          }
+          trap cleanup EXIT
+
+          # Tải ảnh vào runner. Nếu host ảnh lỗi, tạo ảnh thay thế để
+          # workflow vẫn có thể tiếp tục.
+          echo ">>> Tải ảnh fallback..."
+          if ! curl -fL --retry 2 --max-time 30 \
+            "https://i.ibb.co/b5ZC62p5/1-1.png" \
+            -o /tmp/veotv/assets/fallback.png; then
+            echo ">>> Không tải được ảnh fallback; tạo nền tối."
+            ffmpeg -hide_banner -loglevel error -y \
+              -f lavfi -i "color=c=0x15172b:s=1280x720" \
+              -frames:v 1 -threads 1 \
+              /tmp/veotv/assets/fallback.png
+          fi
+
+          echo ">>> Tải logo..."
+          if ! curl -fL --retry 2 --max-time 30 \
+            "https://i.ibb.co/xtShkTkr/logo.png" \
+            -o /tmp/veotv/assets/logo.png; then
+            echo ">>> Không tải được logo; dùng ảnh trong suốt."
+            ffmpeg -hide_banner -loglevel error -y \
+              -f lavfi -i "color=c=black@0.0:s=100x100,format=rgba" \
+              -frames:v 1 -threads 1 \
+              /tmp/veotv/assets/logo.png
+          fi
+
+          printf '%s' "$TUNNEL_CREDENTIALS" > /tmp/veotv/credentials.json
+
+          # Nhận RTMP từ OBS.
+          cat > /tmp/veotv/mediamtx.yml <<EOF
+          authMethod: internal
+
+          authInternalUsers:
+            - user: publisher
+              pass: "$PUBLISH_PASSWORD"
+              permissions:
+                - action: publish
+                  path: live/channel
+
+            - user: any
+              pass:
+              permissions:
+                - action: read
+                  path: live/channel
+
+          paths:
+            live/channel:
+          EOF
+
+          docker run -d --name veotv-mediamtx \
+            -p 127.0.0.1:1935:1935 \
+            -v /tmp/veotv/mediamtx.yml:/mediamtx.yml:ro \
+            bluenviron/mediamtx:1.21.3
+
+          # Master playlist cố định.
+          cat > /tmp/veotv/www/livestream01/manifest.m3u8 <<'EOF'
+          #EXTM3U
+          #EXT-X-VERSION:3
+          #EXT-X-STREAM-INF:BANDWIDTH=3300000,RESOLUTION=1280x720
+          720/index.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=5800000,RESOLUTION=1920x1080
+          1080/index.m3u8
+          EOF
+
+          cat > /tmp/veotv/nginx.conf <<'EOF'
+          worker_processes 1;
+          error_log /tmp/veotv/nginx-error.log warn;
+          pid /tmp/veotv/nginx.pid;
+
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              access_log off;
+
+              types {
+                  application/vnd.apple.mpegurl m3u8;
+                  video/mp2t ts;
+              }
+
+              server {
+                  listen 127.0.0.1:8080;
+                  root /tmp/veotv/www;
+
+                  location /livestream01/ {
+                      add_header Cache-Control "no-cache" always;
+                      add_header Access-Control-Allow-Origin "*" always;
+                  }
+
+                  location / {
+                      return 404;
+                  }
+              }
+          }
+          EOF
+
+          nginx -t -c /tmp/veotv/nginx.conf
+          nginx -c /tmp/veotv/nginx.conf -g 'daemon off;' &
+          NGINX_PID=$!
+
+          cat > /tmp/veotv/cloudflared.yml <<EOF
+          tunnel: $TUNNEL_ID
+          credentials-file: /tmp/veotv/credentials.json
+
+          ingress:
+            - hostname: ott0.ankworks.bond
+              service: http://localhost:8080
+            - service: http_status:404
+          EOF
+
+          /tmp/cloudflared \
+            --config /tmp/veotv/cloudflared.yml \
+            tunnel run \
+            > /tmp/veotv/cloudflared.log 2>&1 &
+          CF_PID=$!
+
+          /tmp/bore-install/bin/bore local 1935 --to bore.pub \
+            > /tmp/veotv/bore.log 2>&1 &
+          BORE_PID=$!
+
+          RTMP_ADDR=""
+
+          echo ">>> Đang chờ bore..."
+
+          for i in $(seq 1 60); do
+            RTMP_ADDR=$(grep -oE 'bore\.pub:[0-9]+' \
+              /tmp/veotv/bore.log | head -n 1 || true)
+
+            if [ -n "$RTMP_ADDR" ]; then
+              break
+            fi
+
+            if ! kill -0 "$BORE_PID" 2>/dev/null; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ -z "$RTMP_ADDR" ]; then
+            echo ">>> Không mở được bore:"
+            cat /tmp/veotv/bore.log
+            exit 1
+          fi
+
+          echo ""
+          echo "========= OBS ========="
+          echo "Server: rtmp://$RTMP_ADDR/live"
+          echo "Stream Key: channel?user=publisher&pass=MAT_KHAU_CUA_BRO"
+          echo ""
+          echo "========= HLS ========="
+          echo "Master: https://ott0.ankworks.bond/livestream01/manifest.m3u8"
+          echo "720p:   https://ott0.ankworks.bond/livestream01/720/index.m3u8"
+          echo "1080p:  https://ott0.ankworks.bond/livestream01/1080/index.m3u8"
+          echo "======================="
+          echo "HLS có thể cần chờ khi bộ phát khởi động."
+
+          echo "=== MediaMTX log ==="
+          docker logs -f veotv-mediamtx &
+          LOG_PID=$!
+
+          cat > /tmp/veotv/supervisor.py <<'PY'
+          import hashlib
           import json
           import os
+          import signal
+          import subprocess
           import time
           import urllib.error
           import urllib.request
+          import uuid
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
 
-          URL = "https://veotv.htxuan-business.workers.dev/api/runner/config"
+          API_URL = (
+              "https://veotv.htxuan-business.workers.dev"
+              "/api/runner/config"
+          )
           TOKEN = os.environ["RUNNER_TOKEN"]
 
-          def get_config():
+          OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
+          EDM_URL = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
+          BACKUP_AUDIO_URL = (
+              "https://multi-playlist-zmp3.zmdcdn.me/"
+              "-XosZVJX9XA/zhls/playback-realtime/f49e383"
+          )
+
+          ROOT = Path("/tmp/veotv")
+          TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+          FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+          DEFAULT = {
+              "mode": "auto",
+              "manualSource": "obs",
+              "sources": {
+                  "edm": EDM_URL,
+                  "audioBackup": BACKUP_AUDIO_URL,
+              },
+              "logo": {
+                  "enabled": True,
+                  "width": 70,
+              },
+              "banner": {
+                  "enabled": True,
+                  "text": (
+                      "VeoTV 1 — Nguồn phát hiện không khả dụng. "
+                      "Vui lòng chờ trong giây lát."
+                  ),
+              },
+              "epg": [],
+          }
+
+          process = None
+          current_key = None
+          current_mode = None
+          last_config = None
+          stopping = False
+          last_probe = 0
+          main_available = False
+          last_cleanup = 0
+
+          def log(message):
+              print(">>> " + message, flush=True)
+
+          def on_signal(signum, frame):
+              global stopping
+              stopping = True
+
+          signal.signal(signal.SIGTERM, on_signal)
+          signal.signal(signal.SIGINT, on_signal)
+
+          def fetch_config():
               request = urllib.request.Request(
-                  URL,
+                  API_URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
                       "User-Agent": "VeoTV-Control-Test/1.0",
@@ -45,79 +329,438 @@ jobs:
                   },
               )
 
-              with urllib.request.urlopen(request, timeout=15) as response:
-                  return json.load(response)
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  data = json.load(response)
 
-          print(">>> Đang kết nối Worker...", flush=True)
+              if not isinstance(data, dict):
+                  raise ValueError("Cấu hình không phải object")
+
+              return data
+
+          def minute_value(value):
+              hour, minute = map(int, str(value).split(":"))
+
+              if not 0 <= hour <= 24 or not 0 <= minute < 60:
+                  raise ValueError("Giờ không hợp lệ")
+
+              if hour == 24 and minute != 0:
+                  raise ValueError("Chỉ cho phép 24:00")
+
+              return hour * 60 + minute
+
+          def select_source(config):
+              if config.get("mode") == "manual":
+                  return str(config.get("manualSource", "obs")), "manual"
+
+              now = datetime.now(TZ)
+              current = now.hour * 60 + now.minute
+
+              for item in config.get("epg", []):
+                  try:
+                      start = minute_value(item["start"])
+                      end = minute_value(item["end"])
+
+                      if start < end:
+                          active = start <= current < end
+                      elif start > end:
+                          active = current >= start or current < end
+                      else:
+                          active = False
+
+                      if active:
+                          return str(item.get("source", "obs")), "epg"
+                  except (ValueError, KeyError, TypeError):
+                      continue
+
+              return "obs", "default"
+
+          def resolve_source(config, name):
+              if name == "obs":
+                  return OBS_URL
+
+              sources = config.get("sources", {})
+              if not isinstance(sources, dict):
+                  return None
+
+              value = sources.get(name)
+
+              if not isinstance(value, str):
+                  return None
+
+              if not value.startswith(("http://", "https://", "rtmp://")):
+                  return None
+
+              return value
+
+          def probe(url, stream_type):
+              if not url:
+                  return False
+
+              try:
+                  result = subprocess.run(
+                      [
+                          "ffprobe",
+                          "-v", "error",
+                          "-rw_timeout", "5000000",
+                          "-select_streams", stream_type,
+                          "-show_entries", "stream=codec_type",
+                          "-of", "csv=p=0",
+                          url,
+                      ],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                      timeout=12,
+                  )
+
+                  expected = "video" if stream_type == "v:0" else "audio"
+                  return result.returncode == 0 and expected in result.stdout
+
+              except (subprocess.TimeoutExpired, OSError):
+                  return False
+
+          def stop_ffmpeg():
+              global process
+
+              if process is None:
+                  return
+
+              if process.poll() is None:
+                  process.terminate()
+                  try:
+                      process.wait(timeout=6)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait()
+
+              process = None
+
+          def choose_fallback_audio(config):
+              sources = config.get("sources", {})
+              if not isinstance(sources, dict):
+                  sources = {}
+
+              edm = sources.get("edm", EDM_URL)
+              backup = sources.get("audioBackup", BACKUP_AUDIO_URL)
+
+              if isinstance(edm, str) and probe(edm, "a:0"):
+                  return edm, "EDM"
+
+              if isinstance(backup, str) and probe(backup, "a:0"):
+                  return backup, "audio dự phòng"
+
+              return None, "im lặng"
+
+          def build_filters(config, fallback):
+              logo_cfg = config.get("logo", {})
+              banner_cfg = config.get("banner", {})
+
+              if not isinstance(logo_cfg, dict):
+                  logo_cfg = {}
+              if not isinstance(banner_cfg, dict):
+                  banner_cfg = {}
+
+              try:
+                  width = int(logo_cfg.get("width", 70))
+              except (ValueError, TypeError):
+                  width = 70
+
+              width = max(24, min(width, 400))
+              logo_enabled = bool(logo_cfg.get("enabled", True))
+              banner_enabled = bool(banner_cfg.get("enabled", True))
+
+              # Banner hiện khi fallback, theo toggle trên dashboard.
+              text = str(
+                  banner_cfg.get(
+                      "text",
+                      "VeoTV 1 — Nguồn phát không khả dụng.",
+                  )
+              )[:300]
+
+              (ROOT / "banner.txt").write_text(text, encoding="utf-8")
+
+              parts = [
+                  "[0:v]fps=30,"
+                  "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                  "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+                  "setsar=1[base]"
+              ]
+
+              current = "base"
+
+              # Input 1 luôn là logo.
+              if logo_enabled:
+                  parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
+                  parts.append(
+                      f"[{current}][logo]"
+                      "overlay=W-w-20:H-h-20:shortest=1[withlogo]"
+                  )
+                  current = "withlogo"
+
+              if fallback and banner_enabled:
+                  parts.append(
+                      f"[{current}]"
+                      "drawbox=x=0:y=ih-70:w=iw:h=70:"
+                      "color=red@0.92:t=fill,"
+                      f"drawtext=fontfile={FONT}:"
+                      f"textfile={ROOT}/banner.txt:"
+                      "expansion=none:"
+                      "fontcolor=yellow:fontsize=34:"
+                      "x=w-mod(t*150\\,w+text_w):"
+                      "y=h-55[bannered]"
+                  )
+                  current = "bannered"
+
+              parts.append(f"[{current}]split=2[a][b]")
+              parts.append("[a]scale=1280:720,format=yuv420p[v720]")
+              parts.append("[b]format=yuv420p[v1080]")
+
+              return ";".join(parts)
+
+          def output_args(label, audio_map, resolution, bitrate, run_id):
+              folder = ROOT / "www" / "livestream01" / resolution
+
+              return [
+                  "-map", label,
+                  "-map", audio_map,
+                  "-c:v", "libx264",
+                  "-preset", "ultrafast",
+                  "-b:v", bitrate,
+                  "-g", "60",
+                  "-keyint_min", "60",
+                  "-sc_threshold", "0",
+                  "-c:a", "aac",
+                  "-b:a", "128k",
+                  "-f", "hls",
+                  "-hls_time", "2",
+                  "-hls_list_size", "6",
+                  "-hls_flags", "delete_segments+temp_file+omit_endlist",
+                  "-hls_segment_filename",
+                  str(folder / f"{run_id}_%06d.ts"),
+                  str(folder / "index.m3u8"),
+              ]
+
+          def start_ffmpeg(config, mode, source_url=None, audio_url=None):
+              global process
+
+              stop_ffmpeg()
+              run_id = uuid.uuid4().hex[:10]
+              fallback = mode == "fallback"
+
+              cmd = [
+                  "ffmpeg",
+                  "-hide_banner",
+                  "-loglevel", "warning",
+                  "-y",
+              ]
+
+              if fallback:
+                  # Ảnh được đọc theo thời gian thực.
+                  cmd += [
+                      "-re",
+                      "-loop", "1",
+                      "-framerate", "30",
+                      "-i", str(ROOT / "assets" / "fallback.png"),
+                  ]
+              else:
+                  cmd += [
+                      "-rw_timeout", "10000000",
+                      "-i", source_url,
+                  ]
+
+              # Input 1: logo PNG.
+              cmd += [
+                  "-loop", "1",
+                  "-framerate", "30",
+                  "-i", str(ROOT / "assets" / "logo.png"),
+              ]
+
+              if fallback:
+                  if audio_url:
+                      # Input 2: audio từ EDM hoặc nguồn dự phòng.
+                      cmd += [
+                          "-rw_timeout", "10000000",
+                          "-i", audio_url,
+                      ]
+                  else:
+                      # Input 2: audio im lặng.
+                      cmd += [
+                          "-f", "lavfi",
+                          "-i", "anullsrc=r=44100:cl=stereo",
+                      ]
+
+                  audio_map = "2:a:0"
+              else:
+                  # Nguồn chính có thể không có audio.
+                  audio_map = "0:a:0?"
+
+              cmd += [
+                  "-filter_complex", build_filters(config, fallback),
+              ]
+
+              cmd += output_args("[v720]", audio_map, "720", "2800k", run_id)
+              cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id)
+
+              log("Khởi động FFmpeg: " + mode)
+
+              # Không in command vì URL nguồn có thể chứa token.
+              process = subprocess.Popen(cmd)
+
+          def config_signature(config):
+              relevant = {
+                  "logo": config.get("logo"),
+                  "banner": config.get("banner"),
+              }
+              raw = json.dumps(relevant, sort_keys=True, ensure_ascii=False)
+              return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+          def cleanup_old_segments():
+              now = time.time()
+
+              for resolution in ("720", "1080"):
+                  folder = ROOT / "www" / "livestream01" / resolution
+
+                  for path in folder.glob("*.ts"):
+                      try:
+                          if now - path.stat().st_mtime > 300:
+                              path.unlink()
+                      except OSError:
+                          pass
+
+          log("Supervisor bắt đầu.")
 
           try:
-              config = get_config()
-          except urllib.error.HTTPError as exc:
-              print(f">>> Worker trả HTTP {exc.code}", flush=True)
-              print(f">>> Server: {exc.headers.get('Server', '-')}", flush=True)
-              print(f">>> CF-Ray: {exc.headers.get('CF-Ray', '-')}", flush=True)
-
-              if exc.code == 401:
-                  print(
-                      ">>> Kiểm tra RUNNER_TOKEN ở GitHub và Worker.",
-                      flush=True,
-                  )
-              elif exc.code == 403:
-                  print(
-                      ">>> Request có thể bị Cloudflare hoặc rule từ chối. "
-                      "Kiểm tra Security Events bằng CF-Ray.",
-                      flush=True,
-                  )
-              else:
-                  print(">>> Kiểm tra Worker và KV binding.", flush=True)
-
-              raise SystemExit(1)
-          except Exception as exc:
-              print(
-                  f">>> Không kết nối được: {type(exc).__name__}: {exc}",
-                  flush=True,
-              )
-              raise SystemExit(1)
-
-          print(">>> KẾT NỐI THÀNH CÔNG!", flush=True)
-          print(">>> Theo dõi cấu hình mỗi 10 giây.", flush=True)
-
-          previous = None
-
-          while True:
-              try:
-                  config = get_config()
-
-                  # Chỉ in trạng thái cần test, không in token hay URL nguồn.
-                  state = (
-                      config.get("mode", "auto"),
-                      config.get("manualSource", "obs"),
-                      config.get("logo", {}).get("enabled", False),
-                      config.get("banner", {}).get("enabled", False),
-                  )
-
-                  if state != previous:
-                      mode, source, logo, banner = state
-                      print(
-                          f">>> mode={mode} | manualSource={source} "
-                          f"| logo={logo} | banner={banner}",
-                          flush=True,
+              while not stopping:
+                  # Nếu Worker tạm lỗi, giữ cấu hình đã đọc gần nhất.
+                  try:
+                      last_config = fetch_config()
+                  except Exception as exc:
+                      log(
+                          "Không đọc được Worker: "
+                          + type(exc).__name__
+                          + ". Giữ cấu hình gần nhất."
                       )
-                      previous = state
 
-              except urllib.error.HTTPError as exc:
-                  print(
-                      f">>> Lần đọc này bị HTTP {exc.code}; sẽ thử lại.",
-                      flush=True,
-                  )
-              except Exception as exc:
-                  print(
-                      f">>> Lỗi đọc cấu hình: {type(exc).__name__}; "
-                      "sẽ thử lại.",
-                      flush=True,
-                  )
+                  if last_config is None:
+                      log("Chưa có cấu hình từ Worker; thử lại sau.")
+                      time.sleep(10)
+                      continue
 
-              time.sleep(10)
+                  config = last_config
+
+                  try:
+                      source_name, reason = select_source(config)
+                      source_url = resolve_source(config, source_name)
+                      signature = config_signature(config)
+
+                      now = time.time()
+
+                      # Kiểm tra nguồn chính định kỳ.
+                      if now - last_probe >= 20:
+                          main_available = probe(source_url, "v:0")
+                          last_probe = time.time()
+
+                      if main_available:
+                          desired_key = (
+                              "main",
+                              source_name,
+                              source_url,
+                              signature,
+                          )
+
+                          if (
+                              desired_key != current_key
+                              or process is None
+                              or process.poll() is not None
+                          ):
+                              log(
+                                  f"Chọn nguồn {source_name} "
+                                  f"theo chế độ {reason}."
+                              )
+
+                              start_ffmpeg(
+                                  config,
+                                  "main",
+                                  source_url=source_url,
+                              )
+
+                              current_key = desired_key
+                              current_mode = "main"
+
+                      else:
+                          desired_key = (
+                              "fallback",
+                              source_name,
+                              signature,
+                          )
+
+                          if (
+                              desired_key != current_key
+                              or process is None
+                              or process.poll() is not None
+                          ):
+                              log(
+                                  f"Nguồn {source_name} không khả dụng; "
+                                  "đang chọn audio fallback."
+                              )
+
+                              audio_url, audio_name = choose_fallback_audio(config)
+                              log("Audio fallback: " + audio_name)
+
+                              start_ffmpeg(
+                                  config,
+                                  "fallback",
+                                  audio_url=audio_url,
+                              )
+
+                              current_key = desired_key
+                              current_mode = "fallback"
+
+                      if time.time() - last_cleanup > 60:
+                          cleanup_old_segments()
+                          last_cleanup = time.time()
+
+                  except Exception as exc:
+                      log(
+                          "Lỗi supervisor: "
+                          + type(exc).__name__
+                          + ": "
+                          + str(exc)
+                      )
+
+                  for _ in range(10):
+                      if stopping:
+                          break
+                      time.sleep(1)
+
+          finally:
+              stop_ffmpeg()
+              log("Supervisor đã dừng.")
           PY
 
-          python3 -u /tmp/veotv-test.py
+          python3 -u /tmp/veotv/supervisor.py &
+          SUP_PID=$!
+
+          while kill -0 "$BORE_PID" 2>/dev/null \
+            && kill -0 "$CF_PID" 2>/dev/null \
+            && kill -0 "$NGINX_PID" 2>/dev/null \
+            && kill -0 "$SUP_PID" 2>/dev/null \
+            && [ "$(docker inspect -f '{{.State.Running}}' veotv-mediamtx)" = "true" ]; do
+            sleep 5
+          done
+
+          echo ">>> Một thành phần đã dừng."
+
+          echo "=== bore ==="
+          cat /tmp/veotv/bore.log
+
+          echo "=== cloudflared ==="
+          cat /tmp/veotv/cloudflared.log
+
+          echo "=== nginx ==="
+          cat /tmp/veotv/nginx-error.log
+
+          echo "=== MediaMTX ==="
+          docker logs veotv-mediamtx
+
+          exit 1
