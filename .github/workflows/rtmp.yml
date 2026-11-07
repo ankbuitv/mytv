@@ -1602,11 +1602,7 @@ jobs:
                       self.send_json(404, {"error": "Không tìm thấy."})
                       return
 
-                  origin = self.headers.get("Origin", "")
-
-                  if origin != "https://ott0.ankworks.bond":
-                      self.send_json(403, {"error": "Origin không hợp lệ."})
-                      return
+                  
 
                   supplied_csrf = self.headers.get(
                       "X-CSRF-Token",
