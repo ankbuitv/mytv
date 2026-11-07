@@ -13,8 +13,6 @@ concurrency:
 jobs:
   live:
     runs-on: ubuntu-latest
-
-    # Dừng sớm hơn giới hạn job để test; chưa tự restart.
     timeout-minutes: 350
 
     steps:
@@ -24,10 +22,9 @@ jobs:
           set -eu
 
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg nginx fonts-dejavu-core
+          sudo apt-get install -y ffmpeg nginx fonts-dejavu-core
 
-          # Đây là bore cũ dùng bore.pub, không phải TryBore.com.
+          # bore.pub, không phải TryBore.com.
           cargo install --locked bore-cli --root /tmp/bore-install
 
           curl -fL --retry 3 --max-time 120 \
@@ -81,19 +78,23 @@ jobs:
               fi
             done
 
-            pkill -TERM -x ffmpeg 2>/dev/null || true
+            if [ -n "${SUP_PID:-}" ]; then
+              wait "$SUP_PID" 2>/dev/null || true
+            fi
+
             docker rm -f veotv-mediamtx >/dev/null 2>&1 || true
             rm -rf /tmp/veotv
           }
           trap cleanup EXIT
 
-          # Tải ảnh vào runner. Nếu host ảnh lỗi, tạo ảnh thay thế để
-          # workflow vẫn có thể tiếp tục.
           echo ">>> Tải ảnh fallback..."
+
           if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/b5ZC62p5/1-1.png" \
             -o /tmp/veotv/assets/fallback.png; then
+
             echo ">>> Không tải được ảnh fallback; tạo nền tối."
+
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi -i "color=c=0x15172b:s=1280x720" \
               -frames:v 1 -threads 1 \
@@ -101,10 +102,13 @@ jobs:
           fi
 
           echo ">>> Tải logo..."
+
           if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/xtShkTkr/logo.png" \
             -o /tmp/veotv/assets/logo.png; then
+
             echo ">>> Không tải được logo; dùng ảnh trong suốt."
+
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi -i "color=c=black@0.0:s=100x100,format=rgba" \
               -frames:v 1 -threads 1 \
@@ -113,7 +117,6 @@ jobs:
 
           printf '%s' "$TUNNEL_CREDENTIALS" > /tmp/veotv/credentials.json
 
-          # Nhận RTMP từ OBS.
           cat > /tmp/veotv/mediamtx.yml <<EOF
           authMethod: internal
 
@@ -139,7 +142,6 @@ jobs:
             -v /tmp/veotv/mediamtx.yml:/mediamtx.yml:ro \
             bluenviron/mediamtx:1.21.3
 
-          # Master playlist cố định.
           cat > /tmp/veotv/www/livestream01/manifest.m3u8 <<'EOF'
           #EXTM3U
           #EXT-X-VERSION:3
@@ -254,21 +256,27 @@ jobs:
           import signal
           import subprocess
           import time
-          import urllib.error
           import urllib.request
           import uuid
+
           from datetime import datetime
           from pathlib import Path
           from zoneinfo import ZoneInfo
+
 
           API_URL = (
               "https://veotv.htxuan-business.workers.dev"
               "/api/runner/config"
           )
+
           TOKEN = os.environ["RUNNER_TOKEN"]
 
           OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
-          EDM_URL = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
+
+          EDM_URL = (
+              "https://streams.ankb.qzz.io/mytv/edm.m3u8"
+          )
+
           BACKUP_AUDIO_URL = (
               "https://multi-playlist-zmp3.zmdcdn.me/"
               "-XosZVJX9XA/zhls/playback-realtime/f49e383"
@@ -276,47 +284,48 @@ jobs:
 
           ROOT = Path("/tmp/veotv")
           TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-          FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-          DEFAULT = {
-              "mode": "auto",
-              "manualSource": "obs",
-              "sources": {
-                  "edm": EDM_URL,
-                  "audioBackup": BACKUP_AUDIO_URL,
-              },
-              "logo": {
-                  "enabled": True,
-                  "width": 70,
-              },
-              "banner": {
-                  "enabled": True,
-                  "text": (
-                      "VeoTV 1 — Nguồn phát hiện không khả dụng. "
-                      "Vui lòng chờ trong giây lát."
-                  ),
-              },
-              "epg": [],
-          }
+          FONT = (
+              "/usr/share/fonts/truetype/dejavu/"
+              "DejaVuSans-Bold.ttf"
+          )
+
+          CONFIG_INTERVAL = 10
+          PROBE_INTERVAL = 20
+          MAX_PROBE_FAILURES = 3
+          SILENT_AUDIO_RETRY_INTERVAL = 90
+          RESTART_DELAY = 5
 
           process = None
           current_key = None
           current_mode = None
+          current_audio_url = None
           last_config = None
           stopping = False
+
+          last_config_fetch = 0
           last_probe = 0
-          main_available = False
           last_cleanup = 0
+          last_audio_retry = 0
+          last_start = 0
+
+          probe_source = None
+          probe_failures = 0
+          main_available = False
+
 
           def log(message):
               print(">>> " + message, flush=True)
+
 
           def on_signal(signum, frame):
               global stopping
               stopping = True
 
+
           signal.signal(signal.SIGTERM, on_signal)
           signal.signal(signal.SIGINT, on_signal)
+
 
           def fetch_config():
               request = urllib.request.Request(
@@ -337,6 +346,7 @@ jobs:
 
               return data
 
+
           def minute_value(value):
               hour, minute = map(int, str(value).split(":"))
 
@@ -347,6 +357,7 @@ jobs:
                   raise ValueError("Chỉ cho phép 24:00")
 
               return hour * 60 + minute
+
 
           def select_source(config):
               if config.get("mode") == "manual":
@@ -369,16 +380,19 @@ jobs:
 
                       if active:
                           return str(item.get("source", "obs")), "epg"
+
                   except (ValueError, KeyError, TypeError):
                       continue
 
               return "obs", "default"
+
 
           def resolve_source(config, name):
               if name == "obs":
                   return OBS_URL
 
               sources = config.get("sources", {})
+
               if not isinstance(sources, dict):
                   return None
 
@@ -387,10 +401,13 @@ jobs:
               if not isinstance(value, str):
                   return None
 
-              if not value.startswith(("http://", "https://", "rtmp://")):
+              if not value.startswith(
+                  ("http://", "https://", "rtmp://")
+              ):
                   return None
 
               return value
+
 
           def probe(url, stream_type):
               if not url:
@@ -401,7 +418,7 @@ jobs:
                       [
                           "ffprobe",
                           "-v", "error",
-                          "-rw_timeout", "5000000",
+                          "-rw_timeout", "8000000",
                           "-select_streams", stream_type,
                           "-show_entries", "stream=codec_type",
                           "-of", "csv=p=0",
@@ -410,14 +427,21 @@ jobs:
                       stdout=subprocess.PIPE,
                       stderr=subprocess.DEVNULL,
                       text=True,
-                      timeout=12,
+                      timeout=15,
                   )
 
-                  expected = "video" if stream_type == "v:0" else "audio"
-                  return result.returncode == 0 and expected in result.stdout
+                  expected = (
+                      "video" if stream_type == "v:0" else "audio"
+                  )
+
+                  return (
+                      result.returncode == 0
+                      and expected in result.stdout
+                  )
 
               except (subprocess.TimeoutExpired, OSError):
                   return False
+
 
           def stop_ffmpeg():
               global process
@@ -427,6 +451,7 @@ jobs:
 
               if process.poll() is None:
                   process.terminate()
+
                   try:
                       process.wait(timeout=6)
                   except subprocess.TimeoutExpired:
@@ -435,8 +460,10 @@ jobs:
 
               process = None
 
+
           def choose_fallback_audio(config):
               sources = config.get("sources", {})
+
               if not isinstance(sources, dict):
                   sources = {}
 
@@ -451,12 +478,14 @@ jobs:
 
               return None, "im lặng"
 
+
           def build_filters(config, fallback):
               logo_cfg = config.get("logo", {})
               banner_cfg = config.get("banner", {})
 
               if not isinstance(logo_cfg, dict):
                   logo_cfg = {}
+
               if not isinstance(banner_cfg, dict):
                   banner_cfg = {}
 
@@ -466,10 +495,15 @@ jobs:
                   width = 70
 
               width = max(24, min(width, 400))
-              logo_enabled = bool(logo_cfg.get("enabled", True))
-              banner_enabled = bool(banner_cfg.get("enabled", True))
 
-              # Banner hiện khi fallback, theo toggle trên dashboard.
+              logo_enabled = bool(
+                  logo_cfg.get("enabled", True)
+              )
+
+              banner_enabled = bool(
+                  banner_cfg.get("enabled", True)
+              )
+
               text = str(
                   banner_cfg.get(
                       "text",
@@ -477,11 +511,15 @@ jobs:
                   )
               )[:300]
 
-              (ROOT / "banner.txt").write_text(text, encoding="utf-8")
+              (ROOT / "banner.txt").write_text(
+                  text,
+                  encoding="utf-8",
+              )
 
               parts = [
                   "[0:v]fps=30,"
-                  "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                  "scale=1920:1080:"
+                  "force_original_aspect_ratio=decrease,"
                   "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
                   "setsar=1[base]"
               ]
@@ -490,11 +528,16 @@ jobs:
 
               # Input 1 luôn là logo.
               if logo_enabled:
-                  parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
+                  parts.append(
+                      f"[1:v]scale={width}:-1,format=rgba[logo]"
+                  )
+
                   parts.append(
                       f"[{current}][logo]"
-                      "overlay=W-w-20:H-h-20:shortest=1[withlogo]"
+                      "overlay=W-w-20:H-h-20:"
+                      "shortest=1[withlogo]"
                   )
+
                   current = "withlogo"
 
               if fallback and banner_enabled:
@@ -509,16 +552,28 @@ jobs:
                       "x=w-mod(t*150\\,w+text_w):"
                       "y=h-55[bannered]"
                   )
+
                   current = "bannered"
 
               parts.append(f"[{current}]split=2[a][b]")
-              parts.append("[a]scale=1280:720,format=yuv420p[v720]")
+              parts.append(
+                  "[a]scale=1280:720,format=yuv420p[v720]"
+              )
               parts.append("[b]format=yuv420p[v1080]")
 
               return ";".join(parts)
 
-          def output_args(label, audio_map, resolution, bitrate, run_id):
-              folder = ROOT / "www" / "livestream01" / resolution
+
+          def output_args(
+              label,
+              audio_map,
+              resolution,
+              bitrate,
+              run_id,
+          ):
+              folder = (
+                  ROOT / "www" / "livestream01" / resolution
+              )
 
               return [
                   "-map", label,
@@ -534,16 +589,24 @@ jobs:
                   "-f", "hls",
                   "-hls_time", "2",
                   "-hls_list_size", "6",
-                  "-hls_flags", "delete_segments+temp_file+omit_endlist",
+                  "-hls_flags",
+                  "delete_segments+temp_file+omit_endlist",
                   "-hls_segment_filename",
                   str(folder / f"{run_id}_%06d.ts"),
                   str(folder / "index.m3u8"),
               ]
 
-          def start_ffmpeg(config, mode, source_url=None, audio_url=None):
-              global process
+
+          def start_ffmpeg(
+              config,
+              mode,
+              source_url=None,
+              audio_url=None,
+          ):
+              global process, last_start
 
               stop_ffmpeg()
+
               run_id = uuid.uuid4().hex[:10]
               fallback = mode == "fallback"
 
@@ -555,7 +618,6 @@ jobs:
               ]
 
               if fallback:
-                  # Ảnh được đọc theo thời gian thực.
                   cmd += [
                       "-re",
                       "-loop", "1",
@@ -564,11 +626,12 @@ jobs:
                   ]
               else:
                   cmd += [
+                      "-thread_queue_size", "512",
                       "-rw_timeout", "10000000",
                       "-i", source_url,
                   ]
 
-              # Input 1: logo PNG.
+              # Input 1: logo.
               cmd += [
                   "-loop", "1",
                   "-framerate", "30",
@@ -577,13 +640,12 @@ jobs:
 
               if fallback:
                   if audio_url:
-                      # Input 2: audio từ EDM hoặc nguồn dự phòng.
                       cmd += [
+                          "-thread_queue_size", "512",
                           "-rw_timeout", "10000000",
                           "-i", audio_url,
                       ]
                   else:
-                      # Input 2: audio im lặng.
                       cmd += [
                           "-f", "lavfi",
                           "-i", "anullsrc=r=44100:cl=stereo",
@@ -591,34 +653,60 @@ jobs:
 
                   audio_map = "2:a:0"
               else:
-                  # Nguồn chính có thể không có audio.
                   audio_map = "0:a:0?"
 
               cmd += [
-                  "-filter_complex", build_filters(config, fallback),
+                  "-filter_complex",
+                  build_filters(config, fallback),
               ]
 
-              cmd += output_args("[v720]", audio_map, "720", "2800k", run_id)
-              cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id)
+              cmd += output_args(
+                  "[v720]",
+                  audio_map,
+                  "720",
+                  "2800k",
+                  run_id,
+              )
+
+              cmd += output_args(
+                  "[v1080]",
+                  audio_map,
+                  "1080",
+                  "5000k",
+                  run_id,
+              )
 
               log("Khởi động FFmpeg: " + mode)
 
-              # Không in command vì URL nguồn có thể chứa token.
+              # Không in lệnh vì URL nguồn có thể chứa token.
               process = subprocess.Popen(cmd)
+              last_start = time.monotonic()
+
 
           def config_signature(config):
               relevant = {
                   "logo": config.get("logo"),
                   "banner": config.get("banner"),
               }
-              raw = json.dumps(relevant, sort_keys=True, ensure_ascii=False)
-              return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+              raw = json.dumps(
+                  relevant,
+                  sort_keys=True,
+                  ensure_ascii=False,
+              )
+
+              return hashlib.sha256(
+                  raw.encode("utf-8")
+              ).hexdigest()
+
 
           def cleanup_old_segments():
               now = time.time()
 
               for resolution in ("720", "1080"):
-                  folder = ROOT / "www" / "livestream01" / resolution
+                  folder = (
+                      ROOT / "www" / "livestream01" / resolution
+                  )
 
                   for path in folder.glob("*.ts"):
                       try:
@@ -627,38 +715,111 @@ jobs:
                       except OSError:
                           pass
 
+
           log("Supervisor bắt đầu.")
 
           try:
               while not stopping:
-                  # Nếu Worker tạm lỗi, giữ cấu hình đã đọc gần nhất.
-                  try:
-                      last_config = fetch_config()
-                  except Exception as exc:
-                      log(
-                          "Không đọc được Worker: "
-                          + type(exc).__name__
-                          + ". Giữ cấu hình gần nhất."
-                      )
+                  now = time.monotonic()
+
+                  # Worker lỗi thì giữ cấu hình thành công gần nhất.
+                  if now - last_config_fetch >= CONFIG_INTERVAL:
+                      last_config_fetch = now
+
+                      try:
+                          last_config = fetch_config()
+                      except Exception as exc:
+                          log(
+                              "Không đọc được Worker: "
+                              + type(exc).__name__
+                              + ". Giữ cấu hình gần nhất."
+                          )
 
                   if last_config is None:
                       log("Chưa có cấu hình từ Worker; thử lại sau.")
-                      time.sleep(10)
+                      time.sleep(2)
                       continue
 
                   config = last_config
 
                   try:
                       source_name, reason = select_source(config)
-                      source_url = resolve_source(config, source_name)
+                      source_url = resolve_source(
+                          config,
+                          source_name,
+                      )
                       signature = config_signature(config)
 
-                      now = time.time()
+                      selected = (source_name, source_url)
 
-                      # Kiểm tra nguồn chính định kỳ.
-                      if now - last_probe >= 20:
-                          main_available = probe(source_url, "v:0")
-                          last_probe = time.time()
+                      # Không dùng kết quả probe của nguồn trước.
+                      if selected != probe_source:
+                          probe_source = selected
+                          probe_failures = 0
+                          main_available = False
+                          last_probe = 0
+
+                          log(
+                              f"Nguồn được chọn: {source_name} "
+                              f"({reason})."
+                          )
+
+                      now = time.monotonic()
+
+                      # Probe định kỳ. Probe đồng bộ nên có thể mất
+                      # tối đa 15 giây cho mỗi lần.
+                      if now - last_probe >= PROBE_INTERVAL:
+                          available = probe(source_url, "v:0")
+                          last_probe = time.monotonic()
+
+                          if available:
+                              if probe_failures:
+                                  log(
+                                      f"Nguồn {source_name} "
+                                      "kiểm tra lại OK."
+                                  )
+
+                              probe_failures = 0
+                              main_available = True
+
+                          else:
+                              probe_failures += 1
+
+                              if (
+                                  probe_failures <= MAX_PROBE_FAILURES
+                                  or probe_failures % 5 == 0
+                              ):
+                                  log(
+                                      f"Probe {source_name} lỗi "
+                                      f"{probe_failures} lần liên tiếp."
+                                  )
+
+                              if probe_failures >= MAX_PROBE_FAILURES:
+                                  main_available = False
+
+                      now = time.monotonic()
+                      process_dead = (
+                          process is None
+                          or process.poll() is not None
+                      )
+
+                      if (
+                          process is not None
+                          and process.poll() is not None
+                      ):
+                          log(
+                              "FFmpeg đã thoát, mã: "
+                              + str(process.returncode)
+                          )
+                          process = None
+                          current_key = None
+                          current_mode = None
+                          current_audio_url = None
+                          process_dead = True
+
+                      can_restart = (
+                          now - last_start >= RESTART_DELAY
+                      )
 
                       if main_available:
                           desired_key = (
@@ -670,9 +831,8 @@ jobs:
 
                           if (
                               desired_key != current_key
-                              or process is None
-                              or process.poll() is not None
-                          ):
+                              or process_dead
+                          ) and can_restart:
                               log(
                                   f"Chọn nguồn {source_name} "
                                   f"theo chế độ {reason}."
@@ -686,6 +846,7 @@ jobs:
 
                               current_key = desired_key
                               current_mode = "main"
+                              current_audio_url = None
 
                       else:
                           desired_key = (
@@ -696,15 +857,19 @@ jobs:
 
                           if (
                               desired_key != current_key
-                              or process is None
-                              or process.poll() is not None
-                          ):
+                              or process_dead
+                          ) and can_restart:
                               log(
-                                  f"Nguồn {source_name} không khả dụng; "
+                                  f"Nguồn {source_name} chưa khả dụng; "
                                   "đang chọn audio fallback."
                               )
 
-                              audio_url, audio_name = choose_fallback_audio(config)
+                              audio_url, audio_name = (
+                                  choose_fallback_audio(config)
+                              )
+
+                              last_audio_retry = time.monotonic()
+
                               log("Audio fallback: " + audio_name)
 
                               start_ffmpeg(
@@ -715,10 +880,45 @@ jobs:
 
                               current_key = desired_key
                               current_mode = "fallback"
+                              current_audio_url = audio_url
 
-                      if time.time() - last_cleanup > 60:
+                          elif (
+                              current_mode == "fallback"
+                              and current_audio_url is None
+                              and time.monotonic() - last_audio_retry
+                              >= SILENT_AUDIO_RETRY_INTERVAL
+                          ):
+                              log(
+                                  "Đang thử lại audio fallback..."
+                              )
+
+                              audio_url, audio_name = (
+                                  choose_fallback_audio(config)
+                              )
+
+                              last_audio_retry = time.monotonic()
+
+                              if audio_url:
+                                  log(
+                                      "Audio fallback: " + audio_name
+                                  )
+
+                                  start_ffmpeg(
+                                      config,
+                                      "fallback",
+                                      audio_url=audio_url,
+                                  )
+
+                                  current_audio_url = audio_url
+                              else:
+                                  log(
+                                      "Audio vẫn chưa khả dụng; "
+                                      "tiếp tục im lặng."
+                                  )
+
+                      if time.monotonic() - last_cleanup > 60:
                           cleanup_old_segments()
-                          last_cleanup = time.time()
+                          last_cleanup = time.monotonic()
 
                   except Exception as exc:
                       log(
@@ -728,7 +928,7 @@ jobs:
                           + str(exc)
                       )
 
-                  for _ in range(10):
+                  for _ in range(2):
                       if stopping:
                           break
                       time.sleep(1)
