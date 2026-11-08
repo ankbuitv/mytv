@@ -220,10 +220,13 @@ jobs:
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
 
           download_ident ident2 \
-            "https://github.com/ankbuitv/mytv/raw/refs/heads/main/ident02.mp4"
+            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident02.mp4"
 
           download_ident ident3 \
-            "https://github.com/ankbuitv/mytv/raw/refs/heads/main/ident03.mp4"
+            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident03.mp4"
+
+          download_ident ident4 \
+            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident04.mp4"
 
           printf '%s' "$TUNNEL_CREDENTIALS" > "$ROOT/credentials.json"
 
@@ -401,6 +404,7 @@ jobs:
               ("Ident 1", ASSETS / "ident1.mp4", 40),
               ("Ident 2", ASSETS / "ident2.mp4", 35),
               ("Ident 3", ASSETS / "ident3.mp4", 25),
+              ("Ident 4", ASSETS / "ident4.mp4", 20),
           ]
 
           TZ = ZoneInfo("Asia/Ho_Chi_Minh")
