@@ -27,15 +27,9 @@ jobs:
           set -eu
 
           sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            nginx \
-            fonts-dejavu-core \
-            curl
+          sudo apt-get install -y ffmpeg nginx fonts-dejavu-core curl
 
-          curl -fL \
-            --retry 3 \
-            --max-time 120 \
+          curl -fL --retry 3 --max-time 120 \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
             -o /tmp/cloudflared
 
@@ -122,56 +116,41 @@ jobs:
 
           echo ">>> Tải ảnh fallback..."
 
-          if ! curl -fL \
-            --retry 2 \
-            --max-time 30 \
+          if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/b5ZC62p5/1-1.png" \
             -o "$ROOT/assets/fallback.png"
           then
             echo ">>> Không tải được ảnh fallback; tạo nền tối."
 
-            ffmpeg \
-              -hide_banner \
-              -loglevel error \
-              -y \
+            ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=0x15172b:s=1280x720" \
-              -frames:v 1 \
-              -threads 1 \
+              -frames:v 1 -threads 1 \
               "$ROOT/assets/fallback.png"
           fi
 
           echo ">>> Tải logo..."
 
-          if ! curl -fL \
-            --retry 2 \
-            --max-time 30 \
+          if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/xtShkTkr/logo.png" \
             -o "$ROOT/assets/logo.png"
           then
             echo ">>> Không tải được logo; tạo ảnh trong suốt."
 
-            ffmpeg \
-              -hide_banner \
-              -loglevel error \
-              -y \
+            ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=black@0.0:s=100x100,format=rgba" \
-              -frames:v 1 \
-              -threads 1 \
+              -frames:v 1 -threads 1 \
               "$ROOT/assets/logo.png"
           fi
 
           echo ">>> Tải ident..."
 
-          if curl -fL \
-            --retry 2 \
-            --max-time 120 \
+          if curl -fL --retry 2 --max-time 120 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4" \
             -o "$ROOT/assets/ident.mp4"
           then
-            if ffprobe \
-              -v error \
+            if ffprobe -v error \
               -select_streams v:0 \
               -show_entries stream=codec_type \
               -of csv=p=0 \
@@ -278,9 +257,7 @@ jobs:
 
           nginx -t -c "$ROOT/nginx.conf"
 
-          nginx \
-            -c "$ROOT/nginx.conf" \
-            -g 'daemon off;' &
+          nginx -c "$ROOT/nginx.conf" -g 'daemon off;' &
           NGINX_PID=$!
 
           cat > "$ROOT/cloudflared.yml" <<EOF
@@ -369,9 +346,6 @@ jobs:
           PROBE_INTERVAL = 20
           AUDIO_PROBE_INTERVAL = 90
           RESTART_DELAY = 5
-
-          # Nếu FFmpeg chưa tạo playlist mới trong thời gian này,
-          # supervisor sẽ restart nguồn. Đây là giới hạn thử nghiệm.
           PLAYLIST_STALL_TIMEOUT = 90
 
           stop_event = threading.Event()
@@ -406,7 +380,6 @@ jobs:
               "current_mode": "Đang khởi động",
               "current_name": "",
               "ffmpeg_running": False,
-
               "ffmpeg_speed": "",
               "ffmpeg_out_time": "",
           }
@@ -439,7 +412,6 @@ jobs:
 
           def sanitize(value):
               text = str(value)
-
               text = URL_RE.sub("[URL đã ẩn]", text)
 
               for secret in SECRET_VALUES:
@@ -600,7 +572,7 @@ jobs:
                   API_URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
-                      "User-Agent": "VeoTV-Control/3.0",
+                      "User-Agent": "VeoTV-Control/4.0",
                       "Accept": "application/json",
                       "Cache-Control": "no-cache",
                   },
@@ -688,6 +660,24 @@ jobs:
               return value if valid_url(value) else None
 
 
+          def source_input_type(config, name):
+              if name == "obs":
+                  return "live"
+
+              types = config.get("sourceTypes", {})
+
+              if not isinstance(types, dict):
+                  return "live"
+
+              value = types.get(name, "live")
+              return value if value in ("live", "vod") else "live"
+
+
+          def waiting_input_type(waiting):
+              value = waiting.get("inputType", "live")
+              return value if value in ("live", "vod") else "live"
+
+
           def select_program(config):
               if config.get("mode") == "manual":
                   name = str(config.get("manualSource", "obs"))
@@ -697,7 +687,7 @@ jobs:
                       "name": name,
                       "kind": "source",
                       "url": resolve_source(config, name),
-                      "input_type": "live",
+                      "input_type": source_input_type(config, name),
                       "occurrence": None,
                       "waiting": {},
                   }
@@ -744,8 +734,10 @@ jobs:
                       if kind == "waiting":
                           value = waiting.get("videoUrl")
                           url = value if valid_url(value) else None
+                          input_type = waiting_input_type(waiting)
                       else:
                           url = resolve_source(config, name)
+                          input_type = source_input_type(config, name)
 
                       occurrence_date = now.date()
 
@@ -769,7 +761,7 @@ jobs:
                           ),
                           "kind": kind,
                           "url": url,
-                          "input_type": "live",
+                          "input_type": input_type,
                           "occurrence": occurrence,
                           "waiting": waiting,
                       }
@@ -882,14 +874,7 @@ jobs:
                           shared["video_failures"] += 1
                           previous = shared["video_failures"]
 
-                          # Không hạ video_available khi probe lỗi.
-                          # Nếu FFmpeg đang phát, probe riêng lỗi không
-                          # tự ngắt nguồn. FFmpeg thoát/stall sẽ xử lý ở
-                          # vòng supervisor.
-                          #
-                          # Khi chọn nguồn mới, video_available ban đầu
-                          # vẫn False; sau các lần probe lỗi supervisor
-                          # sẽ thử FFmpeg trực tiếp theo cơ chế retry.
+                          # Không ngắt FFmpeg đang phát chỉ vì probe riêng lỗi.
 
                   if available and previous:
                       log(f"Video {kind} kiểm tra lại OK.")
@@ -1866,7 +1851,6 @@ jobs:
           seen_ident_seq = 0
           was_emergency = False
 
-          # Thử FFmpeg trực tiếp nếu probe không đọc được nguồn mới.
           next_direct_attempt = 0.0
           attempt_generation = -1
           direct_attempt_active = False
@@ -2025,7 +2009,6 @@ jobs:
 
                           generation = shared["generation"]
                           video_available = shared["video_available"]
-                          video_failures = shared["video_failures"]
 
                       if changed:
                           log(
@@ -2035,6 +2018,8 @@ jobs:
                               + reason
                               + ", "
                               + program["kind"]
+                              + ", "
+                              + program["input_type"]
                               + ")."
                           )
 
@@ -2054,7 +2039,6 @@ jobs:
                           current_mode = None
                           last_start = 0.0
 
-                          # Cho phép thử lại ngay cả khi probe chưa OK.
                           next_direct_attempt = 0.0
                           direct_attempt_active = False
 
@@ -2190,8 +2174,6 @@ jobs:
 
                       now = time.monotonic()
 
-                      # Nếu ffprobe lỗi, vẫn thử FFmpeg trực tiếp định kỳ.
-                      # OBS cũng được thử; nếu chưa publish, FFmpeg sẽ thoát.
                       can_try_source = (
                           valid_url(program["url"])
                           and (
