@@ -27,16 +27,56 @@ jobs:
           set -eu
 
           sudo apt-get update
-          sudo apt-get install -y ffmpeg nginx fonts-dejavu-core curl
 
-          curl -fL --retry 3 --max-time 120 \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+          sudo apt-get install -y \
+            ffmpeg \
+            nginx \
+            fonts-dejavu-core \
+            curl \
+            ca-certificates
+
+          echo ">>> Tải cloudflared từ GitHub..."
+
+          if curl -fL \
+            --retry 2 \
+            --retry-delay 3 \
+            --max-time 120 \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
             -o /tmp/cloudflared
+          then
+            echo ">>> Đã tải cloudflared từ GitHub."
+          else
+            echo ">>> GitHub tải lỗi, thử kho APT Cloudflare..."
+
+            rm -f /tmp/cloudflared
+            sudo mkdir -p /usr/share/keyrings
+
+            curl -fL \
+              --retry 3 \
+              --retry-delay 3 \
+              --max-time 60 \
+              "https://pkg.cloudflare.com/cloudflare-main.gpg" \
+              -o /tmp/cloudflare-main.gpg
+
+            sudo install -m 0644 \
+              /tmp/cloudflare-main.gpg \
+              /usr/share/keyrings/cloudflare-main.gpg
+
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+              | sudo tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
+
+            sudo apt-get update
+            sudo apt-get install -y cloudflared
+
+            cp "$(command -v cloudflared)" /tmp/cloudflared
+          fi
 
           chmod +x /tmp/cloudflared
+          /tmp/cloudflared --version
 
       - name: Run VeoTV
         shell: bash
+
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
@@ -120,12 +160,13 @@ jobs:
             "https://i.ibb.co/b5ZC62p5/1-1.png" \
             -o "$ROOT/assets/fallback.png"
           then
-            echo ">>> Không tải được ảnh fallback; tạo nền tối."
+            echo ">>> Không tải được fallback; tạo nền tối."
 
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=0x15172b:s=1280x720" \
-              -frames:v 1 -threads 1 \
+              -frames:v 1 \
+              -threads 1 \
               "$ROOT/assets/fallback.png"
           fi
 
@@ -140,31 +181,49 @@ jobs:
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=black@0.0:s=100x100,format=rgba" \
-              -frames:v 1 -threads 1 \
+              -frames:v 1 \
+              -threads 1 \
               "$ROOT/assets/logo.png"
           fi
 
-          echo ">>> Tải ident..."
+          download_ident() {
+            local name="$1"
+            local url="$2"
+            local target="$ROOT/assets/$name.mp4"
 
-          if curl -fL --retry 2 --max-time 120 \
-            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4" \
-            -o "$ROOT/assets/ident.mp4"
-          then
-            if ffprobe -v error \
-              -select_streams v:0 \
-              -show_entries stream=codec_type \
-              -of csv=p=0 \
-              "$ROOT/assets/ident.mp4" | grep -q video
+            echo ">>> Đang tải $name..."
+
+            if curl -fL \
+              --retry 2 \
+              --max-time 120 \
+              "$url" \
+              -o "$target"
             then
-              echo ">>> Tải ident thành công."
+              if ffprobe -v error \
+                -select_streams v:0 \
+                -show_entries stream=codec_type \
+                -of csv=p=0 \
+                "$target" | grep -q video
+              then
+                echo ">>> $name có video hợp lệ."
+              else
+                echo ">>> $name không có video hợp lệ; bỏ qua."
+                rm -f "$target"
+              fi
             else
-              echo ">>> Ident không hợp lệ; sẽ bỏ qua."
-              rm -f "$ROOT/assets/ident.mp4"
+              echo ">>> Không tải được $name; bỏ qua."
+              rm -f "$target"
             fi
-          else
-            echo ">>> Không tải được ident; sẽ bỏ qua."
-            rm -f "$ROOT/assets/ident.mp4"
-          fi
+          }
+
+          download_ident ident1 \
+            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
+
+          download_ident ident2 \
+            "https://github.com/ankbuitv/mytv/raw/refs/heads/main/ident02.mp4"
+
+          download_ident ident3 \
+            "https://github.com/ankbuitv/mytv/raw/refs/heads/main/ident03.mp4"
 
           printf '%s' "$TUNNEL_CREDENTIALS" > "$ROOT/credentials.json"
 
@@ -318,8 +377,6 @@ jobs:
 
           ROOT = Path("/tmp/veotv")
           ASSETS = ROOT / "assets"
-          IDENT = ASSETS / "ident.mp4"
-
           FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
           API_URL = (
@@ -339,6 +396,12 @@ jobs:
               "https://multi-playlist-zmp3.zmdcdn.me/"
               "-XosZVJX9XA/zhls/playback-realtime/f49e383"
           )
+
+          IDENT_OPTIONS = [
+              ("Ident 1", ASSETS / "ident1.mp4", 40),
+              ("Ident 2", ASSETS / "ident2.mp4", 35),
+              ("Ident 3", ASSETS / "ident3.mp4", 25),
+          ]
 
           TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -443,9 +506,6 @@ jobs:
           def ffmpeg_log_reader(pipe):
               try:
                   for line in iter(pipe.readline, ""):
-                      if not line:
-                          break
-
                       safe = sanitize(line.strip())
 
                       if not safe:
@@ -496,8 +556,7 @@ jobs:
 
                       if now - last_report >= 30:
                           log(
-                              "FFmpeg progress: "
-                              + "speed="
+                              "FFmpeg progress: speed="
                               + speed
                               + ", out_time="
                               + out_time
@@ -552,8 +611,7 @@ jobs:
                   return False
 
               try:
-                  parsed = urlsplit(value)
-                  return parsed.scheme.lower() in ("http", "https")
+                  return urlsplit(value).scheme.lower() in ("http", "https")
               except Exception:
                   return False
 
@@ -572,7 +630,7 @@ jobs:
                   API_URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
-                      "User-Agent": "VeoTV-Control/4.0",
+                      "User-Agent": "VeoTV-Control/5.0",
                       "Accept": "application/json",
                       "Cache-Control": "no-cache",
                   },
@@ -694,7 +752,6 @@ jobs:
 
               now = datetime.now(TZ)
               current = now.hour * 60 + now.minute
-
               epg = config.get("epg", [])
 
               if not isinstance(epg, list):
@@ -874,8 +931,6 @@ jobs:
                           shared["video_failures"] += 1
                           previous = shared["video_failures"]
 
-                          # Không ngắt FFmpeg đang phát chỉ vì probe riêng lỗi.
-
                   if available and previous:
                       log(f"Video {kind} kiểm tra lại OK.")
 
@@ -965,8 +1020,8 @@ jobs:
               return (waiting.get("audioUrl"),)
 
 
-          def ident_duration():
-              if not IDENT.is_file():
+          def ident_file_duration(path):
+              if not path.is_file():
                   return None
 
               try:
@@ -976,7 +1031,7 @@ jobs:
                           "-v", "error",
                           "-show_entries", "format=duration",
                           "-of", "default=noprint_wrappers=1:nokey=1",
-                          str(IDENT),
+                          str(path),
                       ],
                       stdout=subprocess.PIPE,
                       stderr=subprocess.DEVNULL,
@@ -984,13 +1039,50 @@ jobs:
                       timeout=10,
                   )
 
+                  if result.returncode != 0:
+                      return None
+
                   duration = float(result.stdout.strip())
 
-                  if result.returncode == 0 and 0 < duration <= 300:
+                  if 0 < duration <= 300:
                       return duration
 
-              except (ValueError, OSError, subprocess.TimeoutExpired):
+              except (
+                  ValueError,
+                  OSError,
+                  subprocess.TimeoutExpired,
+              ):
                   pass
+
+              return None
+
+
+          def choose_ident():
+              available = []
+
+              for name, path, weight in IDENT_OPTIONS:
+                  duration = ident_file_duration(path)
+
+                  if duration is not None and weight > 0:
+                      available.append(
+                          (name, path, weight, duration)
+                      )
+
+              if not available:
+                  return None
+
+              total = sum(item[2] for item in available)
+              ticket = secrets.randbelow(total)
+
+              for name, path, weight, duration in available:
+                  if ticket < weight:
+                      log(
+                          f"Đã chọn {name}; "
+                          f"thời lượng {duration:.1f} giây."
+                      )
+                      return path, duration
+
+                  ticket -= weight
 
               return None
 
@@ -1042,7 +1134,6 @@ jobs:
                   width = 75
 
               width = max(24, min(width, 400))
-
               logo_enabled = bool(logo_cfg.get("enabled", True))
 
               banner_enabled = False
@@ -1176,6 +1267,7 @@ jobs:
               waiting=None,
               duration=None,
               input_type="live",
+              ident_path=None,
           ):
               global process, last_start
 
@@ -1204,9 +1296,12 @@ jobs:
                   ]
 
               elif mode == "ident":
+                  if ident_path is None:
+                      raise ValueError("Thiếu đường dẫn ident")
+
                   cmd += [
                       "-re",
-                      "-i", str(IDENT),
+                      "-i", str(ident_path),
                   ]
 
               elif mode in ("waiting", "main"):
@@ -1247,7 +1342,6 @@ jobs:
                           "-i", "anullsrc=r=44100:cl=stereo",
                       ]
 
-                  # Chờ event không dùng tiếng gốc.
                   audio_map = "2:a:0"
 
               else:
@@ -1286,7 +1380,6 @@ jobs:
                   )
               )
 
-              # Không in command vì URL có thể chứa token.
               process = subprocess.Popen(
                   cmd,
                   stdout=subprocess.PIPE,
@@ -1403,7 +1496,7 @@ jobs:
               <div class="row">
                 <button onclick="sendAction('refresh')">🔄 Cập nhật EPG</button>
                 <button onclick="sendAction('restart')">▶️ Restart nguồn</button>
-                <button onclick="sendAction('ident')">🎬 Phát ident</button>
+                <button onclick="sendAction('ident')">🎬 Phát ident ngẫu nhiên</button>
               </div>
               <div class="row">
                 <button class="red" onclick="emergencyOn()">🚨 Bật khẩn</button>
@@ -1845,6 +1938,7 @@ jobs:
 
           log("Supervisor bắt đầu.")
           log("Trang control đã khởi động.")
+          log("Ident: chọn ngẫu nhiên theo trọng số 40/35/25.")
           log("Bản thử nghiệm: HLS vẫn có thể khựng hoặc nhảy.")
 
           seen_restart_seq = 0
@@ -2062,10 +2156,10 @@ jobs:
                           last_start = 0.0
 
                       if schedule_changed or manual_ident_requested:
-                          duration = ident_duration()
+                          chosen = choose_ident()
 
-                          if duration is None:
-                              log("Ident không hợp lệ hoặc không có; bỏ qua.")
+                          if chosen is None:
+                              log("Không có ident hợp lệ; bỏ qua.")
 
                               if ident_playing:
                                   stop_ffmpeg()
@@ -2076,6 +2170,8 @@ jobs:
                                   last_start = 0.0
 
                           else:
+                              ident_path, duration = chosen
+
                               if manual_ident_requested:
                                   log(
                                       "Control phát ident "
@@ -2092,6 +2188,7 @@ jobs:
                                   effective_config,
                                   "ident",
                                   duration=duration,
+                                  ident_path=ident_path,
                               )
 
                               ident_playing = True
@@ -2105,7 +2202,12 @@ jobs:
 
                       if ident_playing:
                           if process is None or process.poll() is not None:
-                              code = None if process is None else process.returncode
+                              code = (
+                                  None
+                                  if process is None
+                                  else process.returncode
+                              )
+
                               log(f"Ident kết thúc; mã {code}.")
 
                               process = None
@@ -2269,9 +2371,7 @@ jobs:
                               desired_mode in ("main", "waiting")
                               and not video_available
                           ):
-                              log(
-                                  "Probe chưa OK; thử FFmpeg trực tiếp."
-                              )
+                              log("Probe chưa OK; thử FFmpeg trực tiếp.")
                               direct_attempt_active = True
 
                           start_ffmpeg(
