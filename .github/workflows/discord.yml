@@ -2160,7 +2160,3 @@ jobs:
 
       - name: Run bot
         run: npm start
-
-
-grant execute on function public.bot_economy_admin(text, text, integer)
-  to service_role;
