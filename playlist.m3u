@@ -495,3 +495,6 @@ https://vmttv.dpdns.org/tv360/?id=tv360-11
 #KODIPROP:inputstream.adaptive.license_type=clearkey
 #KODIPROP:inputstream.adaptive.license_key=29b3e7c5de895bfa8850f16dad16e378:72a9e1be1d94ad66207f1ac61bcf7681
 https://vmttv.dpdns.org/tv360/?id=tv360-12
+
+#EXTINF:-1 tvg-id="mytv-8021" group-title="⚽ SPORTS - Thể thao", 8021
+https://s7774.cdn.mytvnet.vn/clrlive_10.m3u8?c=vstv718&q=auto&deviceType=127&userId=32637090&deviceId=49831298&type=tv&p=0&zn=netott&rkey=32637090PUBY8o42&ctl=239.173&hc=ctl21&sl=2&drmsrv=ctl21.mytvnet.vn&naddr=123.29.77.74&pkg=pkg41.hni&profiles=sd,high,medium&&bsd=5500000&bhi=3500000&bme=1500000&location=VTL&rbk=17216241140&pnode=172.16.55.36&isp=all
