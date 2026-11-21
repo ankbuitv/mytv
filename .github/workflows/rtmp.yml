@@ -484,8 +484,10 @@ jobs:
               "direct_subtitle_url": "",
               "direct_subtitle_offset": 0.0,
               "direct_audio_tracks": [],
+              "direct_clearkey": "",
               "ad_break_seq": 0,
-              "ad_break_source": "",
+              "ad_break_queue": [],
+              "ad_break_stop_seq": 0,
               "ad_break_with_ident": True,
               "ad_overlay_override": None,
               "restart_seq": 0,
@@ -990,7 +992,31 @@ jobs:
               return cleaned
 
 
-          def direct_program(url, input_type, subtitle_url="", subtitle_offset=0.0, audio_tracks=None):
+          def parse_clearkey_hex(value):
+              if not value or not isinstance(value, str):
+                  return ""
+              raw = value.strip()
+              if not raw:
+                  return ""
+              if raw.startswith("{"):
+                  try:
+                      obj = json.loads(raw)
+                      keys = obj.get("keys") if isinstance(obj, dict) else None
+                      if isinstance(keys, list) and keys:
+                          k_b64 = str(keys[0].get("k", "")).strip()
+                          pad = "=" * (-len(k_b64) % 4)
+                          decoded = base64.urlsafe_b64decode(k_b64 + pad)
+                          if len(decoded) == 16:
+                              return decoded.hex()
+                  except Exception:
+                      return ""
+              if ":" in raw:
+                  raw = raw.split(":", 1)[1]
+              cleaned = re.sub(r"[^0-9a-fA-F]", "", raw)
+              return cleaned.lower() if len(cleaned) == 32 else ""
+
+
+          def direct_program(url, input_type, subtitle_url="", subtitle_offset=0.0, audio_tracks=None, clearkey=""):
               return {
                   "reason": "direct",
                   "name": "Link trực tiếp",
@@ -1000,6 +1026,7 @@ jobs:
                   "subtitle_url": subtitle_url if valid_direct_url(subtitle_url) else "",
                   "subtitle_offset": subtitle_offset,
                   "audio_tracks": sanitize_audio_tracks(audio_tracks or []),
+                  "clearkey": parse_clearkey_hex(clearkey),
                   "occurrence": None,
                   "waiting": {},
               }
@@ -1021,27 +1048,30 @@ jobs:
                   return 0.0
 
 
-          def probe(url, stream_type):
+          def probe(url, stream_type, clearkey=""):
               if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
-              cache_key = (url, stream_type)
+              cache_key = (url, stream_type, clearkey)
               cached = PROBE_CACHE.get(cache_key)
               now_mono = time.monotonic()
               if cached and (now_mono - cached[0]) < PROBE_TTL:
                   return cached[1], cached[2]
               try:
+                  ffprobe_cmd = [
+                      "ffprobe",
+                      "-v", "error",
+                      "-rw_timeout", "4000000",
+                      "-analyzeduration", "1500000",
+                      "-probesize", "1500000",
+                      "-select_streams", stream_type,
+                      "-show_entries", "stream=codec_type",
+                      "-of", "csv=p=0",
+                  ]
+                  if clearkey:
+                      ffprobe_cmd += ["-cenc_decryption_key", clearkey]
+                  ffprobe_cmd.append(url)
                   result = subprocess.run(
-                      [
-                          "ffprobe",
-                          "-v", "error",
-                          "-rw_timeout", "4000000",
-                          "-analyzeduration", "1500000",
-                          "-probesize", "1500000",
-                          "-select_streams", stream_type,
-                          "-show_entries", "stream=codec_type",
-                          "-of", "csv=p=0",
-                          url,
-                      ],
+                      ffprobe_cmd,
                       stdout=subprocess.PIPE,
                       stderr=subprocess.PIPE,
                       text=True,
@@ -1613,6 +1643,7 @@ jobs:
               ad_overlay=None,
               ad_image_path=None,
               seek_seconds=0.0,
+              clearkey="",
           ):
               global process, last_start
               stop_ffmpeg()
@@ -1674,6 +1705,8 @@ jobs:
                   ]
                   if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(source_url)):
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
+                  if clearkey:
+                      cmd += ["-cenc_decryption_key", clearkey]
                   cmd += ["-i", source_url]
 
               cmd += [
@@ -1725,7 +1758,7 @@ jobs:
                       audio_map = f"{next_input_idx}:a:0"
                       next_input_idx += 1
               else:
-                  has_src_audio, _ = probe(source_url, "a:0")
+                  has_src_audio, _ = probe(source_url, "a:0", clearkey=clearkey)
                   if has_src_audio:
                       audio_map = "0:a:0?"
                   else:
@@ -1926,23 +1959,23 @@ jobs:
 
           <section class="card">
           <h2>📢 Quảng cáo (Ad Break &amp; Watermark)</h2>
-          <label for="adVideoSelect">1. Chèn video quảng cáo (từ ads/ trên GitHub)</label>
-          <select id="adVideoSelect">
-          <option value="">-- Chọn file trong ads/ hoặc dán URL bên dưới --</option>
-          </select>
-          <input
-          id="adVideoUrl"
-          type="text"
-          autocomplete="off"
-          style="margin-top:8px"
-          placeholder="Hoặc dán URL video QC (.mp4 / .m3u8)"
-          >
+          <label>1. Chèn 1 hoặc nhiều video QC (chọn từ ads/ hoặc dán nhiều URL, mỗi dòng 1 link)</label>
+          <div id="adVideoChecks" style="max-height:130px;overflow:auto;padding:8px;border:1px solid #343d61;border-radius:8px;margin-top:6px">
+          <span class="small">Đang tải danh sách ads/...</span>
+          </div>
+          <textarea
+          id="adVideoUrls"
+          rows="3"
+          style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #343d61;background:#0e1220;color:#eef2ff;font:inherit;margin-top:8px"
+          placeholder="Hoặc dán 1 hoặc nhiều URL video QC (mỗi dòng 1 link .mp4 / .m3u8)"
+          ></textarea>
           <label>
           <input id="adWithIdent" type="checkbox" checked>
-          Phát ad_ident.mp4 trước quảng cáo (nếu có)
+          Phát ad_ident.mp4 trước đợt quảng cáo (nếu có)
           </label>
           <div class="row">
-          <button onclick="playAdBreak()">📢 Phát quảng cáo ngay</button>
+          <button onclick="playAdBreak()">📢 Phát / Xếp hàng QC</button>
+          <button class="red" onclick="sendAction('ad_stop')">⏹ Thoát quảng cáo</button>
           </div>
 
           <hr style="border-color:#343d61;margin:14px 0">
@@ -1979,7 +2012,14 @@ jobs:
           id="url"
           type="text"
           autocomplete="off"
-          placeholder="https://.../playlist.m3u8 hoặc video.mp4"
+          placeholder="https://.../playlist.m3u8, manifest.mpd hoặc video.mp4"
+          >
+          <label for="clearkey">ClearKey cho .mpd (tùy chọn)</label>
+          <input
+          id="clearkey"
+          type="password"
+          autocomplete="off"
+          placeholder="KID:KEY hoặc KEY 32 ký tự hex"
           >
           <label for="subtitleUrl">Phụ đề .srt (tùy chọn)</label>
           <input
@@ -2101,16 +2141,47 @@ jobs:
             return out;
           }
 
+          function syncAdVideoChecks(items) {
+            const box = document.getElementById("adVideoChecks");
+            if (!box) return;
+            const key = JSON.stringify(items || []);
+            if (box.dataset.key === key) return;
+            const checked = new Set(
+              Array.from(box.querySelectorAll("input:checked")).map(i => i.value)
+            );
+            box.dataset.key = key;
+            box.innerHTML = "";
+            if (!items || !items.length) {
+              box.innerHTML = "<span class='small'>Chưa có file video nào trong ads/.</span>";
+              return;
+            }
+            items.forEach(name => {
+              const lbl = document.createElement("label");
+              lbl.style.margin = "4px 0";
+              const cb = document.createElement("input");
+              cb.type = "checkbox";
+              cb.value = "repo:" + name;
+              if (checked.has(cb.value)) cb.checked = true;
+              lbl.append(cb, " " + name);
+              box.appendChild(lbl);
+            });
+          }
+
           function playAdBreak() {
-            const sel = document.getElementById("adVideoSelect").value;
-            const url = document.getElementById("adVideoUrl").value.trim();
-            const source = url || sel;
-            if (!source) {
-              showMessage("Hãy chọn video trong ads/ hoặc dán URL QC.");
+            const checked = Array.from(
+              document.querySelectorAll("#adVideoChecks input:checked")
+            ).map(i => i.value);
+            const lines = document.getElementById("adVideoUrls").value
+              .split(/\r?\n/)
+              .map(s => s.trim())
+              .filter(Boolean);
+            const sources = checked.concat(lines);
+            if (!sources.length) {
+              showMessage("Hãy tick ít nhất 1 video trong ads/ hoặc dán URL QC.");
               return;
             }
             sendAction("ad_break", {
-              source,
+              sources,
               with_ident: document.getElementById("adWithIdent").checked
             });
           }
@@ -2155,6 +2226,7 @@ jobs:
 
           function playDirect() {
             const url = document.getElementById("url").value.trim();
+            const clearkey = document.getElementById("clearkey").value.trim();
             const subtitle_url = document.getElementById("subtitleUrl").value.trim();
             const subtitle_offset = Number(document.getElementById("subtitleOffset").value.trim() || 0);
             if (!url) {
@@ -2163,6 +2235,7 @@ jobs:
             }
             sendAction("direct", {
               url,
+              clearkey,
               subtitle_url,
               subtitle_offset: Number.isFinite(subtitle_offset) ? subtitle_offset : 0,
               audio_tracks: collectAudioTracks(),
@@ -2193,7 +2266,7 @@ jobs:
                   ? "Đang đọc..."
                   : (data.config_error || "OK"));
               document.getElementById("logs").textContent = data.logs.join("\n");
-              syncSelectOptions("adVideoSelect", data.ads_videos, "repo:");
+              syncAdVideoChecks(data.ads_videos);
               syncSelectOptions("adImgSelect", data.ads_images, "repo:");
             } catch (error) {
               showMessage("Không tải được trạng thái: " + error.message);
@@ -2460,6 +2533,14 @@ jobs:
 
                   if action == "direct":
                       url = str(data.get("url", "")).strip()
+                      raw_ck = str(data.get("clearkey", "")).strip()
+                      clearkey = parse_clearkey_hex(raw_ck)
+                      if raw_ck and not clearkey:
+                          self.send_json(
+                              400,
+                              {"error": "ClearKey không hợp lệ (cần KID:KEY hoặc KEY 32 ký tự hex)."},
+                          )
+                          return
                       subtitle_url = str(data.get("subtitle_url", "")).strip()
                       try:
                           subtitle_offset = float(data.get("subtitle_offset", 0) or 0)
@@ -2491,6 +2572,7 @@ jobs:
                           shared["direct_subtitle_url"] = subtitle_url
                           shared["direct_subtitle_offset"] = subtitle_offset
                           shared["direct_audio_tracks"] = sanitize_audio_tracks(data.get("audio_tracks", []))
+                          shared["direct_clearkey"] = clearkey
                           if data.get("ident") is True:
                               shared["ident_seq"] += 1
                       log("Control: chọn link trực tiếp, loại " + input_type + ".")
@@ -2498,27 +2580,47 @@ jobs:
                       return
 
                   if action == "ad_break":
-                      source = str(data.get("source", "")).strip()
-                      if not source:
-                          self.send_json(400, {"error": "Thiếu nguồn quảng cáo."})
-                          return
-                      if source.startswith("repo:"):
-                          fname = os.path.basename(source[5:])
-                          if not (ROOT / "ads" / "videos" / fname).is_file():
-                              self.send_json(404, {"error": "Không thấy file trong ads/."})
+                      raw_sources = data.get("sources")
+                      if not isinstance(raw_sources, list):
+                          single = str(data.get("source", "")).strip()
+                          raw_sources = [single] if single else []
+                      cleaned = []
+                      for item in raw_sources[:20]:
+                          s = str(item or "").strip()
+                          if not s:
+                              continue
+                          if s.startswith("repo:"):
+                              fname = os.path.basename(s[5:])
+                              if not (ROOT / "ads" / "videos" / fname).is_file():
+                                  self.send_json(404, {"error": f"Không thấy file trong ads/: {fname}"})
+                                  return
+                              cleaned.append("repo:" + fname)
+                          elif valid_direct_url(s):
+                              cleaned.append(s)
+                          else:
+                              self.send_json(400, {"error": "Có URL quảng cáo không hợp lệ."})
                               return
-                      elif not valid_direct_url(source):
-                          self.send_json(400, {"error": "URL quảng cáo không hợp lệ."})
+                      if not cleaned:
+                          self.send_json(400, {"error": "Thiếu nguồn quảng cáo."})
                           return
                       with lock:
                           if shared["emergency"]:
                               self.send_json(409, {"error": "Đang khẩn cấp; không phát quảng cáo."})
                               return
-                          shared["ad_break_source"] = source
+                          shared["ad_break_queue"].extend(cleaned)
                           shared["ad_break_with_ident"] = bool(data.get("with_ident", True))
                           shared["ad_break_seq"] += 1
-                      log("Control: yêu cầu phát quảng cáo.")
-                      self.send_json(200, {"message": "Đã gửi lệnh phát quảng cáo."})
+                          total_q = len(shared["ad_break_queue"])
+                      log(f"Control: xếp hàng {len(cleaned)} video quảng cáo (tổng hàng đợi: {total_q}).")
+                      self.send_json(200, {"message": f"Đã thêm {len(cleaned)} video quảng cáo vào hàng đợi."})
+                      return
+
+                  if action == "ad_stop":
+                      with lock:
+                          shared["ad_break_queue"].clear()
+                          shared["ad_break_stop_seq"] += 1
+                      log("Control: yêu cầu THOÁT quảng cáo ngay.")
+                      self.send_json(200, {"message": "Đang thoát quảng cáo để quay lại luồng chính."})
                       return
 
                   if action == "ad_overlay":
@@ -2563,6 +2665,7 @@ jobs:
                           shared["direct_subtitle_url"] = ""
                           shared["direct_subtitle_offset"] = 0.0
                           shared["direct_audio_tracks"] = []
+                          shared["direct_clearkey"] = ""
                       fetch_event.set()
                       log("Control: quay về Worker.")
                       self.send_json(200, {"message": "Đã chọn lịch Worker."})
@@ -2595,6 +2698,7 @@ jobs:
           seen_restart_seq = 0
           seen_ident_seq = 0
           seen_ad_break_seq = 0
+          seen_ad_break_stop_seq = 0
           was_emergency = False
 
           ad_break_stage = None
@@ -2625,8 +2729,9 @@ jobs:
                           direct_subtitle_url = shared["direct_subtitle_url"]
                           direct_subtitle_offset = shared["direct_subtitle_offset"]
                           direct_audio_tracks = list(shared["direct_audio_tracks"])
+                          direct_clearkey = shared["direct_clearkey"]
                           ad_break_seq = shared["ad_break_seq"]
-                          ad_break_source = shared["ad_break_source"]
+                          ad_break_stop_seq = shared["ad_break_stop_seq"]
                           ad_break_with_ident = shared["ad_break_with_ident"]
                           ad_overlay_override = shared["ad_overlay_override"]
                           restart_seq = shared["restart_seq"]
@@ -2705,6 +2810,7 @@ jobs:
                               direct_subtitle_url,
                               direct_subtitle_offset,
                               direct_audio_tracks,
+                              direct_clearkey,
                           )
                       elif config is not None:
                           program = select_program(config)
@@ -2809,54 +2915,70 @@ jobs:
                           current_mode = None
                           last_start = 0.0
 
+                      if ad_break_stop_seq != seen_ad_break_stop_seq:
+                          seen_ad_break_stop_seq = ad_break_stop_seq
+                          if ad_break_stage is not None:
+                              log("Thoát quảng cáo ngay; quay lại luồng chính.")
+                              stop_ffmpeg()
+                              ad_break_stage = None
+                              ad_break_source_active = ""
+                              current_key = None
+                              current_mode = None
+                              last_start = 0.0
+
                       if ad_break_seq != seen_ad_break_seq:
                           seen_ad_break_seq = ad_break_seq
-                          if current_mode == "main" and program.get("url") and (program.get("input_type") == "vod" or is_mp4(program.get("url"))):
-                              with lock:
-                                  played_s = parse_out_time(shared.get("ffmpeg_out_time", ""))
-                              resume_pos = main_seek_offset + played_s
-                              paused_main_state = {
-                                  "url": program["url"],
-                                  "resume_at": resume_pos,
-                              }
-                              log(f"Lưu vị trí phát chính tại {resume_pos:.1f}s để quay lại sau QC.")
-                          if ident_playing:
-                              stop_ffmpeg()
-                              ident_playing = False
-                              ident_from_control = False
-                          ad_src = (
-                              str(ROOT / "ads" / "videos" / os.path.basename(ad_break_source[5:]))
-                              if ad_break_source.startswith("repo:")
-                              else ad_break_source
-                          )
-                          ad_break_source_active = ad_src
-                          ad_ident_file = ASSETS / "ad_ident.mp4"
-                          ad_ident_dur = ident_file_duration(ad_ident_file) if ad_break_with_ident else None
-                          if ad_ident_dur is not None:
-                              log(f"Phát ad_ident ({ad_ident_dur:.1f}s) trước quảng cáo.")
-                              start_ffmpeg(
-                                  effective_config,
-                                  "ad_ident",
-                                  duration=ad_ident_dur,
-                                  ident_path=ad_ident_file,
-                                  logo_path=logo_path,
-                              )
-                              ad_break_stage = "ad_ident"
-                              ad_break_deadline = time.monotonic() + ad_ident_dur + 20
-                          else:
-                              ad_dur = ident_file_duration(Path(ad_src)) if Path(ad_src).is_file() else 180.0
-                              log("Bắt đầu phát video quảng cáo.")
-                              start_ffmpeg(
-                                  effective_config,
-                                  "ad_break",
-                                  source_url=ad_src,
-                                  duration=ad_dur,
-                                  logo_path=logo_path,
-                              )
-                              ad_break_stage = "ad_video"
-                              ad_break_deadline = time.monotonic() + (ad_dur or 180.0) + 30
-                          current_key = ("ad", ad_break_seq)
-                          current_mode = ad_break_stage
+                          if ad_break_stage is None:
+                              if current_mode == "main" and program.get("url") and (program.get("input_type") == "vod" or is_mp4(program.get("url"))):
+                                  with lock:
+                                      played_s = parse_out_time(shared.get("ffmpeg_out_time", ""))
+                                  resume_pos = main_seek_offset + played_s
+                                  paused_main_state = {
+                                      "url": program["url"],
+                                      "resume_at": resume_pos,
+                                  }
+                                  log(f"Lưu vị trí phát chính tại {resume_pos:.1f}s để quay lại sau QC.")
+                              if ident_playing:
+                                  stop_ffmpeg()
+                                  ident_playing = False
+                                  ident_from_control = False
+                              ad_ident_file = ASSETS / "ad_ident.mp4"
+                              ad_ident_dur = ident_file_duration(ad_ident_file) if ad_break_with_ident else None
+                              if ad_ident_dur is not None:
+                                  log(f"Phát ad_ident ({ad_ident_dur:.1f}s) trước đợt quảng cáo.")
+                                  start_ffmpeg(
+                                      effective_config,
+                                      "ad_ident",
+                                      duration=ad_ident_dur,
+                                      ident_path=ad_ident_file,
+                                      logo_path=logo_path,
+                                  )
+                                  ad_break_stage = "ad_ident"
+                                  ad_break_deadline = time.monotonic() + ad_ident_dur + 20
+                              else:
+                                  with lock:
+                                      next_item = shared["ad_break_queue"].pop(0) if shared["ad_break_queue"] else ""
+                                  ad_src = (
+                                      str(ROOT / "ads" / "videos" / os.path.basename(next_item[5:]))
+                                      if next_item.startswith("repo:")
+                                      else next_item
+                                  )
+                                  ad_break_source_active = ad_src
+                                  if ad_src:
+                                      ad_dur = ident_file_duration(Path(ad_src)) if Path(ad_src).is_file() else 180.0
+                                      log("Bắt đầu phát video quảng cáo.")
+                                      start_ffmpeg(
+                                          effective_config,
+                                          "ad_break",
+                                          source_url=ad_src,
+                                          duration=ad_dur,
+                                          logo_path=logo_path,
+                                      )
+                                      ad_break_stage = "ad_video"
+                                      ad_break_deadline = time.monotonic() + (ad_dur or 180.0) + 30
+                              if ad_break_stage is not None:
+                                  current_key = ("ad", ad_break_seq)
+                                  current_mode = ad_break_stage
 
                       if ad_break_stage is not None:
                           if process is None or process.poll() is not None or time.monotonic() >= ad_break_deadline:
@@ -2867,10 +2989,21 @@ jobs:
                                   process = None
                               with lock:
                                   shared["ffmpeg_running"] = False
-                              if ad_break_stage == "ad_ident":
-                                  ad_src = ad_break_source_active
+                              with lock:
+                                  next_item = shared["ad_break_queue"].pop(0) if shared["ad_break_queue"] else ""
+                                  rem_q = len(shared["ad_break_queue"])
+                              if next_item:
+                                  ad_src = (
+                                      str(ROOT / "ads" / "videos" / os.path.basename(next_item[5:]))
+                                      if next_item.startswith("repo:")
+                                      else next_item
+                                  )
+                                  ad_break_source_active = ad_src
                                   ad_dur = ident_file_duration(Path(ad_src)) if Path(ad_src).is_file() else 180.0
-                                  log("Chuyển từ ad_ident sang video quảng cáo.")
+                                  if ad_break_stage == "ad_ident":
+                                      log(f"Chuyển từ ad_ident sang video quảng cáo (còn {rem_q} sau clip này).")
+                                  else:
+                                      log(f"Chuyển sang video quảng cáo tiếp theo (còn {rem_q} sau clip này).")
                                   start_ffmpeg(
                                       effective_config,
                                       "ad_break",
@@ -3080,6 +3213,7 @@ jobs:
                               "main",
                               program["url"],
                               program["input_type"],
+                              program.get("clearkey", ""),
                               cached_subtitle_hash,
                               cached_ad_img_hash if active_ad_overlay else "",
                               signature(active_ad_overlay or {}),
@@ -3128,6 +3262,7 @@ jobs:
                               ad_overlay=active_ad_overlay if desired_mode == "main" else None,
                               ad_image_path=cached_ad_img_path if (desired_mode == "main" and active_ad_overlay) else None,
                               seek_seconds=resume_seek,
+                              clearkey=program.get("clearkey", "") if desired_mode == "main" else "",
                           )
                           current_key = desired_key
                           current_mode = desired_mode
