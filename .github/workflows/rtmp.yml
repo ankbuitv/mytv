@@ -1048,9 +1048,28 @@ jobs:
                   return 0.0
 
 
+          def resolve_media_redirect(url):
+              if not url or not url.startswith(("http://", "https://")):
+                  return url
+              try:
+                  opener = urllib.request.build_opener(SafeRedirectHandler())
+                  req = urllib.request.Request(
+                      url,
+                      headers={"User-Agent": "VeoTV-Runner/1.0", "Range": "bytes=0-0"},
+                  )
+                  with opener.open(req, timeout=5) as resp:
+                      final_url = resp.geturl()
+                      if final_url and valid_url(final_url):
+                          return final_url
+              except Exception:
+                  pass
+              return url
+
+
           def probe(url, stream_type, clearkey=""):
               if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
+              url = resolve_media_redirect(url)
               cache_key = (url, stream_type, clearkey)
               cached = PROBE_CACHE.get(cache_key)
               now_mono = time.monotonic()
@@ -1519,7 +1538,7 @@ jobs:
                   current = "bannered"
 
               parts.append(f"[{current}]split=2[a][b]")
-              parts.append("[a]scale=1280:720,format=yuv420p[v720]")
+              parts.append("[a]scale=1280:720:flags=fast_bilinear,format=yuv420p[v720]")
               parts.append("[b]format=yuv420p[v1080]")
               return ";".join(parts)
 
@@ -1544,6 +1563,7 @@ jobs:
                   "-c:v", "libx264",
                   "-preset", "ultrafast",
                   "-tune", "zerolatency",
+                  "-x264-params", "sliced-threads=1:rc-lookahead=0:sync-lookahead=0",
                   "-b:v", bitrate,
                   "-g", "60",
                   "-keyint_min", "60",
@@ -1707,7 +1727,7 @@ jobs:
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
                   if clearkey:
                       cmd += ["-cenc_decryption_key", clearkey]
-                  cmd += ["-i", source_url]
+                  cmd += ["-i", resolve_media_redirect(source_url)]
 
               cmd += [
                   "-loop", "1",
