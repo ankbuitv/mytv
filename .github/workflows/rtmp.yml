@@ -1055,7 +1055,7 @@ jobs:
                   opener = urllib.request.build_opener(SafeRedirectHandler())
                   req = urllib.request.Request(
                       url,
-                      headers={"User-Agent": "VLC/3.0.20 LibVLC/3.0.20"},
+                      headers={"User-Agent": "Dalvik/2.1.0"},
                   )
                   with opener.open(req, timeout=5) as resp:
                       final_url = resp.geturl()
@@ -1087,7 +1087,7 @@ jobs:
                       "-of", "csv=p=0",
                   ]
                   if url.startswith(("http://", "https://")):
-                      ffprobe_cmd += ["-user_agent", "VLC/3.0.20 LibVLC/3.0.20"]
+                      ffprobe_cmd += ["-user_agent", "Dalvik/2.1.0"]
                   if clearkey:
                       ffprobe_cmd += ["-cenc_decryption_key", clearkey]
                   ffprobe_cmd.append(url)
@@ -1706,11 +1706,12 @@ jobs:
                   cmd += ["-re"]
                   if str(source_url).startswith(("http://", "https://")):
                       cmd += [
-                          "-fflags", "+genpts+discardcorrupt",
+                          "-fflags", "+genpts",
                           "-analyzeduration", "1500000",
                           "-probesize", "1500000",
                           "-thread_queue_size", "512",
                           "-rw_timeout", "6000000",
+                          "-user_agent", "Dalvik/2.1.0",
                       ]
                   cmd += ["-i", str(source_url)]
               elif mode in ("waiting", "main"):
@@ -1719,7 +1720,7 @@ jobs:
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
                   cmd += [
-                      "-fflags", "+genpts+discardcorrupt",
+                      "-fflags", "+genpts",
                       "-analyzeduration", "1500000",
                       "-probesize", "1500000",
                       "-thread_queue_size", "512",
@@ -1727,7 +1728,7 @@ jobs:
                   ]
                   resolved_src = resolve_media_redirect(source_url)
                   if resolved_src.startswith(("http://", "https://")):
-                      cmd += ["-user_agent", "VLC/3.0.20 LibVLC/3.0.20"]
+                      cmd += ["-user_agent", "Dalvik/2.1.0"]
                   if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(resolved_src)):
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
                   if clearkey:
@@ -1816,7 +1817,7 @@ jobs:
                               if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(tr["url"])):
                                   cmd += ["-ss", f"{seek_seconds:.2f}"]
                               cmd += [
-                                  "-fflags", "+genpts+discardcorrupt",
+                                  "-fflags", "+genpts",
                                   "-analyzeduration", "1500000",
                                   "-probesize", "1500000",
                                   "-thread_queue_size", "512",
