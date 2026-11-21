@@ -67,6 +67,7 @@ jobs:
       - name: Run VeoTV
         shell: bash
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
           TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
@@ -171,10 +172,15 @@ jobs:
             local target="$ROOT/assets/$name.mp4"
 
             echo ">>> Đang tải $name..."
+            local auth_args=()
+            if [[ "$url" == *"raw.githubusercontent.com/ankbuitv/mytv/"* ]] && [ -n "${GITHUB_TOKEN:-}" ]; then
+              auth_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+            fi
             if curl -fsSL \
               --retry 2 \
               --retry-delay 2 \
               --max-time 120 \
+              "${auth_args[@]}" \
               "$url" \
               -o "$target"
             then
@@ -200,11 +206,11 @@ jobs:
           download_ident ident1 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
           download_ident ident2 \
-            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident02.mp4"
+            "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/ident02.mp4"
           download_ident ident3 \
-            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident03.mp4"
+            "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/ident03.mp4"
           download_ident ident4 \
-            "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident04.mp4"
+            "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/ident04.mp4"
 
           printf '%s' "$TUNNEL_CREDENTIALS" > "$ROOT/credentials.json"
 
@@ -418,6 +424,8 @@ jobs:
               "direct_url": None,
               "direct_type": "live",
               "direct_subtitle_url": "",
+              "direct_subtitle_offset": 0.0,
+              "direct_audio_tracks": [],
               "restart_seq": 0,
               "ident_seq": 0,
               "current_mode": "Đang khởi động",
@@ -629,7 +637,33 @@ jobs:
           _safe_opener = urllib.request.build_opener(SafeRedirectHandler)
 
 
-          def download_subtitle(url):
+          SRT_TS_RE = re.compile(
+              r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
+          )
+
+
+          def shift_srt_timestamps(text, offset_sec):
+              if not offset_sec:
+                  return text
+              offset_ms = int(round(offset_sec * 1000))
+
+              def _fmt(ms):
+                  ms = max(0, ms)
+                  h, rem = divmod(ms, 3600000)
+                  m, rem = divmod(rem, 60000)
+                  s, mil = divmod(rem, 1000)
+                  return f"{h:02d}:{m:02d}:{s:02d},{mil:03d}"
+
+              def _repl(match):
+                  h1, m1, s1, ms1, h2, m2, s2, ms2 = map(int, match.groups())
+                  t1 = ((h1 * 3600 + m1 * 60 + s1) * 1000 + ms1) + offset_ms
+                  t2 = ((h2 * 3600 + m2 * 60 + s2) * 1000 + ms2) + offset_ms
+                  return f"{_fmt(t1)} --> {_fmt(t2)}"
+
+              return SRT_TS_RE.sub(_repl, text)
+
+
+          def download_subtitle(url, offset_sec=0.0):
               if not url or not valid_direct_url(url):
                   return None, ""
               try:
@@ -650,10 +684,12 @@ jobs:
                   if not stripped or stripped.startswith("<"):
                       log("File phụ đề không hợp lệ (trống hoặc HTML); bỏ qua.")
                       return None, ""
+                  if offset_sec:
+                      text = shift_srt_timestamps(text, offset_sec)
                   srt_path = ROOT / "current.srt"
                   srt_path.write_text(text, encoding="utf-8")
                   digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-                  log(f"Đã tải phụ đề .srt ({len(raw)} bytes).")
+                  log(f"Đã tải phụ đề .srt ({len(raw)} bytes, offset={offset_sec:+.1f}s).")
                   return srt_path, digest
               except Exception as exc:
                   log("Không tải được phụ đề .srt: " + type(exc).__name__)
@@ -764,6 +800,8 @@ jobs:
                       "url": resolve_source(config, name),
                       "input_type": source_input_type(config, name),
                       "subtitle_url": sub_url,
+                      "subtitle_offset": 0.0,
+                      "audio_tracks": [],
                       "occurrence": None,
                       "waiting": {},
                   }
@@ -804,11 +842,19 @@ jobs:
                           url = value if valid_url(value) else None
                           input_type = waiting_input_type(waiting)
                           sub_url = ""
+                          sub_offset = 0.0
+                          audio_tracks = []
                       else:
                           url = resolve_source(config, name)
                           input_type = source_input_type(config, name)
                           raw_sub = item.get("subtitleUrl", "")
                           sub_url = raw_sub if valid_direct_url(raw_sub) else ""
+                          try:
+                              sub_offset = float(item.get("subtitleOffset", 0) or 0)
+                          except (ValueError, TypeError):
+                              sub_offset = 0.0
+                          sub_offset = max(-3600.0, min(3600.0, sub_offset))
+                          audio_tracks = sanitize_audio_tracks(item.get("audioTracks", []))
 
                       occurrence_date = now.date()
                       if start > end and current < end:
@@ -833,6 +879,8 @@ jobs:
                           "url": url,
                           "input_type": input_type,
                           "subtitle_url": sub_url,
+                          "subtitle_offset": sub_offset,
+                          "audio_tracks": audio_tracks,
                           "occurrence": occurrence,
                           "waiting": waiting,
                       }
@@ -846,12 +894,41 @@ jobs:
                   "url": OBS_URL,
                   "input_type": "live",
                   "subtitle_url": "",
+                  "subtitle_offset": 0.0,
+                  "audio_tracks": [],
                   "occurrence": None,
                   "waiting": {},
               }
 
 
-          def direct_program(url, input_type, subtitle_url=""):
+          def sanitize_audio_tracks(raw_tracks):
+              if not isinstance(raw_tracks, list):
+                  return []
+              cleaned = []
+              for item in raw_tracks[:8]:
+                  if not isinstance(item, dict):
+                      continue
+                  url = str(item.get("url", "")).strip()
+                  if not valid_url(url):
+                      continue
+                  lang = re.sub(r"[^a-zA-Z0-9-]", "", str(item.get("lang", "und")))[:16] or "und"
+                  label = str(item.get("label", lang)).replace('"', "").replace("\n", " ").strip()[:50] or lang
+                  try:
+                      offset = float(item.get("offset", 0) or 0)
+                  except (ValueError, TypeError):
+                      offset = 0.0
+                  offset = max(-3600.0, min(3600.0, offset))
+                  cleaned.append({
+                      "lang": lang,
+                      "label": label,
+                      "url": url,
+                      "offset": offset,
+                      "default": bool(item.get("default", False)),
+                  })
+              return cleaned
+
+
+          def direct_program(url, input_type, subtitle_url="", subtitle_offset=0.0, audio_tracks=None):
               return {
                   "reason": "direct",
                   "name": "Link trực tiếp",
@@ -859,6 +936,8 @@ jobs:
                   "url": url,
                   "input_type": input_type,
                   "subtitle_url": subtitle_url if valid_direct_url(subtitle_url) else "",
+                  "subtitle_offset": subtitle_offset,
+                  "audio_tracks": sanitize_audio_tracks(audio_tracks or []),
                   "occurrence": None,
                   "waiting": {},
               }
@@ -1156,7 +1235,7 @@ jobs:
               (ROOT / "banner.txt").write_text(banner_text, encoding="utf-8")
 
               parts = [
-                  "[0:v]fps=30,"
+                  "[0:v]setpts=PTS-STARTPTS,fps=30,"
                   "scale=1920:1080:"
                   "force_original_aspect_ratio=decrease,"
                   "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
@@ -1168,10 +1247,10 @@ jobs:
                   safe_srt = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
                   parts.append(
                       f"[{current}]subtitles={safe_srt}:charenc=UTF-8:"
-                      "force_style='FontName=DejaVu Sans,FontSize=28,"
+                      "force_style='FontName=DejaVu Sans,FontSize=15,"
                       "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-                      "BackColour=&H80000000,BorderStyle=1,Outline=2,"
-                      "Shadow=1,MarginV=36'[subbed]"
+                      "BackColour=&H80000000,BorderStyle=1,Outline=1.2,"
+                      "Shadow=0.5,MarginV=20'[subbed]"
                   )
                   current = "subbed"
 
@@ -1211,22 +1290,32 @@ jobs:
               bitrate,
               run_id,
               duration=None,
+              video_only=False,
           ):
               folder = ROOT / "www" / "livestream01" / resolution
+              folder.mkdir(parents=True, exist_ok=True)
               args = [
                   "-map", label,
-                  "-map", audio_map,
+              ]
+              if not video_only:
+                  args += ["-map", audio_map]
+              args += [
                   "-c:v", "libx264",
                   "-preset", "ultrafast",
                   "-b:v", bitrate,
                   "-g", "60",
                   "-keyint_min", "60",
                   "-sc_threshold", "0",
-                  "-c:a", "aac",
-                  "-b:a", "128k",
-                  "-ar", "44100",
-                  "-ac", "2",
               ]
+              if video_only:
+                  args += ["-an"]
+              else:
+                  args += [
+                      "-c:a", "aac",
+                      "-b:a", "128k",
+                      "-ar", "44100",
+                      "-ac", "2",
+                  ]
               if duration is not None:
                   args += ["-t", str(duration)]
               args += [
@@ -1241,6 +1330,54 @@ jobs:
                   str(folder / "index.m3u8"),
               ]
               return args
+
+
+          def audio_output_args(audio_map, idx, run_id):
+              folder = ROOT / "www" / "livestream01" / "audio" / str(idx)
+              folder.mkdir(parents=True, exist_ok=True)
+              return [
+                  "-map", audio_map,
+                  "-vn",
+                  "-c:a", "aac",
+                  "-b:a", "128k",
+                  "-ar", "44100",
+                  "-ac", "2",
+                  "-f", "hls",
+                  "-hls_time", "2",
+                  "-hls_list_size", "12",
+                  "-hls_delete_threshold", "30",
+                  "-hls_flags",
+                  "append_list+delete_segments+temp_file+omit_endlist+discont_start",
+                  "-hls_segment_filename",
+                  str(folder / f"{run_id}_%06d.ts"),
+                  str(folder / "index.m3u8"),
+              ]
+
+
+          def write_master_manifest(audio_renditions=None):
+              manifest = ROOT / "www" / "livestream01" / "manifest.m3u8"
+              lines = [
+                  "#EXTM3U",
+                  "#EXT-X-VERSION:3",
+              ]
+              audio_attr = ""
+              if audio_renditions:
+                  has_default = any(r.get("default") for r in audio_renditions)
+                  for i, r in enumerate(audio_renditions):
+                      is_def = "YES" if (r.get("default") or (not has_default and i == 0)) else "NO"
+                      lines.append(
+                          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",'
+                          f'NAME="{r["label"]}",LANGUAGE="{r["lang"]}",'
+                          f'DEFAULT={is_def},AUTOSELECT=YES,URI="audio/{i}/index.m3u8"'
+                      )
+                  audio_attr = ',AUDIO="audio"'
+              lines += [
+                  f'#EXT-X-STREAM-INF:BANDWIDTH=3300000,RESOLUTION=1280x720{audio_attr}',
+                  "720/index.m3u8",
+                  f'#EXT-X-STREAM-INF:BANDWIDTH=5800000,RESOLUTION=1920x1080{audio_attr}',
+                  "1080/index.m3u8",
+              ]
+              manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
           def reset_playlist_watch():
@@ -1259,12 +1396,14 @@ jobs:
               input_type="live",
               ident_path=None,
               subtitle_path=None,
+              audio_tracks=None,
           ):
               global process, last_start
               stop_ffmpeg()
               reset_playlist_watch()
 
               waiting = waiting or {}
+              audio_tracks = audio_tracks or []
               run_id = uuid.uuid4().hex[:10]
 
               cmd = [
@@ -1297,6 +1436,8 @@ jobs:
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
                   cmd += [
+                      "-analyzeduration", "5000000",
+                      "-probesize", "5000000",
                       "-thread_queue_size", "512",
                       "-rw_timeout", "10000000",
                       "-i", source_url,
@@ -1307,6 +1448,9 @@ jobs:
                   "-framerate", "30",
                   "-i", str(ASSETS / "logo.png"),
               ]
+
+              next_input_idx = 2
+              extra_renditions = []
 
               if mode in ("fallback", "waiting"):
                   if audio_url:
@@ -1319,33 +1463,82 @@ jobs:
                       ]
                   else:
                       cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-                  audio_map = "2:a:0"
+                  audio_map = f"{next_input_idx}:a:0"
+                  next_input_idx += 1
               elif mode == "ident":
                   if local_has_audio(ident_path):
                       audio_map = "0:a:0"
                   else:
                       cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-                      audio_map = "2:a:0"
+                      audio_map = f"{next_input_idx}:a:0"
+                      next_input_idx += 1
               else:
                   has_src_audio, _ = probe(source_url, "a:0")
                   if has_src_audio:
                       audio_map = "0:a:0?"
                   else:
                       cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-                      audio_map = "2:a:0"
+                      audio_map = f"{next_input_idx}:a:0"
+                      next_input_idx += 1
+
+                  if audio_tracks:
+                      valid_extras = []
+                      for tr in audio_tracks:
+                          ok, _ = probe(tr["url"], "a:0")
+                          if ok:
+                              valid_extras.append(tr)
+                          else:
+                              log(f"Bỏ qua audio track {tr['lang']} ({tr['label']}): không đọc được stream audio.")
+                      if valid_extras:
+                          extra_renditions.append({
+                              "lang": "und",
+                              "label": "Âm thanh gốc",
+                              "default": not any(t.get("default") for t in valid_extras),
+                              "map": audio_map,
+                          })
+                          for tr in valid_extras:
+                              if input_type == "vod" or is_mp4(tr["url"]):
+                                  cmd += ["-re"]
+                              if is_mp4(tr["url"]):
+                                  cmd += ["-stream_loop", "-1"]
+                              if tr.get("offset"):
+                                  cmd += ["-itsoffset", str(tr["offset"])]
+                              cmd += [
+                                  "-analyzeduration", "5000000",
+                                  "-probesize", "5000000",
+                                  "-thread_queue_size", "512",
+                                  "-rw_timeout", "10000000",
+                                  "-i", tr["url"],
+                              ]
+                              extra_renditions.append({
+                                  "lang": tr["lang"],
+                                  "label": tr["label"],
+                                  "default": tr.get("default", False),
+                                  "map": f"{next_input_idx}:a:0",
+                              })
+                              next_input_idx += 1
 
               cmd += [
                   "-filter_complex",
                   build_filters(config, mode, waiting, subtitle_path=subtitle_path),
               ]
-              cmd += output_args("[v720]", audio_map, "720", "2800k", run_id, duration)
-              cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id, duration)
+              if extra_renditions:
+                  write_master_manifest(extra_renditions)
+                  cmd += output_args("[v720]", audio_map, "720", "2800k", run_id, duration, video_only=True)
+                  cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id, duration, video_only=True)
+                  for idx, rend in enumerate(extra_renditions):
+                      cmd += audio_output_args(rend["map"], idx, run_id)
+              else:
+                  write_master_manifest(None)
+                  cmd += output_args("[v720]", audio_map, "720", "2800k", run_id, duration)
+                  cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id, duration)
 
               log(
                   "Khởi động FFmpeg: "
                   + mode
                   + (f", input={input_type}" if mode in ("waiting", "main") else "")
                   + (", srt=on" if (mode == "main" and subtitle_path) else "")
+                  + (f", audio_tracks={len(extra_renditions)}" if extra_renditions else "")
               )
 
               process = subprocess.Popen(
@@ -1392,8 +1585,14 @@ jobs:
 
           def cleanup_old_segments():
               now = time.time()
-              for resolution in ("720", "1080"):
-                  folder = ROOT / "www" / "livestream01" / resolution
+              folders = [
+                  ROOT / "www" / "livestream01" / "720",
+                  ROOT / "www" / "livestream01" / "1080",
+              ]
+              audio_root = ROOT / "www" / "livestream01" / "audio"
+              if audio_root.is_dir():
+                  folders.extend(p for p in audio_root.iterdir() if p.is_dir())
+              for folder in folders:
                   for path in folder.glob("*.ts"):
                       try:
                           if now - path.stat().st_mtime > 300:
@@ -1477,6 +1676,21 @@ jobs:
           autocomplete="off"
           placeholder="https://.../phu-de.srt"
           >
+          <label for="subtitleOffset">Độ trễ phụ đề (giây, VD: -2.5 hoặc 3)</label>
+          <input
+          id="subtitleOffset"
+          type="text"
+          autocomplete="off"
+          value="0"
+          placeholder="0"
+          >
+          <div style="margin-top:12px;padding:10px;border:1px solid #343d61;border-radius:8px">
+          <strong>🔊 Đa track Audio (Multilanguage)</strong>
+          <div id="audioTracksBox" style="margin-top:8px"></div>
+          <div class="row">
+          <button type="button" class="gray" onclick="addAudioTrackRow()">+ Thêm track audio</button>
+          </div>
+          </div>
           <label for="inputType">Loại nguồn</label>
           <select id="inputType">
           <option value="live">Live: kênh TV / luồng đang phát</option>
@@ -1540,9 +1754,45 @@ jobs:
             }
           }
 
+          function addAudioTrackRow() {
+            const box = document.getElementById("audioTracksBox");
+            const row = document.createElement("div");
+            row.className = "row";
+            row.style.marginBottom = "8px";
+            row.innerHTML =
+              '<input type="text" class="tr-lang" placeholder="Mã (vd: vi, en)" style="width:110px">' +
+              '<input type="text" class="tr-label" placeholder="Tên (vd: Tiếng Việt)" style="width:150px">' +
+              '<input type="text" class="tr-url" placeholder="https://.../audio.m3u8" style="flex:1;min-width:180px">' +
+              '<input type="text" class="tr-offset" value="0" placeholder="Trễ (s)" style="width:75px">' +
+              '<label style="margin:0;display:flex;align-items:center;gap:4px"><input type="checkbox" class="tr-def"> Mặc định</label>' +
+              '<button type="button" class="red" onclick="this.parentElement.remove()">Xóa</button>';
+            box.appendChild(row);
+          }
+
+          function collectAudioTracks() {
+            const rows = document.querySelectorAll("#audioTracksBox > .row");
+            const out = [];
+            rows.forEach(r => {
+              const url = r.querySelector(".tr-url").value.trim();
+              if (!url) return;
+              const lang = r.querySelector(".tr-lang").value.trim() || "und";
+              const label = r.querySelector(".tr-label").value.trim() || lang;
+              const offset = Number(r.querySelector(".tr-offset").value.trim() || 0);
+              out.push({
+                lang,
+                label,
+                url,
+                offset: Number.isFinite(offset) ? offset : 0,
+                default: r.querySelector(".tr-def").checked
+              });
+            });
+            return out;
+          }
+
           function playDirect() {
             const url = document.getElementById("url").value.trim();
             const subtitle_url = document.getElementById("subtitleUrl").value.trim();
+            const subtitle_offset = Number(document.getElementById("subtitleOffset").value.trim() || 0);
             if (!url) {
               showMessage("Bro hãy dán link trước.");
               return;
@@ -1550,6 +1800,8 @@ jobs:
             sendAction("direct", {
               url,
               subtitle_url,
+              subtitle_offset: Number.isFinite(subtitle_offset) ? subtitle_offset : 0,
+              audio_tracks: collectAudioTracks(),
               input_type: document.getElementById("inputType").value,
               ident: document.getElementById("withIdent").checked
             });
@@ -1841,6 +2093,11 @@ jobs:
                   if action == "direct":
                       url = str(data.get("url", "")).strip()
                       subtitle_url = str(data.get("subtitle_url", "")).strip()
+                      try:
+                          subtitle_offset = float(data.get("subtitle_offset", 0) or 0)
+                      except (ValueError, TypeError):
+                          subtitle_offset = 0.0
+                      subtitle_offset = max(-3600.0, min(3600.0, subtitle_offset))
                       input_type = data.get("input_type", "live")
                       if not valid_direct_url(url):
                           self.send_json(
@@ -1864,6 +2121,8 @@ jobs:
                           shared["direct_url"] = url
                           shared["direct_type"] = input_type
                           shared["direct_subtitle_url"] = subtitle_url
+                          shared["direct_subtitle_offset"] = subtitle_offset
+                          shared["direct_audio_tracks"] = sanitize_audio_tracks(data.get("audio_tracks", []))
                           if data.get("ident") is True:
                               shared["ident_seq"] += 1
                       log("Control: chọn link trực tiếp, loại " + input_type + ".")
@@ -1875,6 +2134,8 @@ jobs:
                           shared["direct_url"] = None
                           shared["direct_type"] = "live"
                           shared["direct_subtitle_url"] = ""
+                          shared["direct_subtitle_offset"] = 0.0
+                          shared["direct_audio_tracks"] = []
                       fetch_event.set()
                       log("Control: quay về Worker.")
                       self.send_json(200, {"message": "Đã chọn lịch Worker."})
@@ -1911,7 +2172,7 @@ jobs:
           attempt_generation = -1
           direct_attempt_active = False
 
-          cached_subtitle_url = ""
+          cached_subtitle_key = None
           cached_subtitle_path = None
           cached_subtitle_hash = ""
 
@@ -1924,6 +2185,8 @@ jobs:
                           direct_url = shared["direct_url"]
                           direct_type = shared["direct_type"]
                           direct_subtitle_url = shared["direct_subtitle_url"]
+                          direct_subtitle_offset = shared["direct_subtitle_offset"]
+                          direct_audio_tracks = list(shared["direct_audio_tracks"])
                           restart_seq = shared["restart_seq"]
                           ident_seq = shared["ident_seq"]
 
@@ -1994,7 +2257,11 @@ jobs:
 
                       if direct_url:
                           program = direct_program(
-                              direct_url, direct_type, direct_subtitle_url
+                              direct_url,
+                              direct_type,
+                              direct_subtitle_url,
+                              direct_subtitle_offset,
+                              direct_audio_tracks,
                           )
                       elif config is not None:
                           program = select_program(config)
@@ -2080,7 +2347,7 @@ jobs:
                           last_start = 0.0
                           next_direct_attempt = 0.0
                           direct_attempt_active = False
-                          cached_subtitle_url = ""
+                          cached_subtitle_key = None
 
                       manual_ident_requested = ident_seq != seen_ident_seq
                       if manual_ident_requested:
@@ -2220,10 +2487,12 @@ jobs:
                           audio_url = shared["audio_result"]
 
                       sub_url = program.get("subtitle_url", "") if desired_mode == "main" else ""
-                      if sub_url != cached_subtitle_url:
-                          cached_subtitle_url = sub_url
+                      sub_offset = float(program.get("subtitle_offset", 0.0) or 0.0)
+                      sub_key = (sub_url, sub_offset)
+                      if sub_key != cached_subtitle_key:
+                          cached_subtitle_key = sub_key
                           if sub_url:
-                              cached_subtitle_path, cached_subtitle_hash = download_subtitle(sub_url)
+                              cached_subtitle_path, cached_subtitle_hash = download_subtitle(sub_url, sub_offset)
                           else:
                               cached_subtitle_path, cached_subtitle_hash = None, ""
 
@@ -2255,6 +2524,7 @@ jobs:
                               program["url"],
                               program["input_type"],
                               cached_subtitle_hash,
+                              signature(program.get("audio_tracks", [])),
                               signature({"logo": logo_cfg}),
                           )
 
@@ -2279,6 +2549,7 @@ jobs:
                               waiting=program["waiting"],
                               input_type=program["input_type"],
                               subtitle_path=cached_subtitle_path if desired_mode == "main" else None,
+                              audio_tracks=program.get("audio_tracks", []) if desired_mode == "main" else [],
                           )
                           current_key = desired_key
                           current_mode = desired_mode
