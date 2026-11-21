@@ -116,6 +116,8 @@ jobs:
           ROOT=/tmp/veotv
           mkdir -p \
             "$ROOT/assets" \
+            "$ROOT/ads/videos" \
+            "$ROOT/ads/images" \
             "$ROOT/www/livestream01/720" \
             "$ROOT/www/livestream01/1080"
 
@@ -153,10 +155,12 @@ jobs:
           fi
 
           echo ">>> Tải logo..."
-          if ! curl -fL --retry 2 --max-time 30 \
+          if curl -fsSL --retry 2 --max-time 30 \
             "https://i.ibb.co/xtShkTkr/logo.png" \
             -o "$ROOT/assets/logo.png"
           then
+            echo ">>> Đã tải logo mặc định ($(wc -c < "$ROOT/assets/logo.png" 2>/dev/null || echo 0) bytes)."
+          else
             echo ">>> Không tải được logo; tạo ảnh trong suốt."
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
@@ -211,6 +215,60 @@ jobs:
             "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/ident03.mp4"
           download_ident ident4 \
             "https://raw.githubusercontent.com/ankbuitv/mytv/refs/heads/main/ident04.mp4"
+
+          echo ">>> Quét thư mục ads/ từ ankbuitv/mytv..."
+          ADS_JSON="$ROOT/ads_list.json"
+          GH_HEADERS=(-H "Accept: application/vnd.github+json" -H "User-Agent: VeoTV-Runner")
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GH_HEADERS+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+          fi
+          if curl -fsSL --retry 2 --max-time 30 "${GH_HEADERS[@]}" \
+            "https://api.github.com/repos/ankbuitv/mytv/contents/ads" \
+            -o "$ADS_JSON"
+          then
+            python3 - "$ADS_JSON" "$ROOT" "${GITHUB_TOKEN:-}" <<'PYADS'
+          import json, os, pathlib, subprocess, sys, urllib.request
+          json_path, root_dir, gh_token = sys.argv[1], sys.argv[2], sys.argv[3]
+          root = pathlib.Path(root_dir)
+          try:
+              items = json.loads(pathlib.Path(json_path).read_text(encoding="utf-8"))
+          except Exception as exc:
+              print(">>> Lỗi đọc danh sách ads:", exc)
+              sys.exit(0)
+          if not isinstance(items, list):
+              sys.exit(0)
+          for item in items:
+              if not isinstance(item, dict) or item.get("type") != "file":
+                  continue
+              name = str(item.get("name", ""))
+              url = str(item.get("download_url", ""))
+              if not name or not url:
+                  continue
+              low = name.lower()
+              safe_name = os.path.basename(name)
+              if low == "ad_ident.mp4":
+                  dest = root / "assets" / "ad_ident.mp4"
+              elif low.endswith((".mp4", ".mov", ".m4v")):
+                  dest = root / "ads" / "videos" / safe_name
+              elif low.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                  dest = root / "ads" / "images" / safe_name
+              else:
+                  continue
+              req = urllib.request.Request(url, headers={"User-Agent": "VeoTV-Runner"})
+              if gh_token:
+                  req.add_header("Authorization", "Bearer " + gh_token)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      data = resp.read()
+                  dest.write_bytes(data)
+                  print(f">>> Đã tải QC: {safe_name} ({len(data)} bytes)")
+              except Exception as exc:
+                  print(f">>> Lỗi tải QC {safe_name}: {exc}")
+          PYADS
+          else
+            echo ">>> Không quét được thư mục ads/ (có thể chưa có file)."
+          fi
+          rm -f "$ADS_JSON"
 
           printf '%s' "$TUNNEL_CREDENTIALS" > "$ROOT/credentials.json"
 
@@ -426,6 +484,10 @@ jobs:
               "direct_subtitle_url": "",
               "direct_subtitle_offset": 0.0,
               "direct_audio_tracks": [],
+              "ad_break_seq": 0,
+              "ad_break_source": "",
+              "ad_break_with_ident": True,
+              "ad_overlay_override": None,
               "restart_seq": 0,
               "ident_seq": 0,
               "current_mode": "Đang khởi động",
@@ -1151,6 +1213,98 @@ jobs:
                   log("Cảnh báo: Không có ident nào khả dụng.")
 
 
+          def list_ad_videos():
+              folder = ROOT / "ads" / "videos"
+              if not folder.is_dir():
+                  return []
+              return sorted(p.name for p in folder.iterdir() if p.is_file())
+
+
+          def list_ad_images():
+              folder = ROOT / "ads" / "images"
+              if not folder.is_dir():
+                  return []
+              return sorted(p.name for p in folder.iterdir() if p.is_file())
+
+
+          def scan_ads():
+              vids = list_ad_videos()
+              imgs = list_ad_images()
+              ad_ident_ok = ident_file_duration(ASSETS / "ad_ident.mp4") is not None
+              log(
+                  f"Quảng cáo: {len(vids)} video, {len(imgs)} ảnh watermark, "
+                  + ("có ad_ident.mp4." if ad_ident_ok else "chưa có ad_ident.mp4.")
+              )
+
+
+          cached_logo_url = ""
+          cached_logo_path = ASSETS / "logo.png"
+          cached_logo_hash = ""
+
+
+          def download_image_asset(url, dest_path, max_bytes=5 * 1024 * 1024):
+              if not valid_direct_url(url):
+                  return False
+              try:
+                  req = urllib.request.Request(
+                      url,
+                      headers={"User-Agent": "VeoTV-Control/5.0"},
+                  )
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      final_url = resp.geturl()
+                      if not valid_direct_url(final_url):
+                          return False
+                      raw = resp.read(max_bytes + 1)
+                  if not raw or len(raw) > max_bytes:
+                      return False
+                  tmp = dest_path.with_suffix(".tmp")
+                  tmp.write_bytes(raw)
+                  chk = subprocess.run(
+                      [
+                          "ffprobe",
+                          "-v", "error",
+                          "-select_streams", "v:0",
+                          "-show_entries", "stream=codec_type",
+                          "-of", "csv=p=0",
+                          str(tmp),
+                      ],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                      timeout=10,
+                  )
+                  if chk.returncode != 0 or "video" not in chk.stdout:
+                      tmp.unlink(missing_ok=True)
+                      return False
+                  tmp.replace(dest_path)
+                  return True
+              except Exception:
+                  return False
+
+
+          def sync_logo(config):
+              global cached_logo_url, cached_logo_path, cached_logo_hash
+              logo_cfg = config.get("logo", {})
+              url = ""
+              if isinstance(logo_cfg, dict):
+                  url = str(logo_cfg.get("url", "") or "").strip()
+              if url != cached_logo_url:
+                  cached_logo_url = url
+                  custom = ASSETS / "logo_custom.png"
+                  if url and download_image_asset(url, custom):
+                      cached_logo_path = custom
+                      cached_logo_hash = hashlib.sha256(custom.read_bytes()).hexdigest()
+                      log("Đã tải logo từ cấu hình Worker.")
+                  else:
+                      cached_logo_path = ASSETS / "logo.png"
+                      cached_logo_hash = (
+                          hashlib.sha256(cached_logo_path.read_bytes()).hexdigest()
+                          if cached_logo_path.is_file()
+                          else ""
+                      )
+              return cached_logo_path, cached_logo_hash
+
+
           def choose_ident():
               global last_ident_path
               available = []
@@ -1203,7 +1357,14 @@ jobs:
               return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-          def build_filters(config, mode, waiting, subtitle_path=None):
+          def build_filters(
+              config,
+              mode,
+              waiting,
+              subtitle_path=None,
+              ad_overlay=None,
+              ad_input_idx=None,
+          ):
               logo_cfg = config.get("logo", {})
               fallback_banner = config.get("banner", {})
               if not isinstance(logo_cfg, dict):
@@ -1253,6 +1414,24 @@ jobs:
                       "Shadow=0.5,MarginV=20'[subbed]"
                   )
                   current = "subbed"
+
+              if mode == "main" and ad_overlay and ad_input_idx is not None:
+                  try:
+                      ad_w = max(60, min(int(ad_overlay.get("width", 140)), 450))
+                  except (ValueError, TypeError):
+                      ad_w = 140
+                  pos = ad_overlay.get("position", "bottom-left")
+                  pos_expr = {
+                      "top-left": "20:20",
+                      "top-right": "W-w-20:20",
+                      "bottom-right": "W-w-20:H-h-20",
+                      "bottom-left": "20:H-h-20",
+                  }.get(pos, "20:H-h-20")
+                  parts.append(f"[{ad_input_idx}:v]scale={ad_w}:-1,format=rgba[adwm]")
+                  parts.append(
+                      f"[{current}][adwm]overlay={pos_expr}:shortest=1[withad]"
+                  )
+                  current = "withad"
 
               if logo_enabled and mode != "ident":
                   parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
@@ -1397,6 +1576,9 @@ jobs:
               ident_path=None,
               subtitle_path=None,
               audio_tracks=None,
+              logo_path=None,
+              ad_overlay=None,
+              ad_image_path=None,
           ):
               global process, last_start
               stop_ffmpeg()
@@ -1404,6 +1586,7 @@ jobs:
 
               waiting = waiting or {}
               audio_tracks = audio_tracks or []
+              logo_file = logo_path if (logo_path and Path(logo_path).is_file()) else (ASSETS / "logo.png")
               run_id = uuid.uuid4().hex[:10]
 
               cmd = [
@@ -1423,13 +1606,25 @@ jobs:
                       "-framerate", "30",
                       "-i", str(ASSETS / "fallback.png"),
                   ]
-              elif mode == "ident":
+              elif mode in ("ident", "ad_ident"):
                   if ident_path is None:
                       raise ValueError("Thiếu đường dẫn ident")
                   cmd += [
                       "-re",
                       "-i", str(ident_path),
                   ]
+              elif mode == "ad_break":
+                  if not source_url:
+                      raise ValueError("Thiếu nguồn quảng cáo")
+                  cmd += ["-re"]
+                  if str(source_url).startswith(("http://", "https://")):
+                      cmd += [
+                          "-analyzeduration", "5000000",
+                          "-probesize", "5000000",
+                          "-thread_queue_size", "512",
+                          "-rw_timeout", "10000000",
+                      ]
+                  cmd += ["-i", str(source_url)]
               elif mode in ("waiting", "main"):
                   if input_type == "vod" or is_mp4(source_url):
                       cmd += ["-re"]
@@ -1446,10 +1641,20 @@ jobs:
               cmd += [
                   "-loop", "1",
                   "-framerate", "30",
-                  "-i", str(ASSETS / "logo.png"),
+                  "-i", str(logo_file),
               ]
 
               next_input_idx = 2
+              ad_input_idx = None
+              if mode == "main" and ad_overlay and ad_image_path and Path(ad_image_path).is_file():
+                  cmd += [
+                      "-loop", "1",
+                      "-framerate", "30",
+                      "-i", str(ad_image_path),
+                  ]
+                  ad_input_idx = next_input_idx
+                  next_input_idx += 1
+
               extra_renditions = []
 
               if mode in ("fallback", "waiting"):
@@ -1465,9 +1670,18 @@ jobs:
                       cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
                   audio_map = f"{next_input_idx}:a:0"
                   next_input_idx += 1
-              elif mode == "ident":
+              elif mode in ("ident", "ad_ident"):
                   if local_has_audio(ident_path):
                       audio_map = "0:a:0"
+                  else:
+                      cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+                      audio_map = f"{next_input_idx}:a:0"
+                      next_input_idx += 1
+              elif mode == "ad_break":
+                  ad_p = Path(str(source_url))
+                  has_ad_audio = local_has_audio(ad_p) if ad_p.is_file() else probe(str(source_url), "a:0")[0]
+                  if has_ad_audio:
+                      audio_map = "0:a:0?"
                   else:
                       cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
                       audio_map = f"{next_input_idx}:a:0"
@@ -1520,7 +1734,14 @@ jobs:
 
               cmd += [
                   "-filter_complex",
-                  build_filters(config, mode, waiting, subtitle_path=subtitle_path),
+                  build_filters(
+                      config,
+                      mode,
+                      waiting,
+                      subtitle_path=subtitle_path,
+                      ad_overlay=ad_overlay if mode == "main" else None,
+                      ad_input_idx=ad_input_idx,
+                  ),
               ]
               if extra_renditions:
                   write_master_manifest(extra_renditions)
@@ -1662,6 +1883,55 @@ jobs:
           </section>
 
           <section class="card">
+          <h2>📢 Quảng cáo (Ad Break &amp; Watermark)</h2>
+          <label for="adVideoSelect">1. Chèn video quảng cáo (từ ads/ trên GitHub)</label>
+          <select id="adVideoSelect">
+          <option value="">-- Chọn file trong ads/ hoặc dán URL bên dưới --</option>
+          </select>
+          <input
+          id="adVideoUrl"
+          type="text"
+          autocomplete="off"
+          style="margin-top:8px"
+          placeholder="Hoặc dán URL video QC (.mp4 / .m3u8)"
+          >
+          <label>
+          <input id="adWithIdent" type="checkbox" checked>
+          Phát ad_ident.mp4 trước quảng cáo (nếu có)
+          </label>
+          <div class="row">
+          <button onclick="playAdBreak()">📢 Phát quảng cáo ngay</button>
+          </div>
+
+          <hr style="border-color:#343d61;margin:14px 0">
+          <strong>2. Watermark ảnh QC ở 1 góc (khi đang phát chính)</strong>
+          <label for="adImgSelect">Ảnh từ ads/ trên GitHub</label>
+          <select id="adImgSelect">
+          <option value="">-- Chọn ảnh trong ads/ hoặc dán URL bên dưới --</option>
+          </select>
+          <input
+          id="adImgUrl"
+          type="text"
+          autocomplete="off"
+          style="margin-top:8px"
+          placeholder="Hoặc dán URL ảnh QC (.png / .jpg / .webp)"
+          >
+          <div class="row" style="margin-top:8px">
+          <select id="adPosition" style="width:170px">
+          <option value="bottom-left">Góc dưới trái</option>
+          <option value="top-left">Góc trên trái</option>
+          <option value="top-right">Góc trên phải</option>
+          <option value="bottom-right">Góc dưới phải</option>
+          </select>
+          <input id="adWidth" type="text" value="140" placeholder="Rộng (px)" style="width:110px">
+          </div>
+          <div class="row">
+          <button class="green" onclick="applyAdOverlay(true)">🖼️ Bật Watermark QC</button>
+          <button class="gray" onclick="applyAdOverlay(false)">✖ Tắt Watermark QC</button>
+          </div>
+          </section>
+
+          <section class="card">
           <h2>🔗 Phát link trực tiếp</h2>
           <input
           id="url"
@@ -1789,6 +2059,58 @@ jobs:
             return out;
           }
 
+          function playAdBreak() {
+            const sel = document.getElementById("adVideoSelect").value;
+            const url = document.getElementById("adVideoUrl").value.trim();
+            const source = url || sel;
+            if (!source) {
+              showMessage("Hãy chọn video trong ads/ hoặc dán URL QC.");
+              return;
+            }
+            sendAction("ad_break", {
+              source,
+              with_ident: document.getElementById("adWithIdent").checked
+            });
+          }
+
+          function applyAdOverlay(enabled) {
+            if (!enabled) {
+              sendAction("ad_overlay", { enabled: false });
+              return;
+            }
+            const sel = document.getElementById("adImgSelect").value;
+            const url = document.getElementById("adImgUrl").value.trim();
+            const source = url || sel;
+            if (!source) {
+              showMessage("Hãy chọn ảnh trong ads/ hoặc dán URL ảnh QC.");
+              return;
+            }
+            const width = Number(document.getElementById("adWidth").value.trim() || 140);
+            sendAction("ad_overlay", {
+              enabled: true,
+              source,
+              position: document.getElementById("adPosition").value,
+              width: Number.isFinite(width) ? width : 140
+            });
+          }
+
+          function syncSelectOptions(selectId, items, prefix) {
+            const sel = document.getElementById(selectId);
+            if (!sel) return;
+            const prev = sel.value;
+            const key = JSON.stringify(items || []);
+            if (sel.dataset.key === key) return;
+            sel.dataset.key = key;
+            while (sel.options.length > 1) sel.remove(1);
+            (items || []).forEach(name => {
+              const opt = document.createElement("option");
+              opt.value = prefix + name;
+              opt.textContent = name;
+              sel.appendChild(opt);
+            });
+            sel.value = prev;
+          }
+
           function playDirect() {
             const url = document.getElementById("url").value.trim();
             const subtitle_url = document.getElementById("subtitleUrl").value.trim();
@@ -1829,6 +2151,8 @@ jobs:
                   ? "Đang đọc..."
                   : (data.config_error || "OK"));
               document.getElementById("logs").textContent = data.logs.join("\n");
+              syncSelectOptions("adVideoSelect", data.ads_videos, "repo:");
+              syncSelectOptions("adImgSelect", data.ads_images, "repo:");
             } catch (error) {
               showMessage("Không tải được trạng thái: " + error.message);
             }
@@ -1983,6 +2307,8 @@ jobs:
                               "config_last_ok": shared["config_last_ok"],
                               "config_error": shared["config_error"],
                               "config_fetching": shared["config_fetching"],
+                              "ads_videos": list_ad_videos(),
+                              "ads_images": list_ad_images(),
                               "logs": list(logs),
                           }
                       self.send_json(200, data)
@@ -2129,6 +2455,65 @@ jobs:
                       self.send_json(200, {"message": "Đã chọn link trực tiếp."})
                       return
 
+                  if action == "ad_break":
+                      source = str(data.get("source", "")).strip()
+                      if not source:
+                          self.send_json(400, {"error": "Thiếu nguồn quảng cáo."})
+                          return
+                      if source.startswith("repo:"):
+                          fname = os.path.basename(source[5:])
+                          if not (ROOT / "ads" / "videos" / fname).is_file():
+                              self.send_json(404, {"error": "Không thấy file trong ads/."})
+                              return
+                      elif not valid_direct_url(source):
+                          self.send_json(400, {"error": "URL quảng cáo không hợp lệ."})
+                          return
+                      with lock:
+                          if shared["emergency"]:
+                              self.send_json(409, {"error": "Đang khẩn cấp; không phát quảng cáo."})
+                              return
+                          shared["ad_break_source"] = source
+                          shared["ad_break_with_ident"] = bool(data.get("with_ident", True))
+                          shared["ad_break_seq"] += 1
+                      log("Control: yêu cầu phát quảng cáo.")
+                      self.send_json(200, {"message": "Đã gửi lệnh phát quảng cáo."})
+                      return
+
+                  if action == "ad_overlay":
+                      enabled = bool(data.get("enabled", False))
+                      if not enabled:
+                          with lock:
+                              shared["ad_overlay_override"] = {"enabled": False}
+                          log("Control: TẮT watermark quảng cáo.")
+                          self.send_json(200, {"message": "Đã tắt watermark quảng cáo."})
+                          return
+                      source = str(data.get("source", "")).strip()
+                      pos = str(data.get("position", "bottom-left"))
+                      if pos not in ("bottom-left", "top-left", "top-right", "bottom-right"):
+                          pos = "bottom-left"
+                      try:
+                          width = max(60, min(int(data.get("width", 140)), 450))
+                      except (ValueError, TypeError):
+                          width = 140
+                      if source.startswith("repo:"):
+                          fname = os.path.basename(source[5:])
+                          if not (ROOT / "ads" / "images" / fname).is_file():
+                              self.send_json(404, {"error": "Không thấy ảnh trong ads/."})
+                              return
+                      elif not valid_direct_url(source):
+                          self.send_json(400, {"error": "URL ảnh watermark không hợp lệ."})
+                          return
+                      with lock:
+                          shared["ad_overlay_override"] = {
+                              "enabled": True,
+                              "source": source,
+                              "position": pos,
+                              "width": width,
+                          }
+                      log("Control: BẬT watermark quảng cáo.")
+                      self.send_json(200, {"message": "Đã bật watermark quảng cáo."})
+                      return
+
                   if action == "worker":
                       with lock:
                           shared["direct_url"] = None
@@ -2161,12 +2546,21 @@ jobs:
           log("Supervisor bắt đầu.")
           log("Trang control đã khởi động.")
           scan_idents()
+          scan_ads()
           log("Ident: chọn ngẫu nhiên theo trọng số (không lặp liên tiếp).")
           log("Bản thử nghiệm: HLS vẫn có thể khựng hoặc nhảy.")
 
           seen_restart_seq = 0
           seen_ident_seq = 0
+          seen_ad_break_seq = 0
           was_emergency = False
+
+          ad_break_stage = None
+          ad_break_source_active = ""
+          ad_break_deadline = 0.0
+          cached_ad_img_key = None
+          cached_ad_img_path = None
+          cached_ad_img_hash = ""
 
           next_direct_attempt = 0.0
           attempt_generation = -1
@@ -2187,10 +2581,15 @@ jobs:
                           direct_subtitle_url = shared["direct_subtitle_url"]
                           direct_subtitle_offset = shared["direct_subtitle_offset"]
                           direct_audio_tracks = list(shared["direct_audio_tracks"])
+                          ad_break_seq = shared["ad_break_seq"]
+                          ad_break_source = shared["ad_break_source"]
+                          ad_break_with_ident = shared["ad_break_with_ident"]
+                          ad_overlay_override = shared["ad_overlay_override"]
                           restart_seq = shared["restart_seq"]
                           ident_seq = shared["ident_seq"]
 
                       effective_config = config if isinstance(config, dict) else {}
+                      logo_path, logo_hash = sync_logo(effective_config)
 
                       if emergency:
                           if not was_emergency:
@@ -2366,6 +2765,82 @@ jobs:
                           current_mode = None
                           last_start = 0.0
 
+                      if ad_break_seq != seen_ad_break_seq:
+                          seen_ad_break_seq = ad_break_seq
+                          if ident_playing:
+                              stop_ffmpeg()
+                              ident_playing = False
+                              ident_from_control = False
+                          ad_src = (
+                              str(ROOT / "ads" / "videos" / os.path.basename(ad_break_source[5:]))
+                              if ad_break_source.startswith("repo:")
+                              else ad_break_source
+                          )
+                          ad_break_source_active = ad_src
+                          ad_ident_file = ASSETS / "ad_ident.mp4"
+                          ad_ident_dur = ident_file_duration(ad_ident_file) if ad_break_with_ident else None
+                          if ad_ident_dur is not None:
+                              log(f"Phát ad_ident ({ad_ident_dur:.1f}s) trước quảng cáo.")
+                              start_ffmpeg(
+                                  effective_config,
+                                  "ad_ident",
+                                  duration=ad_ident_dur,
+                                  ident_path=ad_ident_file,
+                                  logo_path=logo_path,
+                              )
+                              ad_break_stage = "ad_ident"
+                              ad_break_deadline = time.monotonic() + ad_ident_dur + 20
+                          else:
+                              ad_dur = ident_file_duration(Path(ad_src)) if Path(ad_src).is_file() else 180.0
+                              log("Bắt đầu phát video quảng cáo.")
+                              start_ffmpeg(
+                                  effective_config,
+                                  "ad_break",
+                                  source_url=ad_src,
+                                  duration=ad_dur,
+                                  logo_path=logo_path,
+                              )
+                              ad_break_stage = "ad_video"
+                              ad_break_deadline = time.monotonic() + (ad_dur or 180.0) + 30
+                          current_key = ("ad", ad_break_seq)
+                          current_mode = ad_break_stage
+
+                      if ad_break_stage is not None:
+                          if process is None or process.poll() is not None or time.monotonic() >= ad_break_deadline:
+                              if process is not None and process.poll() is None:
+                                  log("Quảng cáo quá thời gian; chuyển tiếp.")
+                                  stop_ffmpeg()
+                              else:
+                                  process = None
+                              with lock:
+                                  shared["ffmpeg_running"] = False
+                              if ad_break_stage == "ad_ident":
+                                  ad_src = ad_break_source_active
+                                  ad_dur = ident_file_duration(Path(ad_src)) if Path(ad_src).is_file() else 180.0
+                                  log("Chuyển từ ad_ident sang video quảng cáo.")
+                                  start_ffmpeg(
+                                      effective_config,
+                                      "ad_break",
+                                      source_url=ad_src,
+                                      duration=ad_dur,
+                                      logo_path=logo_path,
+                                  )
+                                  ad_break_stage = "ad_video"
+                                  ad_break_deadline = time.monotonic() + (ad_dur or 180.0) + 30
+                                  current_mode = "ad_break"
+                                  stop_event.wait(0.5)
+                                  continue
+                              else:
+                                  log("Quảng cáo kết thúc; quay lại luồng chính.")
+                                  ad_break_stage = None
+                                  ad_break_source_active = ""
+                                  current_key = None
+                                  current_mode = None
+                                  last_start = 0.0
+                          else:
+                              stop_event.wait(0.5)
+                              continue
+
                       if schedule_changed or manual_ident_requested:
                           chosen = choose_ident()
                           if chosen is None:
@@ -2496,9 +2971,37 @@ jobs:
                           else:
                               cached_subtitle_path, cached_subtitle_hash = None, ""
 
+                      active_ad_overlay = None
+                      raw_ov = ad_overlay_override if ad_overlay_override is not None else effective_config.get("adOverlay")
+                      if isinstance(raw_ov, dict) and raw_ov.get("enabled") is True:
+                          ov_src = str(raw_ov.get("source") or raw_ov.get("url") or "").strip()
+                          ov_pos = str(raw_ov.get("position", "bottom-left"))
+                          ov_w = raw_ov.get("width", 140)
+                          ov_key = (ov_src, ov_pos, ov_w)
+                          if ov_key != cached_ad_img_key:
+                              cached_ad_img_key = ov_key
+                              if ov_src.startswith("repo:"):
+                                  p = ROOT / "ads" / "images" / os.path.basename(ov_src[5:])
+                                  if p.is_file():
+                                      cached_ad_img_path = p
+                                      cached_ad_img_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+                                  else:
+                                      cached_ad_img_path, cached_ad_img_hash = None, ""
+                              elif ov_src:
+                                  dest = ASSETS / "ad_watermark.png"
+                                  if download_image_asset(ov_src, dest):
+                                      cached_ad_img_path = dest
+                                      cached_ad_img_hash = hashlib.sha256(dest.read_bytes()).hexdigest()
+                                  else:
+                                      cached_ad_img_path, cached_ad_img_hash = None, ""
+                              else:
+                                  cached_ad_img_path, cached_ad_img_hash = None, ""
+                          if cached_ad_img_path is not None and cached_ad_img_path.is_file():
+                              active_ad_overlay = {"position": ov_pos, "width": ov_w}
+
                       logo_cfg = effective_config.get("logo", {})
                       if desired_mode == "waiting":
-                          relevant = {"logo": logo_cfg, "waiting": program["waiting"]}
+                          relevant = {"logo": logo_cfg, "logo_hash": logo_hash, "waiting": program["waiting"]}
                           desired_key = (
                               "waiting",
                               program["url"],
@@ -2509,6 +3012,7 @@ jobs:
                       elif desired_mode == "fallback":
                           relevant = {
                               "logo": logo_cfg,
+                              "logo_hash": logo_hash,
                               "banner": effective_config.get("banner", {}),
                           }
                           desired_key = (
@@ -2524,8 +3028,10 @@ jobs:
                               program["url"],
                               program["input_type"],
                               cached_subtitle_hash,
+                              cached_ad_img_hash if active_ad_overlay else "",
+                              signature(active_ad_overlay or {}),
                               signature(program.get("audio_tracks", [])),
-                              signature({"logo": logo_cfg}),
+                              signature({"logo": logo_cfg, "logo_hash": logo_hash}),
                           )
 
                       can_restart = now - last_start >= RESTART_DELAY
@@ -2550,6 +3056,9 @@ jobs:
                               input_type=program["input_type"],
                               subtitle_path=cached_subtitle_path if desired_mode == "main" else None,
                               audio_tracks=program.get("audio_tracks", []) if desired_mode == "main" else [],
+                              logo_path=logo_path,
+                              ad_overlay=active_ad_overlay if desired_mode == "main" else None,
+                              ad_image_path=cached_ad_img_path if (desired_mode == "main" and active_ad_overlay) else None,
                           )
                           current_key = desired_key
                           current_mode = desired_mode
