@@ -1005,15 +1005,38 @@ jobs:
               }
 
 
+          PROBE_CACHE = {}
+          PROBE_TTL = 120.0
+
+
+          def parse_out_time(value):
+              if not value or not isinstance(value, str):
+                  return 0.0
+              parts = value.strip().split(":")
+              if len(parts) != 3:
+                  return 0.0
+              try:
+                  return max(0.0, int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2]))
+              except (ValueError, TypeError):
+                  return 0.0
+
+
           def probe(url, stream_type):
               if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
+              cache_key = (url, stream_type)
+              cached = PROBE_CACHE.get(cache_key)
+              now_mono = time.monotonic()
+              if cached and (now_mono - cached[0]) < PROBE_TTL:
+                  return cached[1], cached[2]
               try:
                   result = subprocess.run(
                       [
                           "ffprobe",
                           "-v", "error",
-                          "-rw_timeout", "8000000",
+                          "-rw_timeout", "4000000",
+                          "-analyzeduration", "1500000",
+                          "-probesize", "1500000",
                           "-select_streams", stream_type,
                           "-show_entries", "stream=codec_type",
                           "-of", "csv=p=0",
@@ -1023,17 +1046,19 @@ jobs:
                       stderr=subprocess.PIPE,
                       text=True,
                       errors="replace",
-                      timeout=15,
+                      timeout=7,
                   )
                   expected = "video" if stream_type == "v:0" else "audio"
                   if result.returncode == 0 and expected in result.stdout:
+                      PROBE_CACHE[cache_key] = (now_mono, True, "")
                       return True, ""
                   detail = sanitize(result.stderr.strip())
                   if not detail:
                       detail = f"ffprobe exit {result.returncode}"
+                  PROBE_CACHE[cache_key] = (now_mono, False, detail[:300])
                   return False, detail[:300]
               except subprocess.TimeoutExpired:
-                  return False, "ffprobe quá 15 giây"
+                  return False, "ffprobe quá 7 giây"
               except OSError as exc:
                   return False, type(exc).__name__
 
@@ -1364,6 +1389,7 @@ jobs:
               subtitle_path=None,
               ad_overlay=None,
               ad_input_idx=None,
+              seek_seconds=0.0,
           ):
               logo_cfg = config.get("logo", {})
               fallback_banner = config.get("banner", {})
@@ -1406,13 +1432,19 @@ jobs:
 
               if mode == "main" and subtitle_path is not None and subtitle_path.is_file():
                   safe_srt = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
-                  parts.append(
-                      f"[{current}]subtitles={safe_srt}:charenc=UTF-8:"
+                  sub_chain = f"[{current}]"
+                  if seek_seconds and seek_seconds > 1.0:
+                      sub_chain += f"setpts=PTS-STARTPTS+{seek_seconds:.2f}/TB,"
+                  sub_chain += (
+                      f"subtitles={safe_srt}:charenc=UTF-8:"
                       "force_style='FontName=DejaVu Sans,FontSize=15,"
                       "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
                       "BackColour=&H80000000,BorderStyle=1,Outline=1.2,"
-                      "Shadow=0.5,MarginV=20'[subbed]"
+                      "Shadow=0.5,MarginV=20'"
                   )
+                  if seek_seconds and seek_seconds > 1.0:
+                      sub_chain += ",setpts=PTS-STARTPTS"
+                  parts.append(sub_chain + "[subbed]")
                   current = "subbed"
 
               if mode == "main" and ad_overlay and ad_input_idx is not None:
@@ -1481,6 +1513,7 @@ jobs:
               args += [
                   "-c:v", "libx264",
                   "-preset", "ultrafast",
+                  "-tune", "zerolatency",
                   "-b:v", bitrate,
                   "-g", "60",
                   "-keyint_min", "60",
@@ -1579,6 +1612,7 @@ jobs:
               logo_path=None,
               ad_overlay=None,
               ad_image_path=None,
+              seek_seconds=0.0,
           ):
               global process, last_start
               stop_ffmpeg()
@@ -1619,10 +1653,11 @@ jobs:
                   cmd += ["-re"]
                   if str(source_url).startswith(("http://", "https://")):
                       cmd += [
-                          "-analyzeduration", "5000000",
-                          "-probesize", "5000000",
+                          "-fflags", "+genpts+discardcorrupt",
+                          "-analyzeduration", "1500000",
+                          "-probesize", "1500000",
                           "-thread_queue_size", "512",
-                          "-rw_timeout", "10000000",
+                          "-rw_timeout", "6000000",
                       ]
                   cmd += ["-i", str(source_url)]
               elif mode in ("waiting", "main"):
@@ -1631,12 +1666,15 @@ jobs:
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
                   cmd += [
-                      "-analyzeduration", "5000000",
-                      "-probesize", "5000000",
+                      "-fflags", "+genpts+discardcorrupt",
+                      "-analyzeduration", "1500000",
+                      "-probesize", "1500000",
                       "-thread_queue_size", "512",
-                      "-rw_timeout", "10000000",
-                      "-i", source_url,
+                      "-rw_timeout", "6000000",
                   ]
+                  if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(source_url)):
+                      cmd += ["-ss", f"{seek_seconds:.2f}"]
+                  cmd += ["-i", source_url]
 
               cmd += [
                   "-loop", "1",
@@ -1717,11 +1755,14 @@ jobs:
                                   cmd += ["-stream_loop", "-1"]
                               if tr.get("offset"):
                                   cmd += ["-itsoffset", str(tr["offset"])]
+                              if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(tr["url"])):
+                                  cmd += ["-ss", f"{seek_seconds:.2f}"]
                               cmd += [
-                                  "-analyzeduration", "5000000",
-                                  "-probesize", "5000000",
+                                  "-fflags", "+genpts+discardcorrupt",
+                                  "-analyzeduration", "1500000",
+                                  "-probesize", "1500000",
                                   "-thread_queue_size", "512",
-                                  "-rw_timeout", "10000000",
+                                  "-rw_timeout", "6000000",
                                   "-i", tr["url"],
                               ]
                               extra_renditions.append({
@@ -1741,6 +1782,7 @@ jobs:
                       subtitle_path=subtitle_path,
                       ad_overlay=ad_overlay if mode == "main" else None,
                       ad_input_idx=ad_input_idx,
+                      seek_seconds=seek_seconds if mode == "main" else 0.0,
                   ),
               ]
               if extra_renditions:
@@ -2558,6 +2600,8 @@ jobs:
           ad_break_stage = None
           ad_break_source_active = ""
           ad_break_deadline = 0.0
+          main_seek_offset = 0.0
+          paused_main_state = None
           cached_ad_img_key = None
           cached_ad_img_path = None
           cached_ad_img_hash = ""
@@ -2767,6 +2811,15 @@ jobs:
 
                       if ad_break_seq != seen_ad_break_seq:
                           seen_ad_break_seq = ad_break_seq
+                          if current_mode == "main" and program.get("url") and (program.get("input_type") == "vod" or is_mp4(program.get("url"))):
+                              with lock:
+                                  played_s = parse_out_time(shared.get("ffmpeg_out_time", ""))
+                              resume_pos = main_seek_offset + played_s
+                              paused_main_state = {
+                                  "url": program["url"],
+                                  "resume_at": resume_pos,
+                              }
+                              log(f"Lưu vị trí phát chính tại {resume_pos:.1f}s để quay lại sau QC.")
                           if ident_playing:
                               stop_ffmpeg()
                               ident_playing = False
@@ -3047,6 +3100,21 @@ jobs:
                               log("Probe chưa OK; thử FFmpeg trực tiếp.")
                               direct_attempt_active = True
 
+                          resume_seek = 0.0
+                          if (
+                              desired_mode == "main"
+                              and paused_main_state is not None
+                              and paused_main_state.get("url") == program["url"]
+                              and (program["input_type"] == "vod" or is_mp4(program["url"]))
+                          ):
+                              resume_seek = float(paused_main_state.get("resume_at", 0.0))
+                              main_seek_offset = resume_seek
+                              paused_main_state = None
+                              log(f"Quay lại luồng chính tại {resume_seek:.1f}s.")
+                          elif desired_mode == "main":
+                              main_seek_offset = 0.0
+                              paused_main_state = None
+
                           start_ffmpeg(
                               effective_config,
                               desired_mode,
@@ -3059,6 +3127,7 @@ jobs:
                               logo_path=logo_path,
                               ad_overlay=active_ad_overlay if desired_mode == "main" else None,
                               ad_image_path=cached_ad_img_path if (desired_mode == "main" and active_ad_overlay) else None,
+                              seek_seconds=resume_seek,
                           )
                           current_key = desired_key
                           current_mode = desired_mode
