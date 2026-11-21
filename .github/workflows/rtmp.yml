@@ -1055,7 +1055,7 @@ jobs:
                   opener = urllib.request.build_opener(SafeRedirectHandler())
                   req = urllib.request.Request(
                       url,
-                      headers={"User-Agent": "VeoTV-Runner/1.0", "Range": "bytes=0-0"},
+                      headers={"User-Agent": "VLC/3.0.20 LibVLC/3.0.20"},
                   )
                   with opener.open(req, timeout=5) as resp:
                       final_url = resp.geturl()
@@ -1086,6 +1086,8 @@ jobs:
                       "-show_entries", "stream=codec_type",
                       "-of", "csv=p=0",
                   ]
+                  if url.startswith(("http://", "https://")):
+                      ffprobe_cmd += ["-user_agent", "VLC/3.0.20 LibVLC/3.0.20"]
                   if clearkey:
                       ffprobe_cmd += ["-cenc_decryption_key", clearkey]
                   ffprobe_cmd.append(url)
@@ -1723,11 +1725,14 @@ jobs:
                       "-thread_queue_size", "512",
                       "-rw_timeout", "6000000",
                   ]
-                  if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(source_url)):
+                  resolved_src = resolve_media_redirect(source_url)
+                  if resolved_src.startswith(("http://", "https://")):
+                      cmd += ["-user_agent", "VLC/3.0.20 LibVLC/3.0.20"]
+                  if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(resolved_src)):
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
                   if clearkey:
                       cmd += ["-cenc_decryption_key", clearkey]
-                  cmd += ["-i", resolve_media_redirect(source_url)]
+                  cmd += ["-i", resolved_src]
 
               cmd += [
                   "-loop", "1",
