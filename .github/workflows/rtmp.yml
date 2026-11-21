@@ -14,7 +14,6 @@ jobs:
   live:
     runs-on: ubuntu-latest
     timeout-minutes: 350
-
     steps:
       - name: Connect Tailscale
         uses: tailscale/github-action@v3
@@ -25,9 +24,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-
           sudo apt-get update
-
           sudo apt-get install -y \
             ffmpeg \
             nginx \
@@ -36,7 +33,6 @@ jobs:
             ca-certificates
 
           echo ">>> Tải cloudflared từ GitHub..."
-
           if curl -fL \
             --retry 2 \
             --retry-delay 3 \
@@ -47,27 +43,21 @@ jobs:
             echo ">>> Đã tải cloudflared từ GitHub."
           else
             echo ">>> GitHub tải lỗi, thử kho APT Cloudflare..."
-
             rm -f /tmp/cloudflared
             sudo mkdir -p /usr/share/keyrings
-
             curl -fL \
               --retry 3 \
               --retry-delay 3 \
               --max-time 60 \
               "https://pkg.cloudflare.com/cloudflare-main.gpg" \
               -o /tmp/cloudflare-main.gpg
-
             sudo install -m 0644 \
               /tmp/cloudflare-main.gpg \
               /usr/share/keyrings/cloudflare-main.gpg
-
             echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
               | sudo tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
-
             sudo apt-get update
             sudo apt-get install -y cloudflared
-
             cp "$(command -v cloudflared)" /tmp/cloudflared
           fi
 
@@ -76,7 +66,6 @@ jobs:
 
       - name: Run VeoTV
         shell: bash
-
         env:
           PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
           RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
@@ -84,7 +73,6 @@ jobs:
           TUNNEL_ID: ${{ vars.TUNNEL_ID }}
           CONTROL_USER: ${{ secrets.CONTROL_USER }}
           CONTROL_PASSWORD: ${{ secrets.CONTROL_PASSWORD }}
-
         run: |
           set -eu
           umask 077
@@ -119,14 +107,12 @@ jobs:
           fi
 
           TS_IP="$(tailscale ip -4 | head -n 1)"
-
           if [ -z "$TS_IP" ]; then
             echo "Không lấy được IP Tailscale."
             exit 1
           fi
 
           ROOT=/tmp/veotv
-
           mkdir -p \
             "$ROOT/assets" \
             "$ROOT/www/livestream01/720" \
@@ -143,25 +129,20 @@ jobs:
                 kill "$pid" 2>/dev/null || true
               fi
             done
-
             if [ -n "${SUP_PID:-}" ]; then
               wait "$SUP_PID" 2>/dev/null || true
             fi
-
             docker rm -f veotv-mediamtx >/dev/null 2>&1 || true
             rm -rf "$ROOT"
           }
-
           trap cleanup EXIT
 
           echo ">>> Tải ảnh fallback..."
-
           if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/b5ZC62p5/1-1.png" \
             -o "$ROOT/assets/fallback.png"
           then
             echo ">>> Không tải được fallback; tạo nền tối."
-
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=0x15172b:s=1280x720" \
@@ -171,13 +152,11 @@ jobs:
           fi
 
           echo ">>> Tải logo..."
-
           if ! curl -fL --retry 2 --max-time 30 \
             "https://i.ibb.co/xtShkTkr/logo.png" \
             -o "$ROOT/assets/logo.png"
           then
             echo ">>> Không tải được logo; tạo ảnh trong suốt."
-
             ffmpeg -hide_banner -loglevel error -y \
               -f lavfi \
               -i "color=c=black@0.0:s=100x100,format=rgba" \
@@ -192,9 +171,9 @@ jobs:
             local target="$ROOT/assets/$name.mp4"
 
             echo ">>> Đang tải $name..."
-
-            if curl -fL \
+            if curl -fsSL \
               --retry 2 \
+              --retry-delay 2 \
               --max-time 120 \
               "$url" \
               -o "$target"
@@ -205,7 +184,9 @@ jobs:
                 -of csv=p=0 \
                 "$target" | grep -q video
               then
-                echo ">>> $name có video hợp lệ."
+                local size
+                size=$(wc -c < "$target" 2>/dev/null || echo 0)
+                echo ">>> $name có video hợp lệ (${size} bytes)."
               else
                 echo ">>> $name không có video hợp lệ; bỏ qua."
                 rm -f "$target"
@@ -218,13 +199,10 @@ jobs:
 
           download_ident ident1 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident.mp4"
-
           download_ident ident2 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident02.mp4"
-
           download_ident ident3 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident03.mp4"
-
           download_ident ident4 \
             "https://raw.githubusercontent.com/ankbuitv/link/refs/heads/main/ident04.mp4"
 
@@ -239,7 +217,6 @@ jobs:
               permissions:
                 - action: publish
                   path: live/channel
-
             - user: any
               pass:
               permissions:
@@ -272,53 +249,53 @@ jobs:
           pid /tmp/veotv/nginx.pid;
 
           events {
-              worker_connections 1024;
+            worker_connections 1024;
           }
 
           http {
-              access_log off;
+            server_tokens off;
+            access_log off;
 
-              types {
-                  application/vnd.apple.mpegurl m3u8;
-                  video/mp2t ts;
+            types {
+              application/vnd.apple.mpegurl m3u8;
+              video/mp2t ts;
+            }
+
+            server {
+              listen 127.0.0.1:8080;
+              root /tmp/veotv/www;
+
+              location = /control {
+                return 301 /control/;
               }
 
-              server {
-                  listen 127.0.0.1:8080;
-                  root /tmp/veotv/www;
+              location /control/ {
+                proxy_pass http://127.0.0.1:8091;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header Authorization $http_authorization;
 
-                  location = /control {
-                      return 301 /control/;
-                  }
-
-                  location /control/ {
-                      proxy_pass http://127.0.0.1:8091;
-                      proxy_http_version 1.1;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Forwarded-Proto https;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header Authorization $http_authorization;
-
-                      add_header Cache-Control "no-store" always;
-                      add_header X-Content-Type-Options "nosniff" always;
-                      add_header X-Frame-Options "DENY" always;
-                  }
-
-                  location /livestream01/ {
-                      add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-                      add_header Access-Control-Allow-Origin "*" always;
-                      add_header X-Content-Type-Options "nosniff" always;
-                  }
-
-                  location / {
-                      return 404;
-                  }
+                add_header Cache-Control "no-store" always;
+                add_header X-Content-Type-Options "nosniff" always;
+                add_header X-Frame-Options "DENY" always;
               }
+
+              location /livestream01/ {
+                add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+                add_header Access-Control-Allow-Origin "*" always;
+                add_header X-Content-Type-Options "nosniff" always;
+              }
+
+              location / {
+                return 404;
+              }
+            }
           }
           EOF
 
           nginx -t -c "$ROOT/nginx.conf"
-
           nginx -c "$ROOT/nginx.conf" -g 'daemon off;' &
           NGINX_PID=$!
 
@@ -359,24 +336,24 @@ jobs:
           import collections
           import hashlib
           import hmac
+          import ipaddress
           import json
           import os
           import re
           import secrets
           import signal
+          import socket
           import subprocess
           import threading
           import time
           import urllib.error
           import urllib.request
           import uuid
-
           from datetime import datetime, timedelta
           from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
           from pathlib import Path
           from urllib.parse import urlsplit
           from zoneinfo import ZoneInfo
-
 
           ROOT = Path("/tmp/veotv")
           ASSETS = ROOT / "assets"
@@ -392,9 +369,7 @@ jobs:
           CONTROL_PASSWORD = os.environ["CONTROL_PASSWORD"]
 
           OBS_URL = "rtmp://127.0.0.1:1935/live/channel"
-
           EDM_URL = "https://streams.ankb.qzz.io/mytv/edm.m3u8"
-
           BACKUP_AUDIO_URL = (
               "https://multi-playlist-zmp3.zmdcdn.me/"
               "-XosZVJX9XA/zhls/playback-realtime/f49e383"
@@ -414,6 +389,10 @@ jobs:
           AUDIO_PROBE_INTERVAL = 90
           RESTART_DELAY = 5
           PLAYLIST_STALL_TIMEOUT = 90
+          MAX_SRT_BYTES = 2 * 1024 * 1024
+
+          AUTH_WINDOW_SEC = 60
+          AUTH_MAX_FAILS = 10
 
           stop_event = threading.Event()
           fetch_event = threading.Event()
@@ -421,29 +400,26 @@ jobs:
 
           logs = collections.deque(maxlen=300)
           csrf_token = secrets.token_urlsafe(32)
+          auth_failures = {}
 
           shared = {
               "config": None,
               "config_last_ok": None,
               "config_error": "Chưa đọc Worker",
               "config_fetching": False,
-
               "selected": None,
               "generation": 0,
               "video_available": False,
               "video_failures": 0,
-
               "audio_candidates": (),
               "audio_generation": 0,
               "audio_result": None,
-
               "emergency": False,
               "direct_url": None,
               "direct_type": "live",
-
+              "direct_subtitle_url": "",
               "restart_seq": 0,
               "ident_seq": 0,
-
               "current_mode": "Đang khởi động",
               "current_name": "",
               "ffmpeg_running": False,
@@ -461,6 +437,7 @@ jobs:
           ident_playing = False
           ident_from_control = False
           ident_deadline = 0.0
+          last_ident_path = None
 
           playlist_last_change = time.monotonic()
           playlist_last_signature = None
@@ -474,24 +451,22 @@ jobs:
               os.environ.get("PUBLISH_PASSWORD", ""),
               os.environ.get("CONTROL_PASSWORD", ""),
               os.environ.get("TUNNEL_CREDENTIALS", ""),
+              os.environ.get("TAILSCALE_AUTHKEY", ""),
           ]
 
 
           def sanitize(value):
               text = str(value)
               text = URL_RE.sub("[URL đã ẩn]", text)
-
               for secret in SECRET_VALUES:
                   if secret:
                       text = text.replace(secret, "[SECRET]")
-
               text = re.sub(
                   r"(?i)(token|password|passwd|authorization|secret)"
                   r"([=: ]+)([^\s,;]+)",
                   r"\1\2[SECRET]",
                   text,
               )
-
               text = text.replace("\r", " ").replace("\n", " ")
               return text[:1000]
 
@@ -500,10 +475,8 @@ jobs:
               safe = sanitize(message)
               stamp = datetime.now(TZ).strftime("%H:%M:%S")
               line = f"[{stamp}] {safe}"
-
               with lock:
                   logs.append(line)
-
               print(">>> " + safe, flush=True)
 
 
@@ -511,20 +484,14 @@ jobs:
               try:
                   for line in iter(pipe.readline, ""):
                       safe = sanitize(line.strip())
-
                       if not safe:
                           continue
-
                       stamp = datetime.now(TZ).strftime("%H:%M:%S")
-
                       with lock:
                           logs.append(f"[{stamp}] FFmpeg: {safe}")
-
                       print("FFmpeg: " + safe, flush=True)
-
               except Exception:
                   pass
-
               finally:
                   try:
                       pipe.close()
@@ -535,29 +502,21 @@ jobs:
           def progress_reader(pipe):
               values = {}
               last_report = 0.0
-
               try:
                   for line in iter(pipe.readline, ""):
                       line = line.strip()
-
                       if "=" not in line:
                           continue
-
                       key, value = line.split("=", 1)
                       values[key] = value
-
                       if key != "progress":
                           continue
-
                       speed = values.get("speed", "")
                       out_time = values.get("out_time", "")
-
                       with lock:
                           shared["ffmpeg_speed"] = speed
                           shared["ffmpeg_out_time"] = out_time
-
                       now = time.monotonic()
-
                       if now - last_report >= 30:
                           log(
                               "FFmpeg progress: speed="
@@ -566,12 +525,9 @@ jobs:
                               + out_time
                           )
                           last_report = now
-
                       values = {}
-
               except Exception:
                   pass
-
               finally:
                   try:
                       pipe.close()
@@ -588,24 +544,57 @@ jobs:
           signal.signal(signal.SIGINT, on_signal)
 
 
-          def valid_url(value):
+          def is_blocked_ip(ip_str):
+              try:
+                  ip_obj = ipaddress.ip_address(ip_str)
+              except ValueError:
+                  return False
+              return (
+                  ip_obj.is_private
+                  or ip_obj.is_loopback
+                  or ip_obj.is_link_local
+                  or ip_obj.is_multicast
+                  or ip_obj.is_reserved
+                  or ip_obj.is_unspecified
+              )
+
+
+          def is_safe_public_host(hostname):
+              if not hostname:
+                  return False
+              low = hostname.lower().rstrip(".")
+              if (
+                  low in ("localhost", "ip6-localhost", "ip6-loopback")
+                  or low.endswith((".local", ".internal", ".localhost"))
+              ):
+                  return False
+              if is_blocked_ip(low):
+                  return False
+              try:
+                  infos = socket.getaddrinfo(low, None, proto=socket.IPPROTO_TCP)
+              except OSError:
+                  return True
+              for info in infos:
+                  addr = info[4][0].split("%", 1)[0]
+                  if is_blocked_ip(addr):
+                      return False
+              return True
+
+
+          def valid_url(value, allow_internal_obs=False):
               if not isinstance(value, str):
                   return False
-
               if not value or len(value) > 4096:
                   return False
-
               if any(ch in value for ch in ("\r", "\n", "\x00")):
                   return False
-
+              if allow_internal_obs and value == OBS_URL:
+                  return True
               try:
                   parsed = urlsplit(value)
-
-                  return (
-                      parsed.scheme.lower() in ("http", "https", "rtmp")
-                      and bool(parsed.hostname)
-                  )
-
+                  if parsed.scheme.lower() not in ("http", "https", "rtmp"):
+                      return False
+                  return is_safe_public_host(parsed.hostname)
               except Exception:
                   return False
 
@@ -613,7 +602,6 @@ jobs:
           def valid_direct_url(value):
               if not valid_url(value):
                   return False
-
               try:
                   return urlsplit(value).scheme.lower() in ("http", "https")
               except Exception:
@@ -629,61 +617,91 @@ jobs:
                   return False
 
 
+          class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  if not valid_direct_url(newurl):
+                      raise urllib.error.URLError("Redirect bị chặn")
+                  return super().redirect_request(
+                      req, fp, code, msg, headers, newurl
+                  )
+
+
+          _safe_opener = urllib.request.build_opener(SafeRedirectHandler)
+
+
+          def download_subtitle(url):
+              if not url or not valid_direct_url(url):
+                  return None, ""
+              try:
+                  req = urllib.request.Request(
+                      url,
+                      headers={
+                          "User-Agent": "VeoTV-Control/5.1",
+                          "Accept": "text/plain, application/x-subrip, */*",
+                      },
+                  )
+                  with _safe_opener.open(req, timeout=10) as resp:
+                      raw = resp.read(MAX_SRT_BYTES + 1)
+                  if len(raw) > MAX_SRT_BYTES:
+                      log("Phụ đề .srt vượt quá 2 MB; bỏ qua.")
+                      return None, ""
+                  text = raw.decode("utf-8-sig", errors="replace")
+                  stripped = text.lstrip()
+                  if not stripped or stripped.startswith("<"):
+                      log("File phụ đề không hợp lệ (trống hoặc HTML); bỏ qua.")
+                      return None, ""
+                  srt_path = ROOT / "current.srt"
+                  srt_path.write_text(text, encoding="utf-8")
+                  digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+                  log(f"Đã tải phụ đề .srt ({len(raw)} bytes).")
+                  return srt_path, digest
+              except Exception as exc:
+                  log("Không tải được phụ đề .srt: " + type(exc).__name__)
+                  return None, ""
+
+
           def fetch_config():
               request = urllib.request.Request(
                   API_URL,
                   headers={
                       "Authorization": "Bearer " + TOKEN,
-                      "User-Agent": "VeoTV-Control/5.0",
+                      "User-Agent": "VeoTV-Control/5.1",
                       "Accept": "application/json",
                       "Cache-Control": "no-cache",
                   },
               )
-
               with urllib.request.urlopen(request, timeout=10) as response:
                   data = json.load(response)
-
               if not isinstance(data, dict):
                   raise ValueError("Cấu hình không phải object")
-
               return data
 
 
           def config_loop():
               last_error_log = 0.0
               fetch_event.set()
-
               while not stop_event.is_set():
                   fetch_event.wait(CONFIG_INTERVAL)
                   fetch_event.clear()
-
                   if stop_event.is_set():
                       break
-
                   with lock:
                       shared["config_fetching"] = True
-
                   try:
                       config = fetch_config()
-
                       with lock:
                           shared["config"] = config
                           shared["config_last_ok"] = (
                               datetime.now(TZ).isoformat(timespec="seconds")
                           )
                           shared["config_error"] = ""
-
                   except Exception as exc:
                       error_name = type(exc).__name__
-
                       if isinstance(exc, urllib.error.HTTPError):
                           error_name += f" HTTP {exc.code}"
-
                       with lock:
                           shared["config_error"] = error_name
-
                       now = time.monotonic()
-
                       if now - last_error_log >= 30:
                           log(
                               "Không đọc được Worker: "
@@ -691,7 +709,6 @@ jobs:
                               + ". Giữ cấu hình gần nhất."
                           )
                           last_error_log = now
-
                   finally:
                       with lock:
                           shared["config_fetching"] = False
@@ -699,25 +716,19 @@ jobs:
 
           def minute_value(value):
               hour, minute = map(int, str(value).split(":"))
-
               if not 0 <= hour <= 24 or not 0 <= minute < 60:
                   raise ValueError("Giờ không hợp lệ")
-
               if hour == 24 and minute != 0:
                   raise ValueError("Chỉ cho phép 24:00")
-
               return hour * 60 + minute
 
 
           def resolve_source(config, name):
               if name == "obs":
                   return OBS_URL
-
               sources = config.get("sources", {})
-
               if not isinstance(sources, dict):
                   return None
-
               value = sources.get(name)
               return value if valid_url(value) else None
 
@@ -725,12 +736,9 @@ jobs:
           def source_input_type(config, name):
               if name == "obs":
                   return "live"
-
               types = config.get("sourceTypes", {})
-
               if not isinstance(types, dict):
                   return "live"
-
               value = types.get(name, "live")
               return value if value in ("live", "vod") else "live"
 
@@ -743,13 +751,19 @@ jobs:
           def select_program(config):
               if config.get("mode") == "manual":
                   name = str(config.get("manualSource", "obs"))
-
+                  sub_map = config.get("sourceSubtitles", {})
+                  sub_url = ""
+                  if isinstance(sub_map, dict):
+                      cand = sub_map.get(name, "")
+                      if valid_direct_url(cand):
+                          sub_url = cand
                   return {
                       "reason": "manual",
                       "name": name,
                       "kind": "source",
                       "url": resolve_source(config, name),
                       "input_type": source_input_type(config, name),
+                      "subtitle_url": sub_url,
                       "occurrence": None,
                       "waiting": {},
                   }
@@ -757,7 +771,6 @@ jobs:
               now = datetime.now(TZ)
               current = now.hour * 60 + now.minute
               epg = config.get("epg", [])
-
               if not isinstance(epg, list):
                   epg = []
 
@@ -765,30 +778,24 @@ jobs:
                   try:
                       if not isinstance(item, dict):
                           continue
-
                       start = minute_value(item["start"])
                       end = minute_value(item["end"])
-
                       if start < end:
                           active = start <= current < end
                       elif start > end:
                           active = current >= start or current < end
                       else:
                           active = False
-
                       if not active:
                           continue
 
                       name = str(item.get("source", "obs"))
-
                       kind = (
                           "waiting"
                           if item.get("type") == "waiting"
                           else "source"
                       )
-
                       waiting = item.get("waiting", {})
-
                       if not isinstance(waiting, dict):
                           waiting = {}
 
@@ -796,12 +803,14 @@ jobs:
                           value = waiting.get("videoUrl")
                           url = value if valid_url(value) else None
                           input_type = waiting_input_type(waiting)
+                          sub_url = ""
                       else:
                           url = resolve_source(config, name)
                           input_type = source_input_type(config, name)
+                          raw_sub = item.get("subtitleUrl", "")
+                          sub_url = raw_sub if valid_direct_url(raw_sub) else ""
 
                       occurrence_date = now.date()
-
                       if start > end and current < end:
                           occurrence_date -= timedelta(days=1)
 
@@ -823,10 +832,10 @@ jobs:
                           "kind": kind,
                           "url": url,
                           "input_type": input_type,
+                          "subtitle_url": sub_url,
                           "occurrence": occurrence,
                           "waiting": waiting,
                       }
-
                   except (ValueError, KeyError, TypeError):
                       continue
 
@@ -836,27 +845,28 @@ jobs:
                   "kind": "source",
                   "url": OBS_URL,
                   "input_type": "live",
+                  "subtitle_url": "",
                   "occurrence": None,
                   "waiting": {},
               }
 
 
-          def direct_program(url, input_type):
+          def direct_program(url, input_type, subtitle_url=""):
               return {
                   "reason": "direct",
                   "name": "Link trực tiếp",
                   "kind": "source",
                   "url": url,
                   "input_type": input_type,
+                  "subtitle_url": subtitle_url if valid_direct_url(subtitle_url) else "",
                   "occurrence": None,
                   "waiting": {},
               }
 
 
           def probe(url, stream_type):
-              if not valid_url(url):
+              if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
-
               try:
                   result = subprocess.run(
                       [
@@ -874,47 +884,54 @@ jobs:
                       errors="replace",
                       timeout=15,
                   )
-
-                  expected = (
-                      "video" if stream_type == "v:0" else "audio"
-                  )
-
+                  expected = "video" if stream_type == "v:0" else "audio"
                   if result.returncode == 0 and expected in result.stdout:
                       return True, ""
-
                   detail = sanitize(result.stderr.strip())
-
                   if not detail:
                       detail = f"ffprobe exit {result.returncode}"
-
                   return False, detail[:300]
-
               except subprocess.TimeoutExpired:
                   return False, "ffprobe quá 15 giây"
-
               except OSError as exc:
                   return False, type(exc).__name__
+
+
+          def local_has_audio(path):
+              try:
+                  res = subprocess.run(
+                      [
+                          "ffprobe",
+                          "-v", "error",
+                          "-select_streams", "a:0",
+                          "-show_entries", "stream=codec_type",
+                          "-of", "csv=p=0",
+                          str(path),
+                      ],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                      timeout=5,
+                  )
+                  return res.returncode == 0 and "audio" in res.stdout
+              except Exception:
+                  return False
 
 
           def video_probe_loop():
               last_generation = -1
               next_probe = 0.0
-
               while not stop_event.is_set():
                   with lock:
                       selected = shared["selected"]
                       generation = shared["generation"]
-
                   if selected is None:
                       stop_event.wait(0.5)
                       continue
-
                   if generation != last_generation:
                       last_generation = generation
                       next_probe = 0.0
-
                   now = time.monotonic()
-
                   if now < next_probe:
                       stop_event.wait(min(0.5, next_probe - now))
                       continue
@@ -926,7 +943,6 @@ jobs:
                   with lock:
                       if generation != shared["generation"]:
                           continue
-
                       if available:
                           previous = shared["video_failures"]
                           shared["video_failures"] = 0
@@ -937,43 +953,32 @@ jobs:
 
                   if available and previous:
                       log(f"Video {kind} kiểm tra lại OK.")
-
                   elif not available and (
                       previous <= 3 or previous % 5 == 0
                   ):
-                      log(
-                          f"Probe video {kind} lỗi "
-                          f"{previous} lần: {detail}"
-                      )
+                      log(f"Probe video {kind} lỗi {previous} lần: {detail}")
 
 
           def audio_probe_loop():
               last_generation = -1
               next_probe = 0.0
-
               while not stop_event.is_set():
                   with lock:
                       candidates = shared["audio_candidates"]
                       generation = shared["audio_generation"]
-
                   if generation != last_generation:
                       last_generation = generation
                       next_probe = 0.0
-
                   now = time.monotonic()
-
                   if now < next_probe:
                       stop_event.wait(min(0.5, next_probe - now))
                       continue
 
                   chosen = None
-
                   for candidate in candidates:
                       if stop_event.is_set():
                           break
-
                       ok, _ = probe(candidate, "a:0")
-
                       if ok:
                           chosen = candidate
                           break
@@ -981,7 +986,6 @@ jobs:
                   with lock:
                       if generation == shared["audio_generation"]:
                           shared["audio_result"] = chosen
-
                   next_probe = time.monotonic() + AUDIO_PROBE_INTERVAL
 
                   if candidates:
@@ -995,7 +999,6 @@ jobs:
               clean = tuple(
                   url for url in candidates if valid_url(url)
               )
-
               with lock:
                   if clean != shared["audio_candidates"]:
                       shared["audio_candidates"] = clean
@@ -1005,10 +1008,8 @@ jobs:
 
           def fallback_audio_candidates(config):
               sources = config.get("sources", {})
-
               if not isinstance(sources, dict):
                   sources = {}
-
               return (
                   sources.get("edm", EDM_URL),
                   sources.get("audioBackup", BACKUP_AUDIO_URL),
@@ -1017,97 +1018,99 @@ jobs:
 
           def waiting_audio_candidates(program):
               waiting = program["waiting"]
-
               if waiting.get("audioEnabled") is not True:
                   return ()
-
               return (waiting.get("audioUrl"),)
 
 
           def ident_file_duration(path):
               if not path.is_file():
                   return None
-
-              try:
-                  result = subprocess.run(
-                      [
-                          "ffprobe",
-                          "-v", "error",
-                          "-show_entries", "format=duration",
-                          "-of", "default=noprint_wrappers=1:nokey=1",
-                          str(path),
-                      ],
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL,
-                      text=True,
-                      timeout=10,
-                  )
-
-                  if result.returncode != 0:
-                      return None
-
-                  duration = float(result.stdout.strip())
-
-                  if 0 < duration <= 300:
-                      return duration
-
-              except (
-                  ValueError,
-                  OSError,
-                  subprocess.TimeoutExpired,
-              ):
-                  pass
-
+              queries = [
+                  ["-show_entries", "format=duration"],
+                  ["-select_streams", "v:0", "-show_entries", "stream=duration"],
+              ]
+              for extra in queries:
+                  try:
+                      result = subprocess.run(
+                          [
+                              "ffprobe",
+                              "-v", "error",
+                              *extra,
+                              "-of", "default=noprint_wrappers=1:nokey=1",
+                              str(path),
+                          ],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL,
+                          text=True,
+                          timeout=10,
+                      )
+                      if result.returncode != 0:
+                          continue
+                      raw = result.stdout.strip()
+                      if not raw or raw == "N/A":
+                          continue
+                      duration = float(raw)
+                      if 0 < duration <= 300:
+                          return duration
+                  except (ValueError, OSError, subprocess.TimeoutExpired):
+                      continue
               return None
 
 
-          def choose_ident():
-              available = []
+          def scan_idents():
+              ok_list = []
+              for name, path, weight in IDENT_OPTIONS:
+                  dur = ident_file_duration(path)
+                  if dur is not None:
+                      ok_list.append(f"{name} ({dur:.1f}s, w={weight})")
+                  else:
+                      log(f"Cảnh báo: {name} không khả dụng hoặc lỗi duration.")
+              if ok_list:
+                  log("Ident khả dụng: " + ", ".join(ok_list))
+              else:
+                  log("Cảnh báo: Không có ident nào khả dụng.")
 
+
+          def choose_ident():
+              global last_ident_path
+              available = []
               for name, path, weight in IDENT_OPTIONS:
                   duration = ident_file_duration(path)
-
                   if duration is not None and weight > 0:
-                      available.append(
-                          (name, path, weight, duration)
-                      )
-
+                      available.append((name, path, weight, duration))
               if not available:
                   return None
 
-              total = sum(item[2] for item in available)
+              pool = available
+              if len(available) > 1 and last_ident_path is not None:
+                  filtered = [x for x in available if x[1] != last_ident_path]
+                  if filtered:
+                      pool = filtered
+
+              total = sum(item[2] for item in pool)
               ticket = secrets.randbelow(total)
-
-              for name, path, weight, duration in available:
+              for name, path, weight, duration in pool:
                   if ticket < weight:
-                      log(
-                          f"Đã chọn {name}; "
-                          f"thời lượng {duration:.1f} giây."
-                      )
+                      last_ident_path = path
+                      log(f"Đã chọn {name}; thời lượng {duration:.1f} giây.")
                       return path, duration
-
                   ticket -= weight
-
               return None
 
 
           def stop_ffmpeg():
               global process
-
               if process is None:
                   return
-
               if process.poll() is None:
                   process.terminate()
-
                   try:
                       process.wait(timeout=6)
                   except subprocess.TimeoutExpired:
                       process.kill()
                       process.wait()
-
               process = None
-
               with lock:
                   shared["ffmpeg_running"] = False
 
@@ -1118,17 +1121,14 @@ jobs:
                   sort_keys=True,
                   ensure_ascii=False,
               )
-
               return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-          def build_filters(config, mode, waiting):
+          def build_filters(config, mode, waiting, subtitle_path=None):
               logo_cfg = config.get("logo", {})
               fallback_banner = config.get("banner", {})
-
               if not isinstance(logo_cfg, dict):
                   logo_cfg = {}
-
               if not isinstance(fallback_banner, dict):
                   fallback_banner = {}
 
@@ -1136,38 +1136,24 @@ jobs:
                   width = int(logo_cfg.get("width", 75))
               except (ValueError, TypeError):
                   width = 75
-
               width = max(24, min(width, 400))
               logo_enabled = bool(logo_cfg.get("enabled", True))
 
               banner_enabled = False
               banner_text = ""
-
               if mode == "fallback":
-                  banner_enabled = bool(
-                      fallback_banner.get("enabled", True)
-                  )
-
+                  banner_enabled = bool(fallback_banner.get("enabled", True))
                   banner_text = str(
                       fallback_banner.get(
                           "text",
-                          "VeoTV 1 — Nguồn phát không khả dụng."
+                          "VeoTV 1 — Nguồn phát không khả dụng.",
                       )
                   )[:300]
-
               elif mode == "waiting":
-                  banner_enabled = bool(
-                      waiting.get("bannerEnabled", True)
-                  )
+                  banner_enabled = bool(waiting.get("bannerEnabled", True))
+                  banner_text = str(waiting.get("bannerText", ""))[:300]
 
-                  banner_text = str(
-                      waiting.get("bannerText", "")
-                  )[:300]
-
-              (ROOT / "banner.txt").write_text(
-                  banner_text,
-                  encoding="utf-8",
-              )
+              (ROOT / "banner.txt").write_text(banner_text, encoding="utf-8")
 
               parts = [
                   "[0:v]fps=30,"
@@ -1176,20 +1162,26 @@ jobs:
                   "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
                   "setsar=1[base]"
               ]
-
               current = "base"
 
-              if logo_enabled and mode != "ident":
+              if mode == "main" and subtitle_path is not None and subtitle_path.is_file():
+                  safe_srt = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
                   parts.append(
-                      f"[1:v]scale={width}:-1,format=rgba[logo]"
+                      f"[{current}]subtitles={safe_srt}:charenc=UTF-8:"
+                      "force_style='FontName=DejaVu Sans,FontSize=28,"
+                      "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                      "BackColour=&H80000000,BorderStyle=1,Outline=2,"
+                      "Shadow=1,MarginV=36'[subbed]"
                   )
+                  current = "subbed"
 
+              if logo_enabled and mode != "ident":
+                  parts.append(f"[1:v]scale={width}:-1,format=rgba[logo]")
                   parts.append(
                       f"[{current}][logo]"
                       "overlay=W-w-20:H-h-20:"
                       "shortest=1[withlogo]"
                   )
-
                   current = "withlogo"
 
               if banner_enabled and banner_text:
@@ -1204,13 +1196,11 @@ jobs:
                       "x=w-mod(t*150\\,w+text_w):"
                       "y=h-55[bannered]"
                   )
-
                   current = "bannered"
 
               parts.append(f"[{current}]split=2[a][b]")
               parts.append("[a]scale=1280:720,format=yuv420p[v720]")
               parts.append("[b]format=yuv420p[v1080]")
-
               return ";".join(parts)
 
 
@@ -1223,7 +1213,6 @@ jobs:
               duration=None,
           ):
               folder = ROOT / "www" / "livestream01" / resolution
-
               args = [
                   "-map", label,
                   "-map", audio_map,
@@ -1235,30 +1224,27 @@ jobs:
                   "-sc_threshold", "0",
                   "-c:a", "aac",
                   "-b:a", "128k",
+                  "-ar", "44100",
+                  "-ac", "2",
               ]
-
               if duration is not None:
                   args += ["-t", str(duration)]
-
               args += [
                   "-f", "hls",
                   "-hls_time", "2",
                   "-hls_list_size", "12",
                   "-hls_delete_threshold", "30",
                   "-hls_flags",
-                  "append_list+delete_segments+temp_file+omit_endlist",
+                  "append_list+delete_segments+temp_file+omit_endlist+discont_start",
                   "-hls_segment_filename",
                   str(folder / f"{run_id}_%06d.ts"),
                   str(folder / "index.m3u8"),
               ]
-
               return args
 
 
           def reset_playlist_watch():
-              global playlist_last_change
-              global playlist_last_signature
-
+              global playlist_last_change, playlist_last_signature
               playlist_last_change = time.monotonic()
               playlist_last_signature = None
 
@@ -1272,9 +1258,9 @@ jobs:
               duration=None,
               input_type="live",
               ident_path=None,
+              subtitle_path=None,
           ):
               global process, last_start
-
               stop_ffmpeg()
               reset_playlist_watch()
 
@@ -1298,23 +1284,18 @@ jobs:
                       "-framerate", "30",
                       "-i", str(ASSETS / "fallback.png"),
                   ]
-
               elif mode == "ident":
                   if ident_path is None:
                       raise ValueError("Thiếu đường dẫn ident")
-
                   cmd += [
                       "-re",
                       "-i", str(ident_path),
                   ]
-
               elif mode in ("waiting", "main"):
                   if input_type == "vod" or is_mp4(source_url):
                       cmd += ["-re"]
-
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
-
                   cmd += [
                       "-thread_queue_size", "512",
                       "-rw_timeout", "10000000",
@@ -1330,58 +1311,41 @@ jobs:
               if mode in ("fallback", "waiting"):
                   if audio_url:
                       if is_mp4(audio_url):
-                          cmd += [
-                              "-re",
-                              "-stream_loop", "-1",
-                          ]
-
+                          cmd += ["-re", "-stream_loop", "-1"]
                       cmd += [
                           "-thread_queue_size", "512",
                           "-rw_timeout", "10000000",
                           "-i", audio_url,
                       ]
                   else:
-                      cmd += [
-                          "-f", "lavfi",
-                          "-i", "anullsrc=r=44100:cl=stereo",
-                      ]
-
+                      cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
                   audio_map = "2:a:0"
-
+              elif mode == "ident":
+                  if local_has_audio(ident_path):
+                      audio_map = "0:a:0"
+                  else:
+                      cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+                      audio_map = "2:a:0"
               else:
-                  audio_map = "0:a:0?"
+                  has_src_audio, _ = probe(source_url, "a:0")
+                  if has_src_audio:
+                      audio_map = "0:a:0?"
+                  else:
+                      cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+                      audio_map = "2:a:0"
 
               cmd += [
                   "-filter_complex",
-                  build_filters(config, mode, waiting),
+                  build_filters(config, mode, waiting, subtitle_path=subtitle_path),
               ]
-
-              cmd += output_args(
-                  "[v720]",
-                  audio_map,
-                  "720",
-                  "2800k",
-                  run_id,
-                  duration,
-              )
-
-              cmd += output_args(
-                  "[v1080]",
-                  audio_map,
-                  "1080",
-                  "5000k",
-                  run_id,
-                  duration,
-              )
+              cmd += output_args("[v720]", audio_map, "720", "2800k", run_id, duration)
+              cmd += output_args("[v1080]", audio_map, "1080", "5000k", run_id, duration)
 
               log(
                   "Khởi động FFmpeg: "
                   + mode
-                  + (
-                      f", input={input_type}"
-                      if mode in ("waiting", "main")
-                      else ""
-                  )
+                  + (f", input={input_type}" if mode in ("waiting", "main") else "")
+                  + (", srt=on" if (mode == "main" and subtitle_path) else "")
               )
 
               process = subprocess.Popen(
@@ -1398,7 +1362,6 @@ jobs:
                   args=(process.stderr,),
                   daemon=True,
               ).start()
-
               threading.Thread(
                   target=progress_reader,
                   args=(process.stdout,),
@@ -1406,7 +1369,6 @@ jobs:
               ).start()
 
               last_start = time.monotonic()
-
               with lock:
                   shared["ffmpeg_running"] = True
                   shared["current_mode"] = mode
@@ -1415,35 +1377,23 @@ jobs:
 
 
           def playlist_is_stalled():
-              global playlist_last_change
-              global playlist_last_signature
-
-              playlist = (
-                  ROOT / "www" / "livestream01" / "720" / "index.m3u8"
-              )
-
+              global playlist_last_change, playlist_last_signature
+              playlist = ROOT / "www" / "livestream01" / "720" / "index.m3u8"
               try:
                   stat = playlist.stat()
                   current = (stat.st_mtime_ns, stat.st_size)
               except OSError:
                   current = None
-
               if current != playlist_last_signature:
                   playlist_last_signature = current
                   playlist_last_change = time.monotonic()
-
-              return (
-                  time.monotonic() - playlist_last_change
-                  > PLAYLIST_STALL_TIMEOUT
-              )
+              return time.monotonic() - playlist_last_change > PLAYLIST_STALL_TIMEOUT
 
 
           def cleanup_old_segments():
               now = time.time()
-
               for resolution in ("720", "1080"):
                   folder = ROOT / "www" / "livestream01" / resolution
-
                   for path in folder.glob("*.ts"):
                       try:
                           if now - path.stat().st_mtime > 300:
@@ -1455,102 +1405,104 @@ jobs:
           CONTROL_HTML = r"""<!doctype html>
           <html lang="vi">
           <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>VeoTV Control</title>
-            <style>
-              *{box-sizing:border-box}
-              body{margin:0;font-family:system-ui,Arial,sans-serif;background:#101426;color:#eef1ff}
-              main{max-width:900px;margin:auto;padding:18px}
-              h1{margin:4px 0 8px}
-              p{color:#b7bfd9}
-              .card{background:#1b213a;border:1px solid #343d61;border-radius:14px;padding:16px;margin:14px 0}
-              .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
-              button{border:0;border-radius:9px;padding:11px 15px;color:white;background:#415eda;font-weight:700;cursor:pointer}
-              button:hover{filter:brightness(1.12)}
-              .red{background:#c72f3b}
-              .green{background:#16875d}
-              .gray{background:#58627f}
-              input[type=text],select{width:100%;padding:12px;border:1px solid #58627f;border-radius:8px;background:#101426;color:white}
-              label{display:block;margin-top:10px}
-              pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0b0e19;padding:12px;border-radius:8px;font-size:12px}
-              #message{min-height:24px;color:#ffdf85}
-              .status{line-height:1.65;white-space:pre-line}
-              .small{font-size:13px;color:#aab4d1}
-            </style>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>VeoTV Control</title>
+          <style>
+          *{box-sizing:border-box}
+          body{margin:0;font-family:system-ui,Arial,sans-serif;background:#101426;color:#eef1ff}
+          main{max-width:900px;margin:auto;padding:18px}
+          h1{margin:4px 0 8px}
+          p{color:#b7bfd9}
+          .card{background:#1b213a;border:1px solid #343d61;border-radius:14px;padding:16px;margin:14px 0}
+          .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+          button{border:0;border-radius:9px;padding:11px 15px;color:white;background:#415eda;font-weight:700;cursor:pointer}
+          button:hover{filter:brightness(1.12)}
+          .red{background:#c72f3b}
+          .green{background:#16875d}
+          .gray{background:#58627f}
+          input[type=text],select{width:100%;padding:12px;border:1px solid #58627f;border-radius:8px;background:#101426;color:white}
+          label{display:block;margin-top:10px}
+          pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;background:#0b0e19;padding:12px;border-radius:8px;font-size:12px}
+          #message{min-height:24px;color:#ffdf85}
+          .status{line-height:1.65;white-space:pre-line}
+          .small{font-size:13px;color:#aab4d1}
+          </style>
           </head>
           <body>
           <main>
-            <h1>📺 VeoTV 1 Control</h1>
-            <p>Điều khiển runner đang chạy. Không chỉnh sửa lịch trong Worker.</p>
+          <h1>📺 VeoTV 1 Control</h1>
+          <p>Điều khiển runner đang chạy. Không chỉnh sửa lịch trong Worker.</p>
 
-            <div id="message"></div>
+          <div id="message"></div>
 
-            <section class="card">
-              <h2>📡 Trạng thái</h2>
-              <div id="status" class="status">Đang tải...</div>
-              <p class="small">
-                Link và trạng thái điều khiển chỉ tồn tại trong job hiện tại.
-                Khi Action chạy lại, các lựa chọn này bị xóa.
-              </p>
-            </section>
+          <section class="card">
+          <h2>📡 Trạng thái</h2>
+          <div id="status" class="status">Đang tải...</div>
+          <p class="small">
+          Link và trạng thái điều khiển chỉ tồn tại trong job hiện tại.
+          Khi Action chạy lại, các lựa chọn này bị xóa.
+          </p>
+          </section>
 
-            <section class="card">
-              <h2>⚡ Điều khiển</h2>
-              <div class="row">
-                <button onclick="sendAction('refresh')">🔄 Cập nhật EPG</button>
-                <button onclick="sendAction('restart')">▶️ Restart nguồn</button>
-                <button onclick="sendAction('ident')">🎬 Phát ident ngẫu nhiên</button>
-              </div>
-              <div class="row">
-                <button class="red" onclick="emergencyOn()">🚨 Bật khẩn</button>
-                <button class="green" onclick="sendAction('emergency_off')">✅ Hết khẩn</button>
-              </div>
-              <p class="small">
-                Khẩn cấp phát fallback. Hết khẩn quay lại link trực tiếp
-                nếu đang chọn; nếu không thì về Worker.
-              </p>
-            </section>
+          <section class="card">
+          <h2>⚡ Điều khiển</h2>
+          <div class="row">
+          <button onclick="sendAction('refresh')">🔄 Cập nhật EPG</button>
+          <button onclick="sendAction('restart')">▶️ Restart nguồn</button>
+          <button onclick="sendAction('ident')">🎬 Phát ident ngẫu nhiên</button>
+          </div>
+          <div class="row">
+          <button class="red" onclick="emergencyOn()">🚨 Bật khẩn</button>
+          <button class="green" onclick="sendAction('emergency_off')">✅ Hết khẩn</button>
+          </div>
+          <p class="small">
+          Khẩn cấp phát fallback. Hết khẩn quay lại link trực tiếp
+          nếu đang chọn; nếu không thì về Worker.
+          </p>
+          </section>
 
-            <section class="card">
-              <h2>🔗 Phát link trực tiếp</h2>
+          <section class="card">
+          <h2>🔗 Phát link trực tiếp</h2>
+          <input
+          id="url"
+          type="text"
+          autocomplete="off"
+          placeholder="https://.../playlist.m3u8 hoặc video.mp4"
+          >
+          <label for="subtitleUrl">Phụ đề .srt (tùy chọn)</label>
+          <input
+          id="subtitleUrl"
+          type="text"
+          autocomplete="off"
+          placeholder="https://.../phu-de.srt"
+          >
+          <label for="inputType">Loại nguồn</label>
+          <select id="inputType">
+          <option value="live">Live: kênh TV / luồng đang phát</option>
+          <option value="vod">VOD: phim / video có sẵn</option>
+          </select>
+          <label>
+          <input id="withIdent" type="checkbox" checked>
+          Phát ident trước khi chuyển sang link
+          </label>
+          <div class="row">
+          <button onclick="playDirect()">▶️ Phát link</button>
+          <button class="gray" onclick="sendAction('worker')">📅 Về lịch Worker</button>
+          </div>
+          <p class="small">
+          HLS VOD chưa bảo đảm tự lặp khi hết. Link chỉ lưu trong
+          bộ nhớ của job. Không chia sẻ link chứa token.
+          </p>
+          </section>
 
-              <input
-                id="url"
-                type="text"
-                autocomplete="off"
-                placeholder="https://.../playlist.m3u8 hoặc video.mp4"
-              >
-
-              <label for="inputType">Loại nguồn</label>
-              <select id="inputType">
-                <option value="live">Live: kênh TV / luồng đang phát</option>
-                <option value="vod">VOD: phim / video có sẵn</option>
-              </select>
-
-              <label>
-                <input id="withIdent" type="checkbox" checked>
-                Phát ident trước khi chuyển sang link
-              </label>
-
-              <div class="row">
-                <button onclick="playDirect()">▶️ Phát link</button>
-                <button class="gray" onclick="sendAction('worker')">📅 Về lịch Worker</button>
-              </div>
-
-              <p class="small">
-                HLS VOD chưa bảo đảm tự lặp khi hết. Link chỉ lưu trong
-                bộ nhớ của job. Không chia sẻ link chứa token.
-              </p>
-            </section>
-
-            <section class="card">
-              <h2>📋 Log gần đây</h2>
-              <p class="small">
-                URL và secret được lọc cơ bản; kiểm tra kỹ trước khi chia sẻ.
-              </p>
-              <pre id="logs">Đang tải...</pre>
-            </section>
+          <section class="card">
+          <h2>📋 Log gần đây</h2>
+          <p class="small">
+          URL và secret được lọc cơ bản; kiểm tra kỹ trước khi chia sẻ.
+          </p>
+          <pre id="logs">Đang tải...</pre>
+          </section>
           </main>
 
           <script>
@@ -1571,13 +1523,10 @@ jobs:
                 body: JSON.stringify({action, ...extra}),
                 cache: "no-store"
               });
-
               const data = await response.json();
-
               if (!response.ok) {
                 throw new Error(data.error || ("HTTP " + response.status));
               }
-
               showMessage(data.message || "Đã gửi lệnh.");
               await refreshStatus();
             } catch (error) {
@@ -1593,14 +1542,14 @@ jobs:
 
           function playDirect() {
             const url = document.getElementById("url").value.trim();
-
+            const subtitle_url = document.getElementById("subtitleUrl").value.trim();
             if (!url) {
               showMessage("Bro hãy dán link trước.");
               return;
             }
-
             sendAction("direct", {
               url,
+              subtitle_url,
               input_type: document.getElementById("inputType").value,
               ident: document.getElementById("withIdent").checked
             });
@@ -1611,13 +1560,10 @@ jobs:
               const response = await fetch("/control/api/status", {
                 cache: "no-store"
               });
-
               if (!response.ok) {
                 throw new Error("HTTP " + response.status);
               }
-
               const data = await response.json();
-
               document.getElementById("status").textContent =
                 "Khẩn cấp: " + (data.emergency ? "ĐANG BẬT" : "Tắt") + "\n" +
                 "Điều khiển: " + data.control_mode + "\n" +
@@ -1630,9 +1576,7 @@ jobs:
                 "Worker: " + (data.config_fetching
                   ? "Đang đọc..."
                   : (data.config_error || "OK"));
-
-              document.getElementById("logs").textContent =
-                data.logs.join("\n");
+              document.getElementById("logs").textContent = data.logs.join("\n");
             } catch (error) {
               showMessage("Không tải được trạng thái: " + error.message);
             }
@@ -1652,20 +1596,49 @@ jobs:
               def log_message(self, format, *args):
                   return
 
+              def client_ip(self):
+                  xff = self.headers.get("X-Forwarded-For", "")
+                  if xff:
+                      return xff.split(",", 1)[0].strip()
+                  return self.client_address[0]
+
+              def is_rate_limited(self, ip):
+                  now = time.monotonic()
+                  with lock:
+                      recent = [
+                          t for t in auth_failures.get(ip, [])
+                          if now - t < AUTH_WINDOW_SEC
+                      ]
+                      if recent:
+                          auth_failures[ip] = recent
+                      else:
+                          auth_failures.pop(ip, None)
+                      return len(recent) >= AUTH_MAX_FAILS
+
+              def record_auth_failure(self, ip):
+                  now = time.monotonic()
+                  with lock:
+                      recent = [
+                          t for t in auth_failures.get(ip, [])
+                          if now - t < AUTH_WINDOW_SEC
+                      ]
+                      recent.append(now)
+                      auth_failures[ip] = recent
+
+              def clear_auth_failures(self, ip):
+                  with lock:
+                      auth_failures.pop(ip, None)
+
               def authenticated(self):
                   header = self.headers.get("Authorization", "")
-
                   if not header.startswith("Basic "):
                       return False
-
                   try:
                       raw = base64.b64decode(
                           header[6:],
                           validate=True,
                       ).decode("utf-8")
-
                       user, password = raw.split(":", 1)
-
                       return (
                           hmac.compare_digest(
                               user.encode("utf-8"),
@@ -1676,7 +1649,6 @@ jobs:
                               CONTROL_PASSWORD.encode("utf-8"),
                           )
                       )
-
                   except Exception:
                       return False
 
@@ -1688,27 +1660,35 @@ jobs:
                   self.send_header("X-Content-Type-Options", "nosniff")
                   self.send_header("X-Frame-Options", "DENY")
                   self.send_header("Referrer-Policy", "no-referrer")
+                  self.send_header(
+                      "Content-Security-Policy",
+                      "default-src 'self'; script-src 'unsafe-inline'; "
+                      "style-src 'unsafe-inline'; connect-src 'self'; "
+                      "frame-ancestors 'none'; base-uri 'none'",
+                  )
                   self.end_headers()
                   self.wfile.write(body)
 
               def send_json(self, code, value):
-                  body = json.dumps(
-                      value,
-                      ensure_ascii=False,
-                  ).encode("utf-8")
-
-                  self.send_bytes(
-                      code,
-                      body,
-                      "application/json; charset=utf-8",
-                  )
+                  body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+                  self.send_bytes(code, body, "application/json; charset=utf-8")
 
               def require_auth(self):
+                  ip = self.client_ip()
+                  if self.is_rate_limited(ip):
+                      body = b"Too many failed attempts"
+                      self.send_response(429)
+                      self.send_header("Retry-After", str(AUTH_WINDOW_SEC))
+                      self.send_header("Content-Type", "text/plain")
+                      self.send_header("Content-Length", str(len(body)))
+                      self.end_headers()
+                      self.wfile.write(body)
+                      return False
                   if self.authenticated():
+                      self.clear_auth_failures(ip)
                       return True
-
+                  self.record_auth_failure(ip)
                   body = b"Authentication required"
-
                   self.send_response(401)
                   self.send_header(
                       "WWW-Authenticate",
@@ -1719,25 +1699,20 @@ jobs:
                   self.send_header("Cache-Control", "no-store")
                   self.end_headers()
                   self.wfile.write(body)
-
                   return False
 
               def do_GET(self):
                   if not self.require_auth():
                       return
-
                   path = urlsplit(self.path).path
-
                   if path == "/control/":
                       html = CONTROL_HTML.replace("__CSRF__", csrf_token)
-
                       self.send_bytes(
                           200,
                           html.encode("utf-8"),
                           "text/html; charset=utf-8",
                       )
                       return
-
                   if path == "/control/api/status":
                       with lock:
                           control_mode = (
@@ -1745,7 +1720,6 @@ jobs:
                               if shared["direct_url"]
                               else "Worker"
                           )
-
                           data = {
                               "emergency": shared["emergency"],
                               "control_mode": control_mode,
@@ -1759,36 +1733,33 @@ jobs:
                               "config_fetching": shared["config_fetching"],
                               "logs": list(logs),
                           }
-
                       self.send_json(200, data)
                       return
-
                   self.send_json(404, {"error": "Không tìm thấy."})
 
               def do_POST(self):
                   if not self.require_auth():
                       return
-
                   path = urlsplit(self.path).path
-
                   if path != "/control/api/action":
                       self.send_json(404, {"error": "Không tìm thấy."})
                       return
 
                   origin = self.headers.get("Origin")
-
-                  if origin and origin != "https://ott0.ankworks.bond":
-                      self.send_json(403, {"error": "Origin không hợp lệ."})
-                      return
-
                   fetch_site = self.headers.get("Sec-Fetch-Site", "")
+                  if origin:
+                      if origin != "https://ott0.ankworks.bond":
+                          self.send_json(403, {"error": "Origin không hợp lệ."})
+                          return
+                  elif fetch_site != "same-origin":
+                      self.send_json(403, {"error": "Thiếu Origin hợp lệ."})
+                      return
 
                   if fetch_site and fetch_site not in ("same-origin", "none"):
                       self.send_json(403, {"error": "Yêu cầu khác nguồn."})
                       return
 
                   supplied_csrf = self.headers.get("X-CSRF-Token", "")
-
                   try:
                       csrf_ok = hmac.compare_digest(
                           supplied_csrf.encode("utf-8"),
@@ -1796,37 +1767,33 @@ jobs:
                       )
                   except Exception:
                       csrf_ok = False
-
                   if not csrf_ok:
                       self.send_json(403, {"error": "CSRF không hợp lệ."})
                       return
 
-                  content_type = self.headers.get(
-                      "Content-Type", ""
-                  ).split(";", 1)[0].strip().lower()
-
+                  content_type = (
+                      self.headers.get("Content-Type", "")
+                      .split(";", 1)[0]
+                      .strip()
+                      .lower()
+                  )
                   if content_type != "application/json":
                       self.send_json(415, {"error": "Cần JSON."})
                       return
 
                   try:
                       length = int(self.headers.get("Content-Length", "0"))
-
                       if length <= 0 or length > 8192:
                           raise ValueError("Kích thước không hợp lệ")
-
                       body = self.rfile.read(length)
                       data = json.loads(body)
-
                       if not isinstance(data, dict):
                           raise ValueError("JSON không hợp lệ")
-
                   except Exception:
                       self.send_json(400, {"error": "Dữ liệu không hợp lệ."})
                       return
 
                   action = data.get("action")
-
                   if action == "refresh":
                       fetch_event.set()
                       log("Control: yêu cầu đọc lại Worker.")
@@ -1836,7 +1803,6 @@ jobs:
                   if action == "restart":
                       with lock:
                           shared["restart_seq"] += 1
-
                       log("Control: yêu cầu restart nguồn.")
                       self.send_json(200, {"message": "Đã yêu cầu restart nguồn."})
                       return
@@ -1849,9 +1815,7 @@ jobs:
                                   {"error": "Đang khẩn cấp; không phát ident."},
                               )
                               return
-
                           shared["ident_seq"] += 1
-
                       log("Control: yêu cầu phát ident.")
                       self.send_json(200, {"message": "Đã yêu cầu phát ident."})
                       return
@@ -1859,7 +1823,6 @@ jobs:
                   if action == "emergency_on":
                       with lock:
                           shared["emergency"] = True
-
                       log("Control: BẬT khẩn cấp.")
                       self.send_json(200, {"message": "Đã bật khẩn cấp."})
                       return
@@ -1867,7 +1830,6 @@ jobs:
                   if action == "emergency_off":
                       with lock:
                           shared["emergency"] = False
-
                       fetch_event.set()
                       log("Control: TẮT khẩn cấp.")
                       self.send_json(
@@ -1877,34 +1839,33 @@ jobs:
                       return
 
                   if action == "direct":
-                      url = data.get("url", "")
+                      url = str(data.get("url", "")).strip()
+                      subtitle_url = str(data.get("subtitle_url", "")).strip()
                       input_type = data.get("input_type", "live")
-
                       if not valid_direct_url(url):
                           self.send_json(
                               400,
-                              {"error": "Link HTTP/HTTPS không hợp lệ."},
+                              {"error": "Link HTTP/HTTPS không hợp lệ hoặc bị chặn."},
                           )
                           return
-
+                      if subtitle_url and not valid_direct_url(subtitle_url):
+                          self.send_json(
+                              400,
+                              {"error": "Link phụ đề .srt không hợp lệ."},
+                          )
+                          return
                       if input_type not in ("live", "vod"):
                           self.send_json(400, {"error": "Loại nguồn không hợp lệ."})
                           return
-
                       with lock:
                           if shared["emergency"]:
-                              self.send_json(
-                                  409,
-                                  {"error": "Hãy tắt khẩn cấp trước."},
-                              )
+                              self.send_json(409, {"error": "Hãy tắt khẩn cấp trước."})
                               return
-
                           shared["direct_url"] = url
                           shared["direct_type"] = input_type
-
+                          shared["direct_subtitle_url"] = subtitle_url
                           if data.get("ident") is True:
                               shared["ident_seq"] += 1
-
                       log("Control: chọn link trực tiếp, loại " + input_type + ".")
                       self.send_json(200, {"message": "Đã chọn link trực tiếp."})
                       return
@@ -1913,7 +1874,7 @@ jobs:
                       with lock:
                           shared["direct_url"] = None
                           shared["direct_type"] = "live"
-
+                          shared["direct_subtitle_url"] = ""
                       fetch_event.set()
                       log("Control: quay về Worker.")
                       self.send_json(200, {"message": "Đã chọn lịch Worker."})
@@ -1926,11 +1887,7 @@ jobs:
               daemon_threads = True
 
 
-          control_server = ControlServer(
-              ("127.0.0.1", 8091),
-              ControlHandler,
-          )
-
+          control_server = ControlServer(("127.0.0.1", 8091), ControlHandler)
           threading.Thread(
               target=control_server.serve_forever,
               daemon=True,
@@ -1942,7 +1899,8 @@ jobs:
 
           log("Supervisor bắt đầu.")
           log("Trang control đã khởi động.")
-          log("Ident: chọn ngẫu nhiên theo trọng số 40/35/25.")
+          scan_idents()
+          log("Ident: chọn ngẫu nhiên theo trọng số (không lặp liên tiếp).")
           log("Bản thử nghiệm: HLS vẫn có thể khựng hoặc nhảy.")
 
           seen_restart_seq = 0
@@ -1953,6 +1911,10 @@ jobs:
           attempt_generation = -1
           direct_attempt_active = False
 
+          cached_subtitle_url = ""
+          cached_subtitle_path = None
+          cached_subtitle_hash = ""
+
           try:
               while not stop_event.is_set():
                   try:
@@ -1961,17 +1923,15 @@ jobs:
                           emergency = shared["emergency"]
                           direct_url = shared["direct_url"]
                           direct_type = shared["direct_type"]
+                          direct_subtitle_url = shared["direct_subtitle_url"]
                           restart_seq = shared["restart_seq"]
                           ident_seq = shared["ident_seq"]
 
-                      effective_config = (
-                          config if isinstance(config, dict) else {}
-                      )
+                      effective_config = config if isinstance(config, dict) else {}
 
                       if emergency:
                           if not was_emergency:
                               log("Đang chuyển sang fallback khẩn cấp.")
-
                               stop_ffmpeg()
                               ident_playing = False
                               ident_from_control = False
@@ -1987,7 +1947,6 @@ jobs:
                           set_audio_candidates(
                               fallback_audio_candidates(effective_config)
                           )
-
                           with lock:
                               audio_url = shared["audio_result"]
                               shared["current_name"] = "Khẩn cấp"
@@ -1996,7 +1955,6 @@ jobs:
                               "logo": effective_config.get("logo", {}),
                               "banner": effective_config.get("banner", {}),
                           }
-
                           emergency_key = (
                               "emergency",
                               audio_url,
@@ -2008,10 +1966,8 @@ jobs:
                                   "FFmpeg khẩn đã thoát, mã: "
                                   + str(process.returncode)
                               )
-
                               process = None
                               current_key = None
-
                               with lock:
                                   shared["ffmpeg_running"] = False
 
@@ -2022,7 +1978,6 @@ jobs:
                                       "fallback",
                                       audio_url=audio_url,
                                   )
-
                                   current_key = emergency_key
                                   current_mode = "fallback"
 
@@ -2031,7 +1986,6 @@ jobs:
 
                       if was_emergency:
                           log("Đã thoát khẩn cấp.")
-
                           was_emergency = False
                           previous_selection = None
                           current_key = None
@@ -2039,11 +1993,11 @@ jobs:
                           last_start = 0.0
 
                       if direct_url:
-                          program = direct_program(direct_url, direct_type)
-
+                          program = direct_program(
+                              direct_url, direct_type, direct_subtitle_url
+                          )
                       elif config is not None:
                           program = select_program(config)
-
                       else:
                           program = {
                               "reason": "no_config",
@@ -2051,6 +2005,7 @@ jobs:
                               "kind": "source",
                               "url": None,
                               "input_type": "live",
+                              "subtitle_url": "",
                               "occurrence": None,
                               "waiting": {},
                           }
@@ -2061,12 +2016,7 @@ jobs:
                       with lock:
                           shared["current_name"] = sanitize(program["name"])
 
-                      current_selection = (
-                          reason,
-                          occurrence,
-                          program["url"],
-                      )
-
+                      current_selection = (reason, occurrence, program["url"])
                       schedule_changed = False
                       manual_changed = False
 
@@ -2074,14 +2024,12 @@ jobs:
                           previous_reason, previous_occurrence, previous_url = (
                               previous_selection
                           )
-
                           if (
                               previous_reason in ("epg", "default")
                               and reason == "epg"
                               and occurrence != previous_occurrence
                           ):
                               schedule_changed = True
-
                           if reason == "manual" and (
                               previous_reason != "manual"
                               or previous_url != program["url"]
@@ -2090,11 +2038,7 @@ jobs:
 
                       previous_selection = current_selection
 
-                      selected = (
-                          program["kind"],
-                          program["url"],
-                      )
-
+                      selected = (program["kind"], program["url"])
                       with lock:
                           if selected != shared["selected"]:
                               shared["selected"] = selected
@@ -2104,7 +2048,6 @@ jobs:
                               changed = True
                           else:
                               changed = False
-
                           generation = shared["generation"]
                           video_available = shared["video_available"]
 
@@ -2129,19 +2072,17 @@ jobs:
                       if restart_seq != seen_restart_seq:
                           seen_restart_seq = restart_seq
                           log("Thực hiện restart nguồn.")
-
                           stop_ffmpeg()
                           ident_playing = False
                           ident_from_control = False
                           current_key = None
                           current_mode = None
                           last_start = 0.0
-
                           next_direct_attempt = 0.0
                           direct_attempt_active = False
+                          cached_subtitle_url = ""
 
                       manual_ident_requested = ident_seq != seen_ident_seq
-
                       if manual_ident_requested:
                           seen_ident_seq = ident_seq
 
@@ -2151,7 +2092,6 @@ jobs:
                           and not ident_from_control
                       ):
                           log("Manual Worker mới được chọn: ngắt ident tự động.")
-
                           stop_ffmpeg()
                           ident_playing = False
                           ident_from_control = False
@@ -2161,10 +2101,8 @@ jobs:
 
                       if schedule_changed or manual_ident_requested:
                           chosen = choose_ident()
-
                           if chosen is None:
                               log("Không có ident hợp lệ; bỏ qua.")
-
                               if ident_playing:
                                   stop_ffmpeg()
                                   ident_playing = False
@@ -2172,87 +2110,63 @@ jobs:
                                   current_key = None
                                   current_mode = None
                                   last_start = 0.0
-
                           else:
                               ident_path, duration = chosen
-
                               if manual_ident_requested:
-                                  log(
-                                      "Control phát ident "
-                                      + f"{duration:.1f} giây."
-                                  )
+                                  log(f"Control phát ident {duration:.1f} giây.")
                               else:
                                   log(
                                       "Lịch chuyển sang "
                                       + program["name"]
                                       + f"; phát ident {duration:.1f} giây."
                                   )
-
                               start_ffmpeg(
                                   effective_config,
                                   "ident",
                                   duration=duration,
                                   ident_path=ident_path,
                               )
-
                               ident_playing = True
                               ident_from_control = manual_ident_requested
-                              ident_deadline = (
-                                  time.monotonic() + duration + 20
-                              )
-
+                              ident_deadline = time.monotonic() + duration + 20
                               current_key = ("ident", occurrence)
                               current_mode = "ident"
 
                       if ident_playing:
                           if process is None or process.poll() is not None:
-                              code = (
-                                  None
-                                  if process is None
-                                  else process.returncode
-                              )
-
+                              code = None if process is None else process.returncode
                               log(f"Ident kết thúc; mã {code}.")
-
                               process = None
                               ident_playing = False
                               ident_from_control = False
                               current_key = None
                               current_mode = None
                               last_start = 0.0
-
                               with lock:
                                   shared["ffmpeg_running"] = False
-
                           elif time.monotonic() >= ident_deadline:
                               log("Ident quá thời gian; chuyển tiếp.")
-
                               stop_ffmpeg()
                               ident_playing = False
                               ident_from_control = False
                               current_key = None
                               current_mode = None
                               last_start = 0.0
-
                           else:
                               stop_event.wait(0.5)
                               continue
 
                       if process is not None and process.poll() is not None:
                           log("FFmpeg đã thoát, mã: " + str(process.returncode))
-
                           if current_mode in ("main", "waiting"):
                               with lock:
                                   shared["video_available"] = False
-
                               video_available = False
                               next_direct_attempt = time.monotonic() + 30
                               direct_attempt_active = False
-
                           process = None
                           current_key = None
                           current_mode = None
-
                           with lock:
                               shared["ffmpeg_running"] = False
 
@@ -2262,26 +2176,21 @@ jobs:
                           and playlist_is_stalled()
                       ):
                           log(
-                              "Playlist 720 không cập nhật quá "
-                              f"{PLAYLIST_STALL_TIMEOUT} giây; restart FFmpeg."
+                              f"Playlist 720 không cập nhật quá {PLAYLIST_STALL_TIMEOUT} giây; restart FFmpeg."
                           )
-
                           if current_mode in ("main", "waiting"):
                               with lock:
                                   shared["video_available"] = False
-
                               video_available = False
                               next_direct_attempt = time.monotonic() + 30
                               direct_attempt_active = False
-
                           stop_ffmpeg()
                           current_key = None
                           current_mode = None
 
                       now = time.monotonic()
-
                       can_try_source = (
-                          valid_url(program["url"])
+                          valid_url(program["url"], allow_internal_obs=True)
                           and (
                               video_available
                               or direct_attempt_active
@@ -2299,9 +2208,7 @@ jobs:
                           desired_mode = "fallback"
 
                       if desired_mode == "waiting":
-                          set_audio_candidates(
-                              waiting_audio_candidates(program)
-                          )
+                          set_audio_candidates(waiting_audio_candidates(program))
                       elif desired_mode == "fallback":
                           set_audio_candidates(
                               fallback_audio_candidates(effective_config)
@@ -2312,14 +2219,17 @@ jobs:
                       with lock:
                           audio_url = shared["audio_result"]
 
+                      sub_url = program.get("subtitle_url", "") if desired_mode == "main" else ""
+                      if sub_url != cached_subtitle_url:
+                          cached_subtitle_url = sub_url
+                          if sub_url:
+                              cached_subtitle_path, cached_subtitle_hash = download_subtitle(sub_url)
+                          else:
+                              cached_subtitle_path, cached_subtitle_hash = None, ""
+
                       logo_cfg = effective_config.get("logo", {})
-
                       if desired_mode == "waiting":
-                          relevant = {
-                              "logo": logo_cfg,
-                              "waiting": program["waiting"],
-                          }
-
+                          relevant = {"logo": logo_cfg, "waiting": program["waiting"]}
                           desired_key = (
                               "waiting",
                               program["url"],
@@ -2327,13 +2237,11 @@ jobs:
                               audio_url,
                               signature(relevant),
                           )
-
                       elif desired_mode == "fallback":
                           relevant = {
                               "logo": logo_cfg,
                               "banner": effective_config.get("banner", {}),
                           }
-
                           desired_key = (
                               "fallback",
                               program["kind"],
@@ -2341,40 +2249,25 @@ jobs:
                               audio_url,
                               signature(relevant),
                           )
-
                       else:
                           desired_key = (
                               "main",
                               program["url"],
                               program["input_type"],
+                              cached_subtitle_hash,
                               signature({"logo": logo_cfg}),
                           )
 
                       can_restart = now - last_start >= RESTART_DELAY
-
-                      if (
-                          desired_key != current_key
-                          or process is None
-                      ) and can_restart:
-
+                      if (desired_key != current_key or process is None) and can_restart:
                           if desired_mode == "fallback":
-                              log(
-                                  "Video được chọn chưa khả dụng; "
-                                  "phát fallback."
-                              )
-
+                              log("Video được chọn chưa khả dụng; phát fallback.")
                           elif desired_mode == "waiting":
-                              log(
-                                  "Phát chờ event; tiếng gốc video được tắt."
-                              )
-
+                              log("Phát chờ event; tiếng gốc video được tắt.")
                           else:
                               log("Phát nguồn chính: " + program["name"])
 
-                          if (
-                              desired_mode in ("main", "waiting")
-                              and not video_available
-                          ):
+                          if desired_mode in ("main", "waiting") and not video_available:
                               log("Probe chưa OK; thử FFmpeg trực tiếp.")
                               direct_attempt_active = True
 
@@ -2385,8 +2278,8 @@ jobs:
                               audio_url=audio_url,
                               waiting=program["waiting"],
                               input_type=program["input_type"],
+                              subtitle_path=cached_subtitle_path if desired_mode == "main" else None,
                           )
-
                           current_key = desired_key
                           current_mode = desired_mode
 
@@ -2395,15 +2288,9 @@ jobs:
                           last_cleanup = time.monotonic()
 
                   except Exception as exc:
-                      log(
-                          "Lỗi supervisor: "
-                          + type(exc).__name__
-                          + ": "
-                          + str(exc)
-                      )
+                      log("Lỗi supervisor: " + type(exc).__name__ + ": " + str(exc))
 
                   stop_event.wait(0.5)
-
           finally:
               stop_event.set()
               fetch_event.set()
@@ -2425,14 +2312,10 @@ jobs:
           done
 
           echo ">>> Một thành phần đã dừng."
-
           echo "=== cloudflared ==="
           cat "$ROOT/cloudflared.log" 2>/dev/null || true
-
           echo "=== nginx ==="
           cat "$ROOT/nginx-error.log" 2>/dev/null || true
-
           echo "=== MediaMTX ==="
           docker logs veotv-mediamtx 2>&1 || true
-
           exit 1
