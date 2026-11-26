@@ -1078,10 +1078,89 @@ jobs:
               return url
 
 
+          LIVE_INFO_CACHE = {}
+
+
+          def probe_live(url, force=False):
+              now_mono = time.monotonic()
+              cached = LIVE_INFO_CACHE.get(url)
+              if cached and not force:
+                  ttl = 600.0 if cached[1].get("ok") else 30.0
+                  if (now_mono - cached[0]) < ttl:
+                      return cached[1]
+              info = {
+                  "ok": False, "has_video": False, "has_audio": False,
+                  "deint": False, "vcodec": "", "acodec": "",
+                  "width": 0, "height": 0, "err": "",
+              }
+              for attempt in range(2):
+                  span = str(5000000 * (attempt + 1))
+                  try:
+                      res = subprocess.run(
+                          [
+                              "ffprobe", "-v", "error",
+                              "-rw_timeout", "6000000",
+                              "-analyzeduration", span,
+                              "-probesize", span,
+                              "-user_agent", "Dalvik/2.1.0",
+                              "-show_entries",
+                              "stream=codec_type,codec_name,width,height,field_order",
+                              "-of", "json",
+                              url,
+                          ],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE,
+                          text=True,
+                          errors="replace",
+                          timeout=20,
+                      )
+                  except subprocess.TimeoutExpired:
+                      info["err"] = "ffprobe quá 20 giây"
+                      continue
+                  except OSError as exc:
+                      info["err"] = type(exc).__name__
+                      break
+                  try:
+                      streams = (json.loads(res.stdout or "{}").get("streams")) or []
+                  except ValueError:
+                      streams = []
+                  vids = [s for s in streams if s.get("codec_type") == "video"]
+                  auds = [s for s in streams if s.get("codec_type") == "audio"]
+                  v = vids[0] if vids else None
+                  if v and int(v.get("width") or 0) > 0 and int(v.get("height") or 0) > 0:
+                      info.update({
+                          "ok": True,
+                          "has_video": True,
+                          "has_audio": bool(auds),
+                          "vcodec": str(v.get("codec_name") or ""),
+                          "acodec": str(auds[0].get("codec_name") or "") if auds else "",
+                          "width": int(v["width"]),
+                          "height": int(v["height"]),
+                          "deint": str(v.get("field_order") or "unknown") != "progressive",
+                          "err": "",
+                      })
+                      break
+                  detail = sanitize((res.stderr or "").strip())
+                  if v:
+                      detail = "Chưa đọc được kích thước video (luồng đang hỏng gói)"
+                  elif not detail:
+                      detail = "Không thấy luồng video"
+                  info["err"] = detail[:300]
+              LIVE_INFO_CACHE[url] = (now_mono, info)
+              return info
+
+
           def probe(url, stream_type, clearkey=""):
               if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
               url = resolve_media_redirect(url)
+              if is_udpxy(url):
+                  info = probe_live(url)
+                  if not info["ok"]:
+                      return False, info["err"] or "ffprobe lỗi"
+                  if stream_type == "v:0":
+                      return info["has_video"], "" if info["has_video"] else "Không có video"
+                  return info["has_audio"], "" if info["has_audio"] else "Không có audio"
               cache_key = (url, stream_type, clearkey)
               cached = PROBE_CACHE.get(cache_key)
               now_mono = time.monotonic()
@@ -1454,6 +1533,7 @@ jobs:
               ad_overlay=None,
               ad_input_idx=None,
               seek_seconds=0.0,
+              deinterlace=False,
           ):
               logo_cfg = config.get("logo", {})
               fallback_banner = config.get("banner", {})
@@ -1486,7 +1566,7 @@ jobs:
               (ROOT / "banner.txt").write_text(banner_text, encoding="utf-8")
 
               parts = [
-                  "[0:v]setpts=PTS-STARTPTS,fps=30,"
+                  "[0:v]" + ("yadif=0:-1:1," if deinterlace else "") + "setpts=PTS-STARTPTS,fps=30,"
                   "scale=1920:1080:"
                   "force_original_aspect_ratio=decrease,"
                   "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
@@ -1588,7 +1668,7 @@ jobs:
                   args += ["-an"]
               else:
                   args += [
-                      "-af", "aresample=async=1:first_pts=0",
+                      "-af", "aresample=async=1000",
                       "-c:a", "aac",
                       "-b:a", "128k",
                       "-ar", "44100",
@@ -1700,6 +1780,7 @@ jobs:
                   "-stats_period", "5",
               ]
 
+              live_info = None
               if mode == "fallback":
                   cmd += [
                       "-re",
@@ -1733,10 +1814,16 @@ jobs:
                       cmd += ["-re"]
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
+                  if is_udpxy(source_url):
+                      live_info = probe_live(source_url)
+                      if live_info["ok"]:
+                          log(f"Probe udpxy: {live_info['vcodec']} {live_info['width']}x{live_info['height']}, audio={live_info['acodec'] or 'không có'}, khử xen kẽ={'có' if live_info['deint'] else 'không'}")
+                      else:
+                          log(f"Probe udpxy lỗi: {live_info['err']}. Vẫn thử chạy FFmpeg.")
                   cmd += [
-                      "-fflags", "+genpts+discardcorrupt" if is_udpxy(source_url) else "+genpts",
-                      "-analyzeduration", "6000000" if is_udpxy(source_url) else "1500000",
-                      "-probesize", "6000000" if is_udpxy(source_url) else "1500000",
+                      "-fflags", "+genpts",
+                      "-analyzeduration", "5000000" if live_info else "1500000",
+                      "-probesize", "5000000" if live_info else "1500000",
                       "-thread_queue_size", "512",
                       "-rw_timeout", "6000000",
                   ]
@@ -1747,6 +1834,8 @@ jobs:
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
                   if clearkey:
                       cmd += ["-cenc_decryption_key", clearkey]
+                  if is_udpxy(resolved_src):
+                      cmd += ["-err_detect", "ignore_err", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
                   cmd += ["-i", resolved_src]
 
               cmd += [
@@ -1856,6 +1945,7 @@ jobs:
                       ad_overlay=ad_overlay if mode == "main" else None,
                       ad_input_idx=ad_input_idx,
                       seek_seconds=seek_seconds if mode == "main" else 0.0,
+                      deinterlace=bool(live_info and live_info.get("ok") and live_info.get("deint")),
                   ),
               ]
               if extra_renditions:
