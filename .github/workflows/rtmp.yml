@@ -680,6 +680,15 @@ jobs:
                   return False
 
 
+          UDPXY_RE = re.compile(
+              r"(?i)^https?://[^/]+/(?:rtp|udp)/[0-9a-z.\-:\[\]]+(?:\?.*)?$"
+          )
+
+
+          def is_udpxy(url):
+              return isinstance(url, str) and bool(UDPXY_RE.match(url))
+
+
           def is_mp4(value):
               try:
                   return urlsplit(value).path.lower().endswith(
@@ -1049,6 +1058,8 @@ jobs:
 
 
           def resolve_media_redirect(url):
+              if is_udpxy(url):
+                  return url
               if not url or not url.startswith(("http://", "https://")):
                   return url
               try:
@@ -1073,7 +1084,8 @@ jobs:
               cache_key = (url, stream_type, clearkey)
               cached = PROBE_CACHE.get(cache_key)
               now_mono = time.monotonic()
-              if cached and (now_mono - cached[0]) < PROBE_TTL:
+              ttl = 600.0 if (is_udpxy(url) and cached and cached[1]) else PROBE_TTL
+              if cached and (now_mono - cached[0]) < ttl:
                   return cached[1], cached[2]
               try:
                   ffprobe_cmd = [
@@ -1720,7 +1732,7 @@ jobs:
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
                   cmd += [
-                      "-fflags", "+genpts",
+                      "-fflags", "+genpts+discardcorrupt" if is_udpxy(source_url) else "+genpts",
                       "-analyzeduration", "1500000",
                       "-probesize", "1500000",
                       "-thread_queue_size", "512",
