@@ -1587,6 +1587,7 @@ jobs:
                   args += ["-an"]
               else:
                   args += [
+                      "-af", "aresample=async=1:first_pts=0",
                       "-c:a", "aac",
                       "-b:a", "128k",
                       "-ar", "44100",
@@ -1733,8 +1734,8 @@ jobs:
                       cmd += ["-stream_loop", "-1"]
                   cmd += [
                       "-fflags", "+genpts+discardcorrupt" if is_udpxy(source_url) else "+genpts",
-                      "-analyzeduration", "1500000",
-                      "-probesize", "1500000",
+                      "-analyzeduration", "6000000" if is_udpxy(source_url) else "1500000",
+                      "-probesize", "6000000" if is_udpxy(source_url) else "1500000",
                       "-thread_queue_size", "512",
                       "-rw_timeout", "6000000",
                   ]
