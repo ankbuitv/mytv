@@ -454,6 +454,15 @@ jobs:
           AUDIO_PROBE_INTERVAL = 90
           RESTART_DELAY = 5
           PLAYLIST_STALL_TIMEOUT = 90
+          # udpxy khởi động chậm: chờ dữ liệu đầu lâu hơn và cho phép playlist trễ hơn
+          UDPXY_RW_TIMEOUT = "30000000"
+          UDPXY_ANALYZE = "10000000"
+          UDPXY_STALL_TIMEOUT = 180
+          current_udpxy = False
+
+
+          def stall_limit():
+              return UDPXY_STALL_TIMEOUT if current_udpxy else PLAYLIST_STALL_TIMEOUT
           MAX_SRT_BYTES = 2 * 1024 * 1024
 
           AUTH_WINDOW_SEC = 60
@@ -499,6 +508,26 @@ jobs:
               "ffmpeg_speed": "",
               "ffmpeg_out_time": "",
           }
+
+          shared.update({
+              "stopped": False,
+              "stop_occurrence": None,
+              "skip_item": None,
+              "skip_expire": None,
+              "on_backup": False,
+              "current_title": "",
+              "current_kind": "",
+              "current_reason": "",
+              "current_window": ("", ""),
+          })
+          STATUS_DIR = ROOT / "www" / "livestream01"
+          START_TS = time.time()
+          err_counts = collections.Counter()
+          err_lines = collections.deque(maxlen=20)
+          events_q = collections.deque(maxlen=200)
+          vu_state = {"l": -90.0, "r": -90.0, "pl": -90.0, "pr": -90.0, "ts": 0.0}
+          snap_state = {"ts": 0.0}
+          last_event_key = None
 
           process = None
           current_key = None
@@ -562,6 +591,7 @@ jobs:
                       stamp = datetime.now(TZ).strftime("%H:%M:%S")
                       with lock:
                           logs.append(f"[{stamp}] FFmpeg: {safe}")
+                      record_ffmpeg_issue(safe, stamp)
                       print("FFmpeg: " + safe, flush=True)
               except Exception:
                   pass
@@ -878,6 +908,7 @@ jobs:
                       "audio_tracks": [],
                       "occurrence": None,
                       "waiting": {},
+                      "backup_url": config.get("backupUrl", ""),
                   }
 
               now = datetime.now(TZ)
@@ -885,8 +916,19 @@ jobs:
               epg = config.get("epg", [])
               if not isinstance(epg, list):
                   epg = []
+              skip_item = None
+              with lock:
+                  s_item = shared.get("skip_item")
+                  s_exp = shared.get("skip_expire")
+                  if s_item is not None:
+                      if s_exp is not None and now.timestamp() < s_exp:
+                          skip_item = s_item
+                      else:
+                          shared["skip_item"] = None
+                          shared["skip_expire"] = None
+              candidates = [skip_item] if skip_item is not None else epg
 
-              for item in epg:
+              for item in candidates:
                   try:
                       if not isinstance(item, dict):
                           continue
@@ -898,7 +940,7 @@ jobs:
                           active = current >= start or current < end
                       else:
                           active = False
-                      if not active:
+                      if not active and item is not skip_item:
                           continue
 
                       name = str(item.get("source", "obs"))
@@ -921,6 +963,9 @@ jobs:
                       else:
                           url = resolve_source(config, name)
                           input_type = source_input_type(config, name)
+                          if item is skip_item and item.get("_url"):
+                              url = item["_url"]
+                              input_type = item.get("_type", "live")
                           raw_sub = item.get("subtitleUrl", "")
                           sub_url = raw_sub if valid_direct_url(raw_sub) else ""
                           try:
@@ -957,6 +1002,12 @@ jobs:
                           "audio_tracks": audio_tracks,
                           "occurrence": occurrence,
                           "waiting": waiting,
+                          "title": str(item.get("title", "")),
+                          "start": str(item.get("start", "")),
+                          "end": str(item.get("end", "")),
+                          "backup_url": str(
+                              item.get("backupUrl") or config.get("backupUrl") or ""
+                          ),
                       }
                   except (ValueError, KeyError, TypeError):
                       continue
@@ -1081,7 +1132,7 @@ jobs:
           LIVE_INFO_CACHE = {}
 
 
-          def probe_live(url, force=False):
+          def probe_live(url, force=False, single=False):
               now_mono = time.monotonic()
               cached = LIVE_INFO_CACHE.get(url)
               if cached and not force:
@@ -1093,13 +1144,16 @@ jobs:
                   "deint": False, "vcodec": "", "acodec": "",
                   "width": 0, "height": 0, "err": "",
               }
-              for attempt in range(2):
-                  span = str(5000000 * (attempt + 1))
+              udp = is_udpxy(url)
+              rw_us = UDPXY_RW_TIMEOUT if udp else "6000000"
+              limit = 40 if udp else 20
+              for attempt in range(1 if single else 2):
+                  span = str((10000000 if udp else 5000000) * (attempt + 1))
                   try:
                       res = subprocess.run(
                           [
                               "ffprobe", "-v", "error",
-                              "-rw_timeout", "6000000",
+                              "-rw_timeout", rw_us,
                               "-analyzeduration", span,
                               "-probesize", span,
                               "-user_agent", "Dalvik/2.1.0",
@@ -1112,10 +1166,15 @@ jobs:
                           stderr=subprocess.PIPE,
                           text=True,
                           errors="replace",
-                          timeout=20,
+                          timeout=limit,
                       )
                   except subprocess.TimeoutExpired:
-                      info["err"] = "ffprobe quá 20 giây"
+                      info["err"] = (
+                          f"udpxy trả 200 nhưng chưa có dữ liệu sau {limit} giây (kênh tắt hoặc sai địa chỉ?)"
+                          if udp else f"ffprobe quá {limit} giây"
+                      )
+                      if udp:
+                          break
                       continue
                   except OSError as exc:
                       info["err"] = type(exc).__name__
@@ -1143,9 +1202,13 @@ jobs:
                   detail = sanitize((res.stderr or "").strip())
                   if v:
                       detail = "Chưa đọc được kích thước video (luồng đang hỏng gói)"
+                  elif udp and (not detail or "timed out" in detail.lower() or "timeout" in detail.lower()):
+                      detail = "udpxy trả 200 nhưng không có dữ liệu (kênh tắt hoặc sai địa chỉ?)"
                   elif not detail:
                       detail = "Không thấy luồng video"
                   info["err"] = detail[:300]
+                  if udp and not v and "udpxy" in detail:
+                      break
               LIVE_INFO_CACHE[url] = (now_mono, info)
               return info
 
@@ -1761,7 +1824,7 @@ jobs:
               seek_seconds=0.0,
               clearkey="",
           ):
-              global process, last_start
+              global process, last_start, current_udpxy
               stop_ffmpeg()
               reset_playlist_watch()
 
@@ -1769,6 +1832,7 @@ jobs:
               audio_tracks = audio_tracks or []
               logo_file = logo_path if (logo_path and Path(logo_path).is_file()) else (ASSETS / "logo.png")
               run_id = uuid.uuid4().hex[:10]
+              current_udpxy = bool(source_url) and mode in ("main", "waiting") and is_udpxy(source_url)
 
               cmd = [
                   "ffmpeg",
@@ -1815,18 +1879,27 @@ jobs:
                   if is_mp4(source_url):
                       cmd += ["-stream_loop", "-1"]
                   if is_udpxy(source_url):
-                      live_info = probe_live(source_url)
+                      live_info = probe_live(source_url, single=True)
                       if live_info["ok"]:
                           log(f"Probe udpxy: {live_info['vcodec']} {live_info['width']}x{live_info['height']}, audio={live_info['acodec'] or 'không có'}, khử xen kẽ={'có' if live_info['deint'] else 'không'}")
                       else:
                           log(f"Probe udpxy lỗi: {live_info['err']}. Vẫn thử chạy FFmpeg.")
-                  cmd += [
-                      "-fflags", "+genpts",
-                      "-analyzeduration", "5000000" if live_info else "1500000",
-                      "-probesize", "5000000" if live_info else "1500000",
-                      "-thread_queue_size", "512",
-                      "-rw_timeout", "6000000",
-                  ]
+                  if is_udpxy(source_url):
+                      cmd += [
+                          "-fflags", "+genpts",
+                          "-analyzeduration", UDPXY_ANALYZE,
+                          "-probesize", UDPXY_ANALYZE,
+                          "-thread_queue_size", "4096",
+                          "-rw_timeout", UDPXY_RW_TIMEOUT,
+                      ]
+                  else:
+                      cmd += [
+                          "-fflags", "+genpts",
+                          "-analyzeduration", "5000000" if live_info else "1500000",
+                          "-probesize", "5000000" if live_info else "1500000",
+                          "-thread_queue_size", "512",
+                          "-rw_timeout", "6000000",
+                      ]
                   resolved_src = resolve_media_redirect(source_url)
                   if resolved_src.startswith(("http://", "https://")):
                       cmd += ["-user_agent", "Dalvik/2.1.0"]
@@ -2006,7 +2079,7 @@ jobs:
               if current != playlist_last_signature:
                   playlist_last_signature = current
                   playlist_last_change = time.monotonic()
-              return time.monotonic() - playlist_last_change > PLAYLIST_STALL_TIMEOUT
+              return time.monotonic() - playlist_last_change > stall_limit()
 
 
           def cleanup_old_segments():
@@ -2808,6 +2881,421 @@ jobs:
               daemon_threads = True
 
 
+          # ======================================================================
+          # VeoTV Playout Monitor: trạng thái, ảnh chụp, VU, lệnh, lịch sử (v6)
+          # ======================================================================
+          ERR_PATTERNS = [
+              (r"PES packet size mismatch", "PES lệch kích thước"),
+              (r"Packet corrupt|corrupt (?:input )?packet", "Gói dữ liệu lỗi"),
+              (r"reference picture missing", "Thiếu khung tham chiếu H.264"),
+              (r"mmco", "Lỗi mmco H.264"),
+              (r"[Nn]on[- ]monoton", "DTS không đơn điệu"),
+              (r"[Ee]rror while decoding|decode_slice_header|concealing", "Lỗi giải mã"),
+              (r"timed? ?out|Connection (?:refused|reset)|Network is unreachable", "Mất kết nối / timeout"),
+              (r"HTTP error (?:4|5)\d\d|Server returned (?:4|5)\d\d", "Lỗi HTTP từ nguồn"),
+              (r"Invalid data found", "Dữ liệu không hợp lệ"),
+              (r"Error opening input|Failed to open|Server returned 40", "Không mở được nguồn"),
+              (r"buffer|queue", "Tràn bộ đệm"),
+          ]
+          ERR_COMPILED = [(re.compile(p), name) for p, name in ERR_PATTERNS]
+
+
+          def classify_error(text):
+              for rx, name in ERR_COMPILED:
+                  if rx.search(text):
+                      return name
+              return "Khác"
+
+
+          def record_ffmpeg_issue(safe, stamp):
+              cat = classify_error(safe)
+              msg = safe[:160]
+              with lock:
+                  err_counts[cat] += 1
+                  if err_lines and err_lines[-1]["cat"] == cat and err_lines[-1]["msg"] == msg:
+                      err_lines[-1]["n"] += 1
+                      err_lines[-1]["t"] = stamp
+                  else:
+                      err_lines.append({"t": stamp, "cat": cat, "msg": msg, "n": 1})
+
+
+          def worker_base():
+              return API_URL.rsplit("/api/runner/config", 1)[0]
+
+
+          def worker_request(path, payload=None, method="GET", timeout=8):
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+              request = urllib.request.Request(
+                  worker_base() + path,
+                  data=data,
+                  method=method,
+                  headers={
+                      "Authorization": "Bearer " + TOKEN,
+                      "User-Agent": "VeoTV-Control/6.0",
+                      "Accept": "application/json",
+                      "Content-Type": "application/json",
+                      "Cache-Control": "no-cache",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=timeout) as response:
+                  raw = response.read(2_000_000)
+              return json.loads(raw) if raw else {}
+
+
+          def note_program_event(program):
+              """Ghi lịch sử phát khi chương trình / chế độ đổi (gửi lên Worker sau)."""
+              global last_event_key
+              if program.get("reason") == "no_config":
+                  return
+              with lock:
+                  key = (
+                      program.get("name"),
+                      program.get("kind"),
+                      program.get("occurrence"),
+                      shared.get("on_backup"),
+                      shared.get("stopped"),
+                      shared.get("emergency"),
+                  )
+                  if key == last_event_key:
+                      return
+                  last_event_key = key
+                  state = "stopped" if shared.get("stopped") else (
+                      "emergency" if shared.get("emergency") else (
+                          "backup" if shared.get("on_backup") else "live"
+                      )
+                  )
+                  events_q.append({
+                      "ts": datetime.now(TZ).isoformat(timespec="seconds"),
+                      "title": sanitize(program.get("title") or program.get("name") or ""),
+                      "source": sanitize(program.get("name") or ""),
+                      "kind": program.get("kind") or "source",
+                      "reason": program.get("reason") or "",
+                      "state": state,
+                  })
+
+
+          def event_loop():
+              last_err = 0.0
+              while not stop_event.wait(15):
+                  with lock:
+                      batch = list(events_q)
+                      events_q.clear()
+                  if not batch:
+                      continue
+                  try:
+                      worker_request("/api/runner/history", {"events": batch}, "POST")
+                  except Exception as exc:
+                      with lock:
+                          for item in reversed(batch):
+                              events_q.appendleft(item)
+                      if time.monotonic() - last_err > 60:
+                          log("Không gửi được lịch sử lên Worker: " + type(exc).__name__)
+                          last_err = time.monotonic()
+
+
+          def next_info(config):
+              nxt = (config or {}).get("nextEpg") if isinstance(config, dict) else None
+              if not isinstance(nxt, dict):
+                  return None
+              return {
+                  "title": sanitize(nxt.get("title", "")),
+                  "start": str(nxt.get("start", "")),
+                  "end": str(nxt.get("end", "")),
+                  "kind": "waiting" if nxt.get("type") == "waiting" else "source",
+              }
+
+
+          def build_status():
+              now = time.time()
+              with lock:
+                  config = shared["config"]
+                  ok_ts = shared["config_last_ok"]
+                  status = {
+                      "v": 6,
+                      "ts": round(now, 2),
+                      "uptime": int(now - START_TS),
+                      "title": shared.get("current_title") or shared.get("current_name") or "",
+                      "source": shared.get("current_name") or "",
+                      "kind": shared.get("current_kind") or "",
+                      "reason": shared.get("current_reason") or "",
+                      "window": list(shared.get("current_window") or ["", ""]),
+                      "mode": current_mode or "",
+                      "backup": bool(shared.get("on_backup")),
+                      "stopped": bool(shared.get("stopped")),
+                      "emergency": bool(shared.get("emergency")),
+                      "ffmpeg": bool(shared.get("ffmpeg_running")),
+                      "speed": shared.get("ffmpeg_speed") or "",
+                      "out_time": shared.get("ffmpeg_out_time") or "",
+                      "config_error": shared.get("config_error") or "",
+                      "errors": list(err_lines),
+                      "err_counts": dict(err_counts),
+                      "err_total": int(sum(err_counts.values())),
+                  }
+                  vu = dict(vu_state)
+              status["next"] = next_info(config)
+              status["vu"] = {
+                  "l": vu["l"], "r": vu["r"], "pl": vu["pl"], "pr": vu["pr"],
+                  "age": round(now - vu["ts"], 1) if vu["ts"] else None,
+              }
+              status["snap_ts"] = snap_state["ts"] or None
+              try:
+                  pl = STATUS_DIR / "720" / "index.m3u8"
+                  status["playlist_age"] = round(now - pl.stat().st_mtime, 1)
+              except OSError:
+                  status["playlist_age"] = None
+              status["config_age"] = None
+              if ok_ts:
+                  try:
+                      status["config_age"] = round(
+                          now - datetime.fromisoformat(ok_ts).timestamp(), 1
+                      )
+                  except Exception:
+                      pass
+              return status
+
+
+          def write_status_file():
+              STATUS_DIR.mkdir(parents=True, exist_ok=True)
+              tmp = STATUS_DIR / "status.json.tmp"
+              tmp.write_text(
+                  json.dumps(build_status(), ensure_ascii=False, separators=(",", ":")),
+                  encoding="utf-8",
+              )
+              os.replace(tmp, STATUS_DIR / "status.json")
+
+
+          def status_loop():
+              while not stop_event.wait(1.0):
+                  try:
+                      write_status_file()
+                  except Exception:
+                      pass
+
+
+          def snapshot_once():
+              seg_dir = STATUS_DIR / "720"
+              segs = []
+              for path in seg_dir.glob("*.ts"):
+                  try:
+                      segs.append((path.stat().st_mtime, path))
+                  except OSError:
+                      pass
+              if len(segs) < 2:
+                  return False
+              segs.sort()
+              mtime, seg = segs[-2]
+              if time.time() - segs[-1][0] > 20:
+                  return False
+              tmp = STATUS_DIR / "preview.tmp.jpg"
+              result = subprocess.run(
+                  [
+                      "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                      "-i", str(seg), "-frames:v", "1",
+                      "-vf", "scale=480:-2", "-q:v", "6", str(tmp),
+                  ],
+                  capture_output=True,
+                  timeout=20,
+              )
+              if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+                  os.replace(tmp, STATUS_DIR / "preview.jpg")
+                  snap_state["ts"] = round(time.time(), 1)
+                  return True
+              return False
+
+
+          def snapshot_loop():
+              while not stop_event.wait(10):
+                  try:
+                      snapshot_once()
+                  except Exception:
+                      pass
+
+
+          VU_RX = re.compile(
+              r"lavfi\.astats\.(1|2)\.(RMS_level|Peak_level)=(\S+)"
+          )
+
+
+          def vu_value(text):
+              try:
+                  value = float(text)
+              except ValueError:
+                  return -90.0
+              if value != value or value < -90.0:
+                  return -90.0
+              return min(value, 0.0)
+
+
+          def vu_loop():
+              url = "http://127.0.0.1:8080/livestream01/720/index.m3u8"
+              while not stop_event.is_set():
+                  if not (STATUS_DIR / "720" / "index.m3u8").exists():
+                      stop_event.wait(3)
+                      continue
+                  proc = None
+                  try:
+                      proc = subprocess.Popen(
+                          [
+                              "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                              "-i", url, "-vn",
+                              "-af",
+                              "asetnsamples=n=11025:p=0,astats=metadata=1:reset=1,"
+                              "ametadata=mode=print:file=-",
+                              "-f", "null", "-",
+                          ],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL,
+                          text=True,
+                          bufsize=1,
+                      )
+                      cur = {}
+                      for line in iter(proc.stdout.readline, ""):
+                          if stop_event.is_set():
+                              break
+                          if line.startswith("frame:"):
+                              if cur:
+                                  with lock:
+                                      l = cur.get((1, "RMS_level"), -90.0)
+                                      r = cur.get((2, "RMS_level"), l)
+                                      vu_state.update({
+                                          "l": l, "r": r,
+                                          "pl": cur.get((1, "Peak_level"), l),
+                                          "pr": cur.get((2, "Peak_level"), cur.get((1, "Peak_level"), l)),
+                                          "ts": time.time(),
+                                      })
+                              cur = {}
+                              continue
+                          m = VU_RX.search(line)
+                          if m:
+                              cur[(int(m.group(1)), m.group(2))] = vu_value(m.group(3))
+                  except Exception:
+                      pass
+                  finally:
+                      if proc is not None:
+                          try:
+                              proc.kill()
+                              proc.wait(timeout=3)
+                          except Exception:
+                              pass
+                  stop_event.wait(5)
+
+
+          def cmd_stop():
+              with lock:
+                  shared["stopped"] = True
+                  shared["stop_occurrence"] = "__pending__"
+                  shared["skip_item"] = None
+                  shared["skip_expire"] = None
+              return True, "Đã dừng kênh. Tự chạy lại khi tới chương trình kế hoặc bấm Start."
+
+
+          def cmd_start():
+              with lock:
+                  was = shared["stopped"]
+                  shared["stopped"] = False
+                  shared["stop_occurrence"] = None
+                  shared["restart_seq"] += 1
+              fetch_event.set()
+              return True, "Đã chạy lại kênh." if was else "Kênh đang chạy; đã khởi động lại nguồn."
+
+
+          def cmd_restart():
+              with lock:
+                  shared["stopped"] = False
+                  shared["stop_occurrence"] = None
+                  shared["restart_seq"] += 1
+              fetch_event.set()
+              return True, "Đã khởi động lại FFmpeg."
+
+
+          def cmd_skip():
+              with lock:
+                  config = shared["config"]
+              if not isinstance(config, dict):
+                  return False, "Runner chưa đọc được cấu hình."
+              if config.get("mode") == "manual":
+                  return False, "Đang ở chế độ Manual; Skip chỉ dùng cho Auto."
+              nxt = config.get("nextEpg")
+              if not isinstance(nxt, dict):
+                  return False, "Không có chương trình kế tiếp hôm nay."
+              item = dict(nxt)
+              name = str(item.get("source", "obs"))
+              try:
+                  start = minute_value(item["start"])
+                  end = minute_value(item["end"])
+              except Exception:
+                  return False, "Giờ của chương trình kế không hợp lệ."
+              if item.get("type") != "waiting":
+                  url = resolve_source(config, name)
+                  if not url:
+                      return False, "Nguồn của chương trình kế không hợp lệ."
+                  item["_url"] = url
+                  item["_type"] = source_input_type(config, name)
+              day0 = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+              end_min = end if end > start else end + 1440
+              expire = (day0 + timedelta(minutes=end_min)).timestamp()
+              with lock:
+                  shared["skip_item"] = item
+                  shared["skip_expire"] = expire
+                  shared["stopped"] = False
+                  shared["stop_occurrence"] = None
+                  shared["restart_seq"] += 1
+              fetch_event.set()
+              return True, "Đã nhảy sang: " + sanitize(item.get("title", "chương trình kế"))
+
+
+          COMMANDS = {
+              "stop": cmd_stop,
+              "start": cmd_start,
+              "restart": cmd_restart,
+              "skip": cmd_skip,
+          }
+          done_command_ids = collections.deque(maxlen=100)
+
+
+          def execute_command(cmd):
+              action = str(cmd.get("action", ""))
+              func = COMMANDS.get(action)
+              if func is None:
+                  return False, "Lệnh không hỗ trợ: " + sanitize(action)
+              try:
+                  ok, message = func()
+              except Exception as exc:
+                  return False, "Lỗi: " + type(exc).__name__
+              log("Lệnh từ Worker: " + action + " -> " + ("OK" if ok else "LỖI") + " · " + message)
+              return ok, message
+
+
+          def command_loop():
+              last_err = 0.0
+              while not stop_event.wait(5):
+                  try:
+                      data = worker_request("/api/runner/commands")
+                      for cmd in data.get("commands", []) or []:
+                          cid = str(cmd.get("id", ""))
+                          if not cid:
+                              continue
+                          if cid in done_command_ids:
+                              ok, message = True, "Đã chạy trước đó."
+                          else:
+                              ok, message = execute_command(cmd)
+                              done_command_ids.append(cid)
+                          worker_request(
+                              "/api/runner/ack",
+                              {"id": cid, "ok": ok, "message": message},
+                              "POST",
+                          )
+                  except Exception as exc:
+                      if time.monotonic() - last_err > 60:
+                          name = type(exc).__name__
+                          if isinstance(exc, urllib.error.HTTPError):
+                              name += f" HTTP {exc.code}"
+                          log("Không lấy được lệnh từ Worker: " + name)
+                          last_err = time.monotonic()
+
+
           control_server = ControlServer(("127.0.0.1", 8091), ControlHandler)
           threading.Thread(
               target=control_server.serve_forever,
@@ -2817,6 +3305,11 @@ jobs:
           threading.Thread(target=config_loop, daemon=True).start()
           threading.Thread(target=video_probe_loop, daemon=True).start()
           threading.Thread(target=audio_probe_loop, daemon=True).start()
+          threading.Thread(target=status_loop, daemon=True).start()
+          threading.Thread(target=snapshot_loop, daemon=True).start()
+          threading.Thread(target=vu_loop, daemon=True).start()
+          threading.Thread(target=command_loop, daemon=True).start()
+          threading.Thread(target=event_loop, daemon=True).start()
 
           log("Supervisor bắt đầu.")
           log("Trang control đã khởi động.")
@@ -2866,6 +3359,8 @@ jobs:
                           ad_overlay_override = shared["ad_overlay_override"]
                           restart_seq = shared["restart_seq"]
                           ident_seq = shared["ident_seq"]
+                          stopped = shared["stopped"]
+                          stop_occurrence = shared["stop_occurrence"]
 
                       effective_config = config if isinstance(config, dict) else {}
                       logo_path, logo_hash = sync_logo(effective_config)
@@ -2961,6 +3456,40 @@ jobs:
 
                       with lock:
                           shared["current_name"] = sanitize(program["name"])
+                          shared["current_title"] = sanitize(
+                              program.get("title") or program["name"]
+                          )
+                          shared["current_kind"] = program["kind"]
+                          shared["current_reason"] = reason
+                          shared["current_window"] = (
+                              program.get("start", ""),
+                              program.get("end", ""),
+                          )
+
+                      if stopped:
+                          if stop_occurrence == "__pending__":
+                              with lock:
+                                  shared["stop_occurrence"] = occurrence
+                              stop_occurrence = occurrence
+                          elif reason != "manual" and occurrence != stop_occurrence:
+                              log("Tới chương trình kế; tự chạy lại sau khi dừng.")
+                              with lock:
+                                  shared["stopped"] = False
+                                  shared["stop_occurrence"] = None
+                              stopped = False
+                          if stopped:
+                              if process is not None:
+                                  stop_ffmpeg()
+                              ident_playing = False
+                              ident_from_control = False
+                              current_key = None
+                              current_mode = None
+                              last_start = 0.0
+                              with lock:
+                                  shared["on_backup"] = False
+                              note_program_event(program)
+                              stop_event.wait(0.5)
+                              continue
 
                       current_selection = (reason, occurrence, program["url"])
                       schedule_changed = False
@@ -3234,7 +3763,7 @@ jobs:
                           and playlist_is_stalled()
                       ):
                           log(
-                              f"Playlist 720 không cập nhật quá {PLAYLIST_STALL_TIMEOUT} giây; restart FFmpeg."
+                              f"Playlist 720 không cập nhật quá {stall_limit()} giây; restart FFmpeg."
                           )
                           if current_mode in ("main", "waiting"):
                               with lock:
@@ -3264,6 +3793,21 @@ jobs:
                           )
                       else:
                           desired_mode = "fallback"
+
+                      backup_url = program.get("backup_url") or effective_config.get(
+                          "backupUrl"
+                      ) or ""
+                      use_backup = bool(
+                          desired_mode == "fallback"
+                          and program["kind"] == "source"
+                          and program["reason"] != "no_config"
+                          and isinstance(backup_url, str)
+                          and backup_url
+                          and valid_url(backup_url)
+                          and backup_url != program.get("url")
+                      )
+                      with lock:
+                          shared["on_backup"] = use_backup
 
                       if desired_mode == "waiting":
                           set_audio_candidates(waiting_audio_candidates(program))
@@ -3351,9 +3895,20 @@ jobs:
                               signature({"logo": logo_cfg, "logo_hash": logo_hash}),
                           )
 
+                      if use_backup:
+                          desired_key = (
+                              "backup",
+                              backup_url,
+                              signature({"logo": logo_cfg, "logo_hash": logo_hash}),
+                          )
+
                       can_restart = now - last_start >= RESTART_DELAY
                       if (desired_key != current_key or process is None) and can_restart:
-                          if desired_mode == "fallback":
+                          if use_backup:
+                              log("Nguồn chính chưa khả dụng; phát luồng dự phòng.")
+                              next_direct_attempt = time.monotonic() + 600
+                              direct_attempt_active = False
+                          elif desired_mode == "fallback":
                               log("Video được chọn chưa khả dụng; phát fallback.")
                           elif desired_mode == "waiting":
                               log("Phát chờ event; tiếng gốc video được tắt.")
@@ -3381,11 +3936,11 @@ jobs:
 
                           start_ffmpeg(
                               effective_config,
-                              desired_mode,
-                              source_url=program["url"],
+                              "main" if use_backup else desired_mode,
+                              source_url=backup_url if use_backup else program["url"],
                               audio_url=audio_url,
                               waiting=program["waiting"],
-                              input_type=program["input_type"],
+                              input_type="live" if use_backup else program["input_type"],
                               subtitle_path=cached_subtitle_path if desired_mode == "main" else None,
                               audio_tracks=program.get("audio_tracks", []) if desired_mode == "main" else [],
                               logo_path=logo_path,
@@ -3395,7 +3950,9 @@ jobs:
                               clearkey=program.get("clearkey", "") if desired_mode == "main" else "",
                           )
                           current_key = desired_key
-                          current_mode = desired_mode
+                          current_mode = "backup" if use_backup else desired_mode
+
+                      note_program_event(program)
 
                       if time.monotonic() - last_cleanup > 60:
                           cleanup_old_segments()
