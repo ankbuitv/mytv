@@ -456,7 +456,7 @@ jobs:
           PLAYLIST_STALL_TIMEOUT = 90
           # udpxy khởi động chậm: chờ dữ liệu đầu lâu hơn và cho phép playlist trễ hơn
           UDPXY_RW_TIMEOUT = "30000000"
-          UDPXY_ANALYZE = "10000000"
+          UDPXY_ANALYZE = "5000000"
           UDPXY_STALL_TIMEOUT = 180
           current_udpxy = False
 
@@ -1148,7 +1148,7 @@ jobs:
               rw_us = UDPXY_RW_TIMEOUT if udp else "6000000"
               limit = 40 if udp else 20
               for attempt in range(1 if single else 2):
-                  span = str((10000000 if udp else 5000000) * (attempt + 1))
+                  span = str(5000000 * (attempt + 1))
                   try:
                       res = subprocess.run(
                           [
@@ -1218,7 +1218,14 @@ jobs:
                   return False, "URL không hợp lệ"
               url = resolve_media_redirect(url)
               if is_udpxy(url):
-                  info = probe_live(url)
+                  # Đang phát nguồn udpxy này: dùng kết quả dò cũ, KHÔNG mở thêm kết nối
+                  # (mỗi kết nối phụ tranh băng thông upload của router nhà bạn).
+                  cached_live = LIVE_INFO_CACHE.get(url)
+                  if (current_udpxy and shared.get("ffmpeg_running")
+                          and cached_live and cached_live[1].get("ok")):
+                      info = cached_live[1]
+                  else:
+                      info = probe_live(url)
                   if not info["ok"]:
                       return False, info["err"] or "ffprobe lỗi"
                   if stream_type == "v:0":
@@ -2885,19 +2892,24 @@ jobs:
           # VeoTV Playout Monitor: trạng thái, ảnh chụp, VU, lệnh, lịch sử (v6)
           # ======================================================================
           ERR_PATTERNS = [
+              (r"Last message repeated", "__repeat__"),
               (r"PES packet size mismatch", "PES lệch kích thước"),
               (r"Packet corrupt|corrupt (?:input )?packet", "Gói dữ liệu lỗi"),
-              (r"reference picture missing", "Thiếu khung tham chiếu H.264"),
-              (r"mmco", "Lỗi mmco H.264"),
+              (r"aac @|/aac @|aist#|Number of bands|channel element|Reserved bit|Prediction is not allowed|invalid band type|[Ss]calefactor|ms_present|decode_pce|SBR was found", "Lỗi audio AAC"),
+              (r"corrupt decoded frame", "Khung hình hỏng"),
+              (r"reference picture missing|Missing reference picture|Reference \d+ >=", "Thiếu khung tham chiếu H.264"),
+              (r"mmco|number of reference frames", "Lỗi mmco H.264"),
               (r"[Nn]on[- ]monoton", "DTS không đơn điệu"),
-              (r"[Ee]rror while decoding|decode_slice_header|concealing", "Lỗi giải mã"),
+              (r"[Ee]rror while decoding|decode_slice_header|concealing|cabac|co located POCs|left block unavailable|h264 @", "Lỗi giải mã H.264"),
               (r"timed? ?out|Connection (?:refused|reset)|Network is unreachable", "Mất kết nối / timeout"),
               (r"HTTP error (?:4|5)\d\d|Server returned (?:4|5)\d\d", "Lỗi HTTP từ nguồn"),
+              (r"Error opening input|Failed to open", "Không mở được nguồn"),
               (r"Invalid data found", "Dữ liệu không hợp lệ"),
-              (r"Error opening input|Failed to open|Server returned 40", "Không mở được nguồn"),
-              (r"buffer|queue", "Tràn bộ đệm"),
+              (r"buffer (?:overflow|full)|queue (?:full|overflow)|[Tt]hread message queue|Too many packets buffered", "Tràn bộ đệm"),
           ]
           ERR_COMPILED = [(re.compile(p), name) for p, name in ERR_PATTERNS]
+          REPEAT_RE = re.compile(r"Last message repeated (\d+) times?")
+          last_err_cat = [None]
 
 
           def classify_error(text):
@@ -2909,8 +2921,18 @@ jobs:
 
           def record_ffmpeg_issue(safe, stamp):
               cat = classify_error(safe)
-              msg = safe[:160]
               with lock:
+                  if cat == "__repeat__":
+                      m = REPEAT_RE.search(safe)
+                      n = int(m.group(1)) if m else 1
+                      prev = last_err_cat[0]
+                      if prev:
+                          err_counts[prev] += n
+                          if err_lines and err_lines[-1]["cat"] == prev:
+                              err_lines[-1]["n"] += n
+                      return
+                  last_err_cat[0] = cat
+                  msg = safe[:160]
                   err_counts[cat] += 1
                   if err_lines and err_lines[-1]["cat"] == cat and err_lines[-1]["msg"] == msg:
                       err_lines[-1]["n"] += 1
