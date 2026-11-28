@@ -1362,7 +1362,7 @@ jobs:
               return info
 
 
-          def probe(url, stream_type, clearkey=""):
+          def probe(url, stream_type, clearkey="", timeout=7):
               if not valid_url(url, allow_internal_obs=True):
                   return False, "URL không hợp lệ"
               url = resolve_media_redirect(url)
@@ -1408,21 +1408,48 @@ jobs:
                       stderr=subprocess.PIPE,
                       text=True,
                       errors="replace",
-                      timeout=7,
+                      timeout=timeout,
                   )
                   expected = "video" if stream_type == "v:0" else "audio"
                   if result.returncode == 0 and expected in result.stdout:
                       PROBE_CACHE[cache_key] = (now_mono, True, "")
                       return True, ""
+                  if result.returncode == 0:
+                      # ffprobe mở được file và chắc chắn không có luồng này.
+                      detail = "Không có video" if expected == "video" else "Không có audio"
+                      PROBE_CACHE[cache_key] = (now_mono, False, detail)
+                      return False, detail
                   detail = sanitize(result.stderr.strip())
                   if not detail:
                       detail = f"ffprobe exit {result.returncode}"
                   PROBE_CACHE[cache_key] = (now_mono, False, detail[:300])
                   return False, detail[:300]
               except subprocess.TimeoutExpired:
-                  return False, "ffprobe quá 7 giây"
+                  return False, f"ffprobe quá {timeout:g} giây"
               except OSError as exc:
                   return False, type(exc).__name__
+
+
+          AUDIO_KNOWN = {}
+
+
+          def source_has_audio(url, clearkey=""):
+              """True/False chắc chắn nếu ffprobe kết luận được; nếu chỉ là nguồn chậm/timeout
+              thì KHÔNG coi là mất tiếng (trước đây chỗ này thay tiếng gốc bằng im lặng)."""
+              ok, why = probe(url, "a:0", clearkey=clearkey)
+              if ok or why == "Không có audio":
+                  AUDIO_KNOWN[url] = ok
+                  return ok
+              if url not in AUDIO_KNOWN:
+                  PROBE_CACHE.pop((resolve_media_redirect(url), "a:0", clearkey), None)
+                  ok2, why2 = probe(url, "a:0", clearkey=clearkey, timeout=15)
+                  if ok2 or why2 == "Không có audio":
+                      AUDIO_KNOWN[url] = ok2
+                      return ok2
+                  why = why2
+              guess = AUDIO_KNOWN.get(url, True)
+              log(f"Probe audio chưa kết luận ({why}); {'giữ tiếng gốc' if guess else 'dùng im lặng như lần trước'}.")
+              return guess
 
 
           def local_has_audio(path):
@@ -2296,7 +2323,7 @@ jobs:
                       audio_map = f"{next_input_idx}:a:0"
                       next_input_idx += 1
               else:
-                  has_src_audio, _ = probe(source_url, "a:0", clearkey=clearkey)
+                  has_src_audio = source_has_audio(source_url, clearkey)
                   if has_src_audio:
                       audio_map = "0:a:0?"
                   else:
@@ -3297,6 +3324,7 @@ jobs:
           # ======================================================================
           ERR_PATTERNS = [
               (r"Last message repeated", "__repeat__"),
+              (r"Resumed reading at pts", "Nguồn chậm (FFmpeg chờ dữ liệu)"),
               (r"PES packet size mismatch", "PES lệch kích thước"),
               (r"Packet corrupt|corrupt (?:input )?packet", "Gói dữ liệu lỗi"),
               (r"aac @|/aac @|aist#|Number of bands|channel element|Reserved bit|Prediction is not allowed|invalid band type|[Ss]calefactor|ms_present|decode_pce|SBR was found", "Lỗi audio AAC"),
