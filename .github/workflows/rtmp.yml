@@ -455,6 +455,14 @@ jobs:
           PROBE_INTERVAL = 20
           AUDIO_PROBE_INTERVAL = 90
           RESTART_DELAY = 5
+          # Chạy sớm (pre-roll): bắt đầu chương trình kế trước giờ để hình lên ĐÚNG giờ.
+          PREROLL_MAX = 60.0          # tối đa chạy sớm 60 giây
+          PREROLL_MARGIN = 0.3        # cộng thêm cho vòng lặp 0,5 giây
+          HLS_SEGMENT_SECONDS = 2.0   # khớp -hls_time 2
+          STARTUP_DEFAULT = {"ident": 1.0, "obs": 2.0, "vod": 2.0, "live": 4.0, "udpxy": 6.0}
+          STARTUP_EST = {}            # đo thực tế từng lần khởi động (trung bình trượt)
+          pending_ident = None        # ident chọn trước cho lần chuyển lịch sắp tới
+          current_run_id = ""
           PLAYLIST_STALL_TIMEOUT = 90
           # udpxy khởi động chậm: chờ dữ liệu đầu lâu hơn và cho phép playlist trễ hơn
           UDPXY_RW_TIMEOUT = "30000000"
@@ -856,13 +864,118 @@ jobs:
                           shared["config_fetching"] = False
 
 
-          def minute_value(value):
-              hour, minute = map(int, str(value).split(":"))
-              if not 0 <= hour <= 24 or not 0 <= minute < 60:
+          def time_seconds(value):
+              """'HH:MM' hoặc 'HH:MM:SS' -> số giây trong ngày (0..86400)."""
+              parts = str(value).strip().split(":")
+              if len(parts) not in (2, 3):
                   raise ValueError("Giờ không hợp lệ")
-              if hour == 24 and minute != 0:
+              hour, minute = int(parts[0]), int(parts[1])
+              second = int(parts[2]) if len(parts) == 3 else 0
+              if not 0 <= hour <= 24 or not 0 <= minute < 60 or not 0 <= second < 60:
+                  raise ValueError("Giờ không hợp lệ")
+              if hour == 24 and (minute or second):
                   raise ValueError("Chỉ cho phép 24:00")
-              return hour * 60 + minute
+              return hour * 3600 + minute * 60 + second
+
+
+          def minute_value(value):
+              return time_seconds(value) / 60.0
+
+
+          def startup_key(url, input_type="live"):
+              if not url:
+                  return "live"
+              if url == OBS_URL:
+                  return "obs"
+              if is_udpxy(url):
+                  return "udpxy"
+              if input_type == "vod" or is_mp4(url):
+                  return "vod"
+              return "live"
+
+
+          def startup_estimate(key):
+              with lock:
+                  value = STARTUP_EST.get(key)
+              return value if value is not None else STARTUP_DEFAULT.get(key, 4.0)
+
+
+          def update_startup(key, latency):
+              with lock:
+                  old = STARTUP_EST.get(key)
+                  new = latency if old is None else old * 0.6 + latency * 0.4
+                  STARTUP_EST[key] = new
+              log(f"Đo khởi động {key}: {latency:.1f}s (ước tính chạy sớm {new:.1f}s).")
+
+
+          def watch_startup(run_id, t0, key):
+              """Đo từ lúc gọi start_ffmpeg tới khung hình đầu (segment đầu xong - 2s)."""
+              folder = ROOT / "www" / "livestream01" / "720"
+              while time.monotonic() - t0 < 90 and not stop_event.is_set():
+                  if current_run_id != run_id:
+                      return
+                  try:
+                      found = next(folder.glob(run_id + "_*.ts"), None) is not None
+                  except OSError:
+                      found = False
+                  if found:
+                      latency = time.monotonic() - t0 - HLS_SEGMENT_SECONDS
+                      update_startup(key, max(0.3, min(45.0, latency)))
+                      return
+                  time.sleep(0.2)
+
+
+          def peek_ident():
+              """Chọn trước ident cho lần chuyển lịch kế tiếp để biết chính xác thời lượng."""
+              global pending_ident
+              if pending_ident is None:
+                  pending_ident = choose_ident() or False
+              return pending_ident or None
+
+
+          def program_lead(config, item):
+              """Số giây cần chạy sớm để chương trình lên hình đúng giờ."""
+              if item.get("type") == "waiting":
+                  waiting = item.get("waiting", {}) if isinstance(item.get("waiting"), dict) else {}
+                  url = waiting.get("videoUrl")
+                  itype = waiting_input_type(waiting)
+              else:
+                  name = str(item.get("source", "obs"))
+                  url = resolve_source(config, name)
+                  itype = source_input_type(config, name)
+              lead = startup_estimate(startup_key(url, itype))
+              ident = peek_ident()
+              if ident:
+                  # ident khởi động + chạy hết, rồi vòng lặp (≈0,25s) mới mở chương trình
+                  lead += startup_estimate("ident") + ident[1] + 0.25
+              return min(PREROLL_MAX, lead + PREROLL_MARGIN)
+
+
+          def preroll_shift(config, items, now_real):
+              """Nếu sắp tới giờ một chương trình và đã vào cửa sổ chạy sớm, trả về số
+              giây cần 'tua' đồng hồ ảo tới đúng giờ bắt đầu của nó."""
+              cur = (now_real.hour * 3600 + now_real.minute * 60 + now_real.second
+                     + now_real.microsecond / 1e6)
+              best = None
+              for item in items:
+                  try:
+                      if not isinstance(item, dict):
+                          continue
+                      start = time_seconds(item["start"])
+                      end = time_seconds(item["end"])
+                      if start == end or start >= 86400:
+                          continue
+                      delta = (start - cur) % 86400
+                      if delta <= 0 or delta > PREROLL_MAX:
+                          continue
+                      if best is not None and delta >= best[0]:
+                          continue
+                      lead = program_lead(config, item)
+                      if delta <= lead:
+                          best = (delta, lead, item)
+                  except (ValueError, KeyError, TypeError):
+                      continue
+              return best
 
 
           def resolve_source(config, name):
@@ -913,29 +1026,44 @@ jobs:
                       "backup_url": config.get("backupUrl", ""),
                   }
 
-              now = datetime.now(TZ)
-              current = now.hour * 60 + now.minute
+              now_real = datetime.now(TZ)
               epg = config.get("epg", [])
               if not isinstance(epg, list):
                   epg = []
+              epg = list(epg)
+              nxt = config.get("nextEpg")
+              if isinstance(nxt, dict) and nxt not in epg:
+                  # Worker chỉ gửi chương trình đang chạy + chương trình kế:
+                  # giữ cả hai để chuyển đúng giây mà không phải chờ lần tải cấu hình sau.
+                  epg.append(nxt)
               skip_item = None
               with lock:
                   s_item = shared.get("skip_item")
                   s_exp = shared.get("skip_expire")
                   if s_item is not None:
-                      if s_exp is not None and now.timestamp() < s_exp:
+                      if s_exp is not None and now_real.timestamp() < s_exp:
                           skip_item = s_item
                       else:
                           shared["skip_item"] = None
                           shared["skip_expire"] = None
               candidates = [skip_item] if skip_item is not None else epg
 
+              now = now_real
+              lead_info = None
+              if skip_item is None:
+                  pre = preroll_shift(config, candidates, now_real)
+                  if pre is not None:
+                      # Đồng hồ ảo = đúng giờ bắt đầu chương trình kế (+50ms).
+                      now = now_real + timedelta(seconds=pre[0] + 0.05)
+                      lead_info = (pre[0], pre[1])
+              current = now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1e6
+
               for item in candidates:
                   try:
                       if not isinstance(item, dict):
                           continue
-                      start = minute_value(item["start"])
-                      end = minute_value(item["end"])
+                      start = time_seconds(item["start"])
+                      end = time_seconds(item["end"])
                       if start < end:
                           active = start <= current < end
                       elif start > end:
@@ -981,13 +1109,21 @@ jobs:
                       if start > end and current < end:
                           occurrence_date -= timedelta(days=1)
 
+                      occ_name = "__direct__" if name in ("__epg_direct__", "__next_direct__") else name
                       occurrence = (
                           occurrence_date.isoformat(),
                           str(item.get("start")),
                           str(item.get("end")),
-                          name,
+                          occ_name,
                           kind,
                       )
+                      if lead_info is not None:
+                          with lock:
+                              first = shared.get("preroll_occ") != occurrence
+                              shared["preroll_occ"] = occurrence
+                          if first:
+                              log(f"Chạy sớm {lead_info[0]:.1f}s cho \"{sanitize(str(item.get('title') or name))}\" "
+                                  f"(bắt đầu {item.get('start')}, ước tính khởi động {lead_info[1]:.1f}s).")
 
                       return {
                           "reason": "epg",
@@ -1833,7 +1969,8 @@ jobs:
               seek_seconds=0.0,
               clearkey="",
           ):
-              global process, last_start, current_udpxy
+              global process, last_start, current_udpxy, current_run_id
+              t_call = time.monotonic()
               stop_ffmpeg()
               reset_playlist_watch()
 
@@ -2068,6 +2205,20 @@ jobs:
                   args=(process.stdout,),
                   daemon=True,
               ).start()
+
+              current_run_id = run_id
+              if mode in ("ident", "ad_ident"):
+                  skey = "ident"
+              elif mode in ("main", "waiting"):
+                  skey = startup_key(source_url, input_type)
+              else:
+                  skey = None
+              if skey:
+                  threading.Thread(
+                      target=watch_startup,
+                      args=(run_id, t_call, skey),
+                      daemon=True,
+                  ).start()
 
               last_start = time.monotonic()
               with lock:
@@ -3247,8 +3398,8 @@ jobs:
               item = dict(nxt)
               name = str(item.get("source", "obs"))
               try:
-                  start = minute_value(item["start"])
-                  end = minute_value(item["end"])
+                  start = time_seconds(item["start"])
+                  end = time_seconds(item["end"])
               except Exception:
                   return False, "Giờ của chương trình kế không hợp lệ."
               if item.get("type") != "waiting":
@@ -3258,8 +3409,10 @@ jobs:
                   item["_url"] = url
                   item["_type"] = source_input_type(config, name)
               day0 = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-              end_min = end if end > start else end + 1440
-              expire = (day0 + timedelta(minutes=end_min)).timestamp()
+              end_s = end if end > start else end + 86400
+              if config.get("nextEpgDay") == 1:
+                  end_s += 86400
+              expire = (day0 + timedelta(seconds=end_s)).timestamp()
               with lock:
                   shared["skip_item"] = item
                   shared["skip_expire"] = expire
@@ -3565,7 +3718,8 @@ jobs:
 
                       if generation != attempt_generation:
                           attempt_generation = generation
-                          next_direct_attempt = time.monotonic() + 20
+                          # Chuyển theo lịch: mở nguồn mới ngay (không chờ probe) để kịp giờ.
+                          next_direct_attempt = time.monotonic() + (0 if reason == "epg" else 20)
                           direct_attempt_active = False
 
                       if restart_seq != seen_restart_seq:
@@ -3711,7 +3865,12 @@ jobs:
                               continue
 
                       if schedule_changed or manual_ident_requested:
-                          chosen = choose_ident()
+                          if schedule_changed and pending_ident:
+                              chosen = pending_ident
+                          else:
+                              chosen = choose_ident()
+                          if schedule_changed:
+                              pending_ident = None
                           if chosen is None:
                               log("Không có ident hợp lệ; bỏ qua.")
                               if ident_playing:
