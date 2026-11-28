@@ -405,6 +405,7 @@ jobs:
           import hmac
           import ipaddress
           import json
+          import math
           import os
           import re
           import secrets
@@ -459,6 +460,10 @@ jobs:
           PREROLL_MAX = 60.0          # tối đa chạy sớm 60 giây
           PREROLL_MARGIN = 0.3        # cộng thêm cho vòng lặp 0,5 giây
           HLS_SEGMENT_SECONDS = 2.0   # khớp -hls_time 2
+          EPG_RESUME_MIN = 8.0        # vào giữa chương trình quá 8s thì tua tới đúng giờ EPG
+          STITCH_LIST_SIZE = 12       # số segment trong playlist công khai
+          SEAMLESS_WARM_TIMEOUT = 60.0  # chờ FFmpeg mới tối đa 60s trước khi chuyển liền mạch
+          SEAMLESS_WARM_SEGMENTS = 2  # FFmpeg mới phải ra đủ 2 segment mới được chuyển
           STARTUP_DEFAULT = {"ident": 1.0, "obs": 2.0, "vod": 2.0, "live": 4.0, "udpxy": 6.0}
           STARTUP_EST = {}            # đo thực tế từng lần khởi động (trung bình trượt)
           pending_ident = None        # ident chọn trước cho lần chuyển lịch sắp tới
@@ -612,7 +617,7 @@ jobs:
                       pass
 
 
-          def progress_reader(pipe):
+          def progress_reader(pipe, run_id=None):
               values = {}
               last_report = 0.0
               try:
@@ -626,6 +631,9 @@ jobs:
                           continue
                       speed = values.get("speed", "")
                       out_time = values.get("out_time", "")
+                      if run_id is not None and run_id != current_run_id:
+                          values = {}
+                          continue
                       with lock:
                           shared["ffmpeg_speed"] = speed
                           shared["ffmpeg_out_time"] = out_time
@@ -804,6 +812,8 @@ jobs:
                   srt_path.write_text(text, encoding="utf-8")
                   digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
                   log(f"Đã tải phụ đề .srt ({len(raw)} bytes, offset={offset_sec:+.1f}s).")
+                  if offset_sec:
+                      log(f"⚠ Phụ đề đang lệch {offset_sec:+.1f}s: số dương = hiện MUỘN hơn, số âm = hiện SỚM hơn.")
                   return srt_path, digest
               except Exception as exc:
                   log("Không tải được phụ đề .srt: " + type(exc).__name__)
@@ -1143,6 +1153,7 @@ jobs:
                           "title": str(item.get("title", "")),
                           "start": str(item.get("start", "")),
                           "end": str(item.get("end", "")),
+                          "is_skip": item is skip_item,
                           "backup_url": str(
                               item.get("backupUrl") or config.get("backupUrl") or ""
                           ),
@@ -1890,10 +1901,10 @@ jobs:
                   "-hls_list_size", "12",
                   "-hls_delete_threshold", "30",
                   "-hls_flags",
-                  "append_list+delete_segments+temp_file+omit_endlist+discont_start",
+                  "delete_segments+temp_file+omit_endlist",
                   "-hls_segment_filename",
                   str(folder / f"{run_id}_%06d.ts"),
-                  str(folder / "index.m3u8"),
+                  str(folder / f"{run_id}.m3u8"),
               ]
               return args
 
@@ -1913,10 +1924,10 @@ jobs:
                   "-hls_list_size", "12",
                   "-hls_delete_threshold", "30",
                   "-hls_flags",
-                  "append_list+delete_segments+temp_file+omit_endlist+discont_start",
+                  "delete_segments+temp_file+omit_endlist",
                   "-hls_segment_filename",
                   str(folder / f"{run_id}_%06d.ts"),
-                  str(folder / "index.m3u8"),
+                  str(folder / f"{run_id}.m3u8"),
               ]
 
 
@@ -1946,6 +1957,174 @@ jobs:
               manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+          # ---------------- Ghép playlist công khai (chuyển liền mạch) ----------------
+          # Mỗi FFmpeg ghi playlist riêng <run_id>.m3u8; luồng này ghép segment của FFmpeg
+          # đang phát vào index.m3u8 công khai, chèn #EXT-X-DISCONTINUITY khi đổi FFmpeg.
+          LIVE_DIR = ROOT / "www" / "livestream01"
+          stitch_lock = threading.Lock()
+          stitch_active = {"run": None, "variants": ["720", "1080"], "skip": {}}
+          stitch_state = {}
+
+
+          def read_private_playlist(folder, run):
+              try:
+                  text = (LIVE_DIR / folder / f"{run}.m3u8").read_text(encoding="utf-8", errors="replace")
+              except OSError:
+                  return []
+              out = []
+              dur = None
+              for line in text.splitlines():
+                  line = line.strip()
+                  if line.startswith("#EXTINF:"):
+                      try:
+                          dur = float(line[8:].split(",")[0])
+                      except ValueError:
+                          dur = None
+                  elif line and not line.startswith("#") and dur is not None:
+                      out.append((line, dur))
+                      dur = None
+              return out
+
+
+          def stitch_switch(run, variants, seamless):
+              skip = {}
+              if seamless:
+                  # Bỏ các segment khởi động của FFmpeg mới; chỉ lấy segment ra sau lúc chuyển.
+                  for folder in variants:
+                      skip[folder] = {name for name, _ in read_private_playlist(folder, run)}
+              with stitch_lock:
+                  stitch_active["run"] = run
+                  stitch_active["variants"] = list(variants)
+                  stitch_active["skip"] = skip
+
+
+          def write_public_playlist(folder, st):
+              entries = st["entries"]
+              target = max([d for _, d, _ in entries] + [HLS_SEGMENT_SECONDS])
+              lines = [
+                  "#EXTM3U",
+                  "#EXT-X-VERSION:3",
+                  f"#EXT-X-TARGETDURATION:{int(math.ceil(target))}",
+                  f"#EXT-X-MEDIA-SEQUENCE:{st['seq']}",
+                  f"#EXT-X-DISCONTINUITY-SEQUENCE:{st['dseq']}",
+              ]
+              for name, d, disc in entries:
+                  if disc:
+                      lines.append("#EXT-X-DISCONTINUITY")
+                  lines.append(f"#EXTINF:{d:.6f},")
+                  lines.append(name)
+              path = LIVE_DIR / folder / "index.m3u8"
+              tmp = path.with_name("index.m3u8.tmp")
+              tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+              os.replace(tmp, path)
+
+
+          stitch_run_lock = threading.Lock()
+
+
+          def stitch_once():
+              with stitch_run_lock:
+                  _stitch_once()
+
+
+          def _stitch_once():
+              with stitch_lock:
+                  run = stitch_active["run"]
+                  variants = list(stitch_active["variants"])
+                  skip = stitch_active["skip"]
+              if not run:
+                  return
+              for folder in variants:
+                  st = stitch_state.setdefault(
+                      folder, {"entries": [], "seq": 0, "dseq": 0, "run": None, "seen": set(), "disc": False}
+                  )
+                  if st["run"] != run:
+                      st["run"] = run
+                      st["seen"] = set(skip.get(folder, ()))
+                      st["disc"] = bool(st["entries"])
+                  segs = read_private_playlist(folder, run)
+                  names = {name for name, _ in segs}
+                  changed = False
+                  for name, d in segs:
+                      if name in st["seen"]:
+                          continue
+                      if not (LIVE_DIR / folder / name).is_file():
+                          continue
+                      st["seen"].add(name)
+                      st["entries"].append((name, d, st["disc"]))
+                      st["disc"] = False
+                      changed = True
+                  st["seen"] &= names | {n for n, _, _ in st["entries"]}
+                  while len(st["entries"]) > STITCH_LIST_SIZE:
+                      _, _, disc = st["entries"].pop(0)
+                      st["seq"] += 1
+                      if disc:
+                          st["dseq"] += 1
+                  if changed:
+                      write_public_playlist(folder, st)
+
+
+          def stitch_loop():
+              while not stop_event.is_set():
+                  try:
+                      stitch_once()
+                  except Exception as exc:
+                      log("Ghép playlist lỗi: " + type(exc).__name__)
+                  stop_event.wait(0.25)
+
+
+          def retire_process(proc):
+              try:
+                  if proc.poll() is None:
+                      proc.terminate()
+                      try:
+                          proc.wait(timeout=6)
+                      except subprocess.TimeoutExpired:
+                          proc.kill()
+                          proc.wait()
+              except Exception:
+                  pass
+
+
+          MEDIA_DURATION = {}
+
+
+          def media_duration(url):
+              """Thời lượng file VOD (giây) hoặc None; có cache."""
+              if url in MEDIA_DURATION:
+                  return MEDIA_DURATION[url]
+              value = None
+              try:
+                  cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]
+                  if str(url).startswith(("http://", "https://")):
+                      cmd += ["-user_agent", "Dalvik/2.1.0", "-rw_timeout", "6000000"]
+                  out = subprocess.run(cmd + [str(url)], capture_output=True, text=True, timeout=10).stdout.strip()
+                  value = float(out) if out and out != "N/A" else None
+              except Exception:
+                  value = None
+              MEDIA_DURATION[url] = value
+              return value
+
+
+          def epg_elapsed(program, now=None):
+              """Số giây đã trôi qua kể từ giờ bắt đầu EPG của chương trình (None nếu không theo EPG)."""
+              occ = program.get("occurrence")
+              if program.get("reason") != "epg" or not occ or program.get("is_skip"):
+                  return None
+              try:
+                  day = datetime.fromisoformat(str(occ[0])).date()
+                  start = time_seconds(occ[1])
+              except (ValueError, TypeError, IndexError):
+                  return None
+              start_dt = datetime(day.year, day.month, day.day, tzinfo=TZ) + timedelta(seconds=start)
+              return ((now or datetime.now(TZ)) - start_dt).total_seconds()
+
+
+          def fmt_pos(sec):
+              sec = max(0, int(sec))
+              return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
           def reset_playlist_watch():
               global playlist_last_change, playlist_last_signature
               playlist_last_change = time.monotonic()
@@ -1968,11 +2147,21 @@ jobs:
               ad_image_path=None,
               seek_seconds=0.0,
               clearkey="",
+              seamless=False,
           ):
               global process, last_start, current_udpxy, current_run_id
+              call_args = dict(locals())
               t_call = time.monotonic()
-              stop_ffmpeg()
-              reset_playlist_watch()
+              udpxy_involved = current_udpxy or (bool(source_url) and is_udpxy(str(source_url)))
+              if udpxy_involved:
+                  # udpxy thường giới hạn số kết nối: luôn tắt FFmpeg cũ trước.
+                  seamless = False
+              if not (seamless and process is not None and process.poll() is None):
+                  seamless = False
+              if not seamless and udpxy_involved:
+                  stop_ffmpeg()
+                  reset_playlist_watch()
+              applied_seek = 0.0
 
               waiting = waiting or {}
               audio_tracks = audio_tracks or []
@@ -2051,6 +2240,7 @@ jobs:
                       cmd += ["-user_agent", "Dalvik/2.1.0"]
                   if mode == "main" and seek_seconds and seek_seconds > 1.0 and (input_type == "vod" or is_mp4(resolved_src)):
                       cmd += ["-ss", f"{seek_seconds:.2f}"]
+                      applied_seek = float(seek_seconds)
                   if clearkey:
                       cmd += ["-cenc_decryption_key", clearkey]
                   if is_udpxy(resolved_src):
@@ -2163,7 +2353,7 @@ jobs:
                       subtitle_path=subtitle_path,
                       ad_overlay=ad_overlay if mode == "main" else None,
                       ad_input_idx=ad_input_idx,
-                      seek_seconds=seek_seconds if mode == "main" else 0.0,
+                      seek_seconds=applied_seek if mode == "main" else 0.0,
                       deinterlace=bool(live_info and live_info.get("ok") and live_info.get("deint")),
                   ),
               ]
@@ -2186,7 +2376,13 @@ jobs:
                   + (f", audio_tracks={len(extra_renditions)}" if extra_renditions else "")
               )
 
-              process = subprocess.Popen(
+              old_proc = process if seamless else None
+              old_run = current_run_id
+              if not seamless:
+                  stop_ffmpeg()
+                  reset_playlist_watch()
+
+              new_proc = subprocess.Popen(
                   cmd,
                   stdout=subprocess.PIPE,
                   stderr=subprocess.PIPE,
@@ -2197,23 +2393,78 @@ jobs:
 
               threading.Thread(
                   target=ffmpeg_log_reader,
-                  args=(process.stderr,),
+                  args=(new_proc.stderr,),
                   daemon=True,
               ).start()
               threading.Thread(
                   target=progress_reader,
-                  args=(process.stdout,),
+                  args=(new_proc.stdout, run_id),
                   daemon=True,
               ).start()
 
-              current_run_id = run_id
+              variants = ["720", "1080"] + [f"audio/{i}" for i in range(len(extra_renditions))]
+              if seamless:
+                  # Chạy song song: FFmpeg cũ vẫn phát cho tới khi FFmpeg mới ra đủ segment.
+                  warm_ok = False
+                  deadline = time.monotonic() + SEAMLESS_WARM_TIMEOUT
+                  while time.monotonic() < deadline and not stop_event.is_set():
+                      if new_proc.poll() is not None:
+                          break
+                      if old_proc is None or old_proc.poll() is not None:
+                          break
+                      if len(read_private_playlist("720", run_id)) >= SEAMLESS_WARM_SEGMENTS:
+                          warm_ok = True
+                          break
+                      time.sleep(0.2)
+                  if not warm_ok:
+                      log(f"Chuyển liền mạch không kịp ({time.monotonic() - t_call:.1f}s); khởi động lại kiểu thường.")
+                      retire_process(new_proc)
+                      call_args["seamless"] = False
+                      return start_ffmpeg(**call_args)
+                  # Chọn thời điểm cắt để lệch nội dung ≤ 1s: đo nhịp segment của 2 FFmpeg.
+                  def _last(run):
+                      segs = read_private_playlist("720", run)
+                      return segs[-1][0] if segs else None
+                  a0, b0 = _last(old_run), _last(run_id)
+                  ta = tb = None
+                  t_wait = time.monotonic()
+                  while time.monotonic() - t_wait < 2.6 and (ta is None or tb is None):
+                      if ta is None and _last(old_run) != a0:
+                          ta = time.monotonic()
+                      if tb is None and _last(run_id) != b0:
+                          tb = time.monotonic()
+                      time.sleep(0.04)
+                  if ta is not None and tb is not None:
+                      delta = (tb - ta) % HLS_SEGMENT_SECONDS
+                      if delta >= HLS_SEGMENT_SECONDS / 2:
+                          # Cắt ngay sau segment của FFmpeg cũ: lặp lại ~(2-δ)s thay vì nhảy.
+                          a1 = _last(old_run)
+                          t_cut = time.monotonic()
+                          while _last(old_run) == a1 and time.monotonic() - t_cut < 2.6:
+                              time.sleep(0.04)
+                      else:
+                          b1 = _last(run_id)
+                          t_cut = time.monotonic()
+                          while _last(run_id) == b1 and time.monotonic() - t_cut < 2.6:
+                              time.sleep(0.04)
+                      stitch_once()
+                  stitch_switch(run_id, variants, seamless=True)
+                  process = new_proc
+                  current_run_id = run_id
+                  threading.Thread(target=retire_process, args=(old_proc,), daemon=True).start()
+                  log(f"Đã chuyển liền mạch sang cấu hình mới (chuẩn bị {time.monotonic() - t_call:.1f}s, người xem không bị dừng).")
+              else:
+                  process = new_proc
+                  current_run_id = run_id
+                  stitch_switch(run_id, variants, seamless=False)
+
               if mode in ("ident", "ad_ident"):
                   skey = "ident"
               elif mode in ("main", "waiting"):
                   skey = startup_key(source_url, input_type)
               else:
                   skey = None
-              if skey:
+              if skey and not seamless:
                   threading.Thread(
                       target=watch_startup,
                       args=(run_id, t_call, skey),
@@ -2252,7 +2503,7 @@ jobs:
               if audio_root.is_dir():
                   folders.extend(p for p in audio_root.iterdir() if p.is_dir())
               for folder in folders:
-                  for path in folder.glob("*.ts"):
+                  for path in list(folder.glob("*.ts")) + [p for p in folder.glob("*.m3u8") if p.name != "index.m3u8"]:
                       try:
                           if now - path.stat().st_mtime > 300:
                               path.unlink()
@@ -2391,7 +2642,7 @@ jobs:
           autocomplete="off"
           placeholder="https://.../phu-de.srt"
           >
-          <label for="subtitleOffset">Độ trễ phụ đề (giây, VD: -2.5 hoặc 3)</label>
+          <label for="subtitleOffset">Độ trễ phụ đề (giây): + = hiện MUỘN hơn, − = hiện SỚM hơn (VD: -2.5)</label>
           <input
           id="subtitleOffset"
           type="text"
@@ -3480,6 +3731,7 @@ jobs:
           ).start()
 
           threading.Thread(target=config_loop, daemon=True).start()
+          threading.Thread(target=stitch_loop, daemon=True).start()
           threading.Thread(target=video_probe_loop, daemon=True).start()
           threading.Thread(target=audio_probe_loop, daemon=True).start()
           threading.Thread(target=status_loop, daemon=True).start()
@@ -3506,6 +3758,7 @@ jobs:
           ad_break_deadline = 0.0
           main_seek_offset = 0.0
           paused_main_state = None
+          epg_shift = {}  # occurrence -> số giây phim bị trễ so với EPG (do nghỉ quảng cáo)
           cached_ad_img_key = None
           cached_ad_img_path = None
           cached_ad_img_hash = ""
@@ -4102,6 +4355,31 @@ jobs:
                               log("Probe chưa OK; thử FFmpeg trực tiếp.")
                               direct_attempt_active = True
 
+                          seamless_ok = False
+                          if (
+                              effective_config.get("seamlessUpdates", True) is not False
+                              and process is not None
+                              and process.poll() is None
+                              and isinstance(current_key, tuple)
+                              and isinstance(desired_key, tuple)
+                              and current_key[0] == desired_key[0]
+                              and current_key[0] in ("main", "waiting", "fallback", "backup")
+                              and not current_udpxy
+                              and not (program.get("url") and is_udpxy(str(program.get("url"))))
+                          ):
+                              base = 2 if desired_key[0] == "backup" else 4
+                              seamless_ok = current_key[:base] == desired_key[:base]
+                              if seamless_ok and desired_key[0] == "main":
+                                  # Đổi số track audio thì master playlist đổi -> khởi động thường.
+                                  seamless_ok = current_key[7] == desired_key[7]
+                              if seamless_ok:
+                                  log("Chỉ đổi logo/quảng cáo/phụ đề: chuẩn bị FFmpeg mới song song, không dừng luồng.")
+
+                          is_vod_main = (
+                              desired_mode == "main"
+                              and not use_backup
+                              and (program["input_type"] == "vod" or is_mp4(program["url"]))
+                          )
                           resume_seek = 0.0
                           if (
                               desired_mode == "main"
@@ -4112,9 +4390,40 @@ jobs:
                               resume_seek = float(paused_main_state.get("resume_at", 0.0))
                               main_seek_offset = resume_seek
                               paused_main_state = None
+                              el = epg_elapsed(program)
+                              if el is not None:
+                                  lead = startup_estimate(startup_key(program["url"], program["input_type"]))
+                                  epg_shift[program["occurrence"]] = max(0.0, el + lead - resume_seek)
                               log(f"Quay lại luồng chính tại {resume_seek:.1f}s.")
                           elif desired_mode == "main":
-                              main_seek_offset = 0.0
+                              target = None
+                              lead = startup_estimate(startup_key(program["url"], program["input_type"]))
+                              if is_vod_main and seamless_ok:
+                                  # Nối tiếp đúng vị trí FFmpeg cũ đang phát.
+                                  with lock:
+                                      played = parse_out_time(shared.get("ffmpeg_out_time", ""))
+                                  target = main_seek_offset + played + lead
+                              elif is_vod_main and effective_config.get("epgResume", True) is not False:
+                                  el = epg_elapsed(program)
+                                  if el is not None:
+                                      el -= epg_shift.get(program["occurrence"], 0.0)
+                                      if el > EPG_RESUME_MIN:
+                                          target = el + lead
+                                          log(f"Xem tiếp theo giờ EPG: chương trình bắt đầu {program.get('start')}, "
+                                              f"vào phim ở {fmt_pos(target)}.")
+                              if target is not None and target > 1.0:
+                                  dur = media_duration(program["url"])
+                                  if dur and target >= dur - 3:
+                                      if is_mp4(program["url"]):
+                                          target = target % dur
+                                      else:
+                                          log(f"Vị trí {fmt_pos(target)} vượt độ dài phim {fmt_pos(dur)}; phát lại từ đầu.")
+                                          target = None
+                              if target is not None and target > 1.0:
+                                  resume_seek = target
+                                  main_seek_offset = target
+                              else:
+                                  main_seek_offset = 0.0
                               paused_main_state = None
 
                           start_ffmpeg(
@@ -4131,6 +4440,7 @@ jobs:
                               ad_image_path=cached_ad_img_path if (desired_mode == "main" and active_ad_overlay) else None,
                               seek_seconds=resume_seek,
                               clearkey=program.get("clearkey", "") if desired_mode == "main" else "",
+                              seamless=seamless_ok,
                           )
                           current_key = desired_key
                           current_mode = "backup" if use_backup else desired_mode
